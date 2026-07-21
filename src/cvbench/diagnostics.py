@@ -136,6 +136,25 @@ def generate_findings(
                 "crossing-and-occlusion-identity-sweep",
             )
         )
+    lifecycle = metrics.get("long_running_stability", {})
+    if lifecycle.get("track_id_reuse_events", 0):
+        findings.append(
+            _finding(
+                "TRACK-ID-REUSE-001",
+                "identity_integrity",
+                "high",
+                {
+                    "track_id_reuse_events": lifecycle["track_id_reuse_events"],
+                    "ended_track_id_reuse_events": lifecycle.get("ended_track_id_reuse_events", 0),
+                    "active_track_id_alias_events": lifecycle.get("active_track_id_alias_events", 0),
+                    "examples": lifecycle.get("track_id_reuse_evidence", [])[:3],
+                },
+                "A track ID was assigned to more than one physical target within a sequence.",
+                ["Deterministic observed-match lifecycle evidence identifies each reassignment."],
+                ["The track-ID counter may have wrapped or association state may be aliasing active targets."],
+                "track-id-lifecycle-churn-reproduction",
+            )
+        )
     false_tracks = metrics.get("false_detections", {}).get("track_births", 0)
     if false_tracks:
         findings.append(

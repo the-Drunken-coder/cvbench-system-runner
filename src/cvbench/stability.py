@@ -22,6 +22,7 @@ def evaluate_long_run_assertions(
         }
 
     maximum("max_unique_track_ids", "unique_track_ids")
+    maximum("max_track_id_reuse_events", "track_id_reuse_events")
     maximum("max_state_contamination_events", "state_contamination_events")
     maximum(
         "max_false_positive_accumulation_per_camera_minute",
@@ -29,6 +30,13 @@ def evaluate_long_run_assertions(
     )
     maximum("max_absolute_latency_drift_ms", "latency_drift_ms", absolute=True)
     maximum("max_memory_growth_bytes", "memory_growth_bytes")
+    if "min_distinct_physical_target_births" in declared:
+        actual = result.get("distinct_physical_target_births")
+        checks["min_distinct_physical_target_births"] = {
+            "actual": actual,
+            "limit": declared["min_distinct_physical_target_births"],
+            "passed": actual is not None and actual >= declared["min_distinct_physical_target_births"],
+        }
     if "min_interruption_recovery_rate" in declared:
         actual = result.get("interruption_recovery_rate")
         checks["min_interruption_recovery_rate"] = {

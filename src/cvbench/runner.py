@@ -455,6 +455,10 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             "system_sha256": _sha256(system.path),
             "scenario_manifests": [str(path) for path in benchmark.scenarios],
             "resolved_container_image": outcome.resolved_image,
+            "resolved_container_image_id": runtime.resolved_image_id if runtime else None,
+            "executed_container_image_id": (
+                runtime.isolation.get("image_identity", {}).get("executed_image_id") if runtime else None
+            ),
             "command": command,
             "matching": {
                 "algorithm": "deterministic Hungarian assignment",

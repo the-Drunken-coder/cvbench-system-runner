@@ -16,6 +16,7 @@ def main() -> None:
     assert report["metrics"]["identity"]["id_switches"] == 0
     assert isolation["status"] == "verified", isolation
     assert isolation["future_frame_isolation"] is True
+    assert isolation["image_identity_verified"] is True
     assert isolation["network_mode"] == "none"
     assert isolation["mounts"] == [
         {"source": isolation["mounts"][0]["source"], "destination": "/run/cvbench"}
@@ -28,8 +29,13 @@ def main() -> None:
     }
     assert report["resources"]["sample_count"] > 0
     assert report["resources"]["peak_process_count"] >= 1
-    resolved = report["provenance"]["resolved_container_image"]
-    assert resolved and "sha256:" in resolved
+    identity = isolation["image_identity"]
+    assert identity["configured_reference"] != identity["resolved_reference"]
+    assert identity["resolved_reference"] == report["provenance"]["resolved_container_image"]
+    assert identity["resolved_image_id"] == report["provenance"]["resolved_container_image_id"]
+    assert identity["executed_image_id"] == report["provenance"]["executed_container_image_id"]
+    assert identity["executed_image_id"] == identity["resolved_image_id"]
+    assert identity["executed_reference"] == identity["resolved_reference"]
 
 
 if __name__ == "__main__":

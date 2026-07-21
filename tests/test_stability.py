@@ -4,6 +4,8 @@ from cvbench.stability import evaluate_long_run_assertions
 def test_all_long_run_release_assertions_are_explicit_and_passed() -> None:
     observations = {
         "unique_track_ids": 42,
+        "distinct_physical_target_births": 42,
+        "track_id_reuse_events": 0,
         "track_id_exhaustion_detected": False,
         "state_contamination_events": 0,
         "false_positive_accumulation_per_camera_minute": -0.5,
@@ -12,6 +14,8 @@ def test_all_long_run_release_assertions_are_explicit_and_passed() -> None:
     }
     declared = {
         "max_unique_track_ids": 100,
+        "min_distinct_physical_target_births": 40,
+        "max_track_id_reuse_events": 0,
         "require_no_track_id_exhaustion": True,
         "max_state_contamination_events": 0,
         "max_false_positive_accumulation_per_camera_minute": 0,

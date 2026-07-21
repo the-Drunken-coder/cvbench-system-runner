@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import statistics
 from collections import Counter, defaultdict
@@ -10,6 +9,95 @@ from typing import Any
 from .config import Thresholds
 from .matching import bbox_iou, center_error, match_records_by_support
 from .model import CollectedRecord, Match
+
+
+def _track_id_lifecycle(
+    outputs: list[dict[str, Any]], observed_matches: list[Match]
+) -> dict[str, Any]:
+    assignments = {
+        id(match.output): match
+        for match in observed_matches
+        if match.output.get("event") in {"track_started", "track_update"}
+        and match.output.get("state") != "lost"
+    }
+    events: list[dict[str, Any]] = []
+    for record in outputs:
+        track_id = record.get("track_id")
+        if not track_id:
+            continue
+        terminal = record.get("event") == "track_ended" or record.get("state") == "lost"
+        if terminal:
+            events.append(
+                {
+                    "kind": "terminal",
+                    "sequence_id": record["sequence_id"],
+                    "source_timestamp_ns": record["source_timestamp_ns"],
+                    "track_id": str(track_id),
+                    "target_id": None,
+                }
+            )
+        match = assignments.get(id(record))
+        if match is not None:
+            events.append(
+                {
+                    "kind": "assignment",
+                    "sequence_id": match.sequence_id,
+                    "source_timestamp_ns": match.source_timestamp_ns,
+                    "track_id": match.track_id,
+                    "target_id": match.target_id,
+                }
+            )
+    events.sort(
+        key=lambda event: (
+            event["sequence_id"],
+            event["source_timestamp_ns"],
+            0 if event["kind"] == "terminal" else 1,
+            event["track_id"],
+            event["target_id"] or "",
+        )
+    )
+    assigned_target: dict[tuple[str, str], str] = {}
+    active: dict[tuple[str, str], bool] = {}
+    last_assignment_timestamp: dict[tuple[str, str], int] = {}
+    physical_births: set[tuple[str, str]] = set()
+    evidence: list[dict[str, Any]] = []
+    for event in events:
+        key = (event["sequence_id"], event["track_id"])
+        if event["kind"] == "terminal":
+            active[key] = False
+            continue
+        target_id = event["target_id"]
+        assert isinstance(target_id, str)
+        physical_births.add((event["sequence_id"], target_id))
+        previous_target = assigned_target.get(key)
+        if previous_target is not None and previous_target != target_id:
+            reuse_kind = "active_target_alias" if active.get(key, False) else "reuse_after_terminal"
+            evidence.append(
+                {
+                    "kind": reuse_kind,
+                    "sequence_id": event["sequence_id"],
+                    "track_id": event["track_id"],
+                    "previous_target_id": previous_target,
+                    "new_target_id": target_id,
+                    "previous_assignment_timestamp_ns": last_assignment_timestamp[key],
+                    "reuse_timestamp_ns": event["source_timestamp_ns"],
+                }
+            )
+        if previous_target != target_id:
+            assigned_target[key] = target_id
+        last_assignment_timestamp[key] = event["source_timestamp_ns"]
+        active[key] = True
+    ended_reuse = sum(event["kind"] == "reuse_after_terminal" for event in evidence)
+    active_alias = sum(event["kind"] == "active_target_alias" for event in evidence)
+    return {
+        "unique_track_ids": len(assigned_target),
+        "distinct_physical_target_births": len(physical_births),
+        "track_id_reuse_detected": bool(evidence),
+        "track_id_reuse_events": len(evidence),
+        "ended_track_id_reuse_events": ended_reuse,
+        "active_track_id_alias_events": active_alias,
+        "track_id_reuse_evidence": evidence,
+    }
 
 
 def percentile(values: Iterable[float], p: float) -> float | None:
@@ -644,12 +732,7 @@ def calculate_metrics(
     for record in track_records:
         sequences_by_track[str(record["track_id"])].add(str(record["sequence_id"]))
     contaminated_ids = sorted(track_id for track_id, sequences in sequences_by_track.items() if len(sequences) > 1)
-    output_text = " ".join(
-        json.dumps(record, sort_keys=True).lower() for record in outputs if record.get("event") == "system_error"
-    )
-    id_exhaustion_detected = "id" in output_text and any(
-        word in output_text for word in ("exhaust", "overflow", "wraparound", "wrap-around")
-    )
+    lifecycle = _track_id_lifecycle(outputs, observed_matches)
     sequence_order = list(dict.fromkeys(row["sequence_id"] for row in ground_truth))
     midpoint = max(1, len(sequence_order) // 2)
     first_sequences, second_sequences = set(sequence_order[:midpoint]), set(sequence_order[midpoint:])
@@ -667,8 +750,8 @@ def calculate_metrics(
         else None
     )
     long_running_stability = {
-        "unique_track_ids": len(sequences_by_track),
-        "track_id_exhaustion_detected": id_exhaustion_detected,
+        **lifecycle,
+        "track_id_exhaustion_detected": lifecycle["track_id_reuse_detected"],
         "state_contamination_events": len(contaminated_ids),
         "state_contaminated_track_ids": contaminated_ids,
         "false_positive_rate_first_half_per_camera_minute": first_false_rate,

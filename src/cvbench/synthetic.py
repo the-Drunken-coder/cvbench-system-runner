@@ -146,7 +146,7 @@ def _occlusion_gap_rows(family: str, index: int, gap_ms: int) -> list[list[dict[
     for frame_index in range(hidden_frames + 5):
         timestamp = frame_index * 50_000_000
         hidden = 2 <= frame_index < hidden_frames + 2
-        left = 20 + min(frame_index, 35) * 2
+        left = 20 + frame_index * 2
         rows_by_frame.append(
             [
                 _target(
@@ -163,6 +163,57 @@ def _occlusion_gap_rows(family: str, index: int, gap_ms: int) -> list[list[dict[
                 )
             ]
         )
+    return rows_by_frame
+
+
+def _track_id_churn_rows(family: str, index: int) -> list[list[dict[str, Any]]]:
+    sequence = f"synthetic_{index:02d}_{family}"
+    unused = [(5 + column * 19, 5 + row * 18) for row in range(6) for column in range(8)]
+    births: list[tuple[int, tuple[int, int]]] = []
+    rows_by_frame: list[list[dict[str, Any]]] = []
+    while unused:
+        frame_index = len(rows_by_frame)
+
+        def eligible(point: tuple[int, int], current_frame: int = frame_index) -> bool:
+            for prior_frame, prior in births:
+                threshold = 45 if current_frame - prior_frame <= 6 else 12
+                if (point[0] - prior[0]) ** 2 + (point[1] - prior[1]) ** 2 <= threshold**2:
+                    return False
+            return True
+
+        candidates = [point for point in unused if eligible(point)]
+        if not candidates:
+            rows_by_frame.append([])
+            continue
+        point = max(
+            candidates,
+            key=lambda candidate: (
+                min(
+                    (
+                        (candidate[0] - prior[0]) ** 2 + (candidate[1] - prior[1]) ** 2
+                        for _, prior in births[-6:]
+                    ),
+                    default=0,
+                ),
+                candidate,
+            ),
+        )
+        birth = len(births)
+        x, y = point
+        rows_by_frame.append(
+            [
+                _target(
+                    f"gt_churn_{birth:02d}",
+                    sequence,
+                    frame_index * STEP_NS,
+                    [x, y, x + 10, y + 12],
+                    entry_event=True,
+                    exit_event=True,
+                )
+            ]
+        )
+        births.append((frame_index, point))
+        unused.remove(point)
     return rows_by_frame
 
 
@@ -183,6 +234,7 @@ def generate_synthetic_pack(output: str | Path) -> list[Path]:
         "occlusion_gap_500ms",
         "occlusion_gap_1000ms",
         "occlusion_gap_2000ms",
+        "track_id_churn",
     ]
     for index, family in enumerate(families, 1):
         scenario_root = root / family
@@ -193,6 +245,10 @@ def generate_synthetic_pack(output: str | Path) -> list[Path]:
             rows_by_frame = _occlusion_gap_rows(family, index, gap_ms)
             faults: list[dict[str, Any]] = []
             step_ns = 50_000_000
+        elif family == "track_id_churn":
+            rows_by_frame = _track_id_churn_rows(family, index)
+            faults = []
+            step_ns = STEP_NS
         else:
             rows_by_frame, faults = _scenario_rows(family, index)
             step_ns = STEP_NS
@@ -246,7 +302,7 @@ def generate_synthetic_pack(output: str | Path) -> list[Path]:
     (root / "README.md").write_text(
         "# Synthetic Version 1 scenario pack\n\n"
         "These CC0 deterministic images cover acquisition, visible retention, exact occlusion-gap "
-        "sweeps, 1/2/4/8-target identity and load, false detections, and resource stress. Regenerate "
-        "them with `cvbench scenarios generate scenarios/synthetic-v1`.\n"
+        "sweeps, 1/2/4/8-target identity and load, 48 distinct track births, false detections, and "
+        "resource stress. Regenerate them with `cvbench scenarios generate scenarios/synthetic-v1`.\n"
     )
     return manifests

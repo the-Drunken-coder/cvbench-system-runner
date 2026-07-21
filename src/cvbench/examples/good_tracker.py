@@ -110,16 +110,18 @@ def main() -> int:
                 center = _center(box)
                 candidates = sorted(
                     (
-                        (
-                            (track.center[0] + track.velocity[0] - center[0]) ** 2
-                            + (track.center[1] + track.velocity[1] - center[1]) ** 2,
-                            identifier,
-                        )
-                        for identifier, track in tracks.items()
-                        if identifier in available
+                        distance,
+                        identifier,
                     )
+                    for identifier, track in tracks.items()
+                    if identifier in available
+                    and (
+                        distance := (track.center[0] + track.velocity[0] - center[0]) ** 2
+                        + (track.center[1] + track.velocity[1] - center[1]) ** 2
+                    )
+                    <= (12 if track.ended else 45) ** 2
                 )
-                if candidates and candidates[0][0] <= 45**2:
+                if candidates:
                     identifier = candidates[0][1]
                     available.remove(identifier)
                 else:

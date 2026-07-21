@@ -16,6 +16,7 @@ thresholds:
 # which exercises cleanup, ID growth, state contamination, drift, and recovery.
 scenarios:
   - ../scenarios/synthetic-v1/resource_stress/scenario.yaml
+  - ../scenarios/synthetic-v1/track_id_churn/scenario.yaml
   - ../scenarios/synthetic-v1/occlusion_reacquisition/scenario.yaml
   - ../scenarios/synthetic-v1/false_detection/scenario.yaml
   - ../scenarios/synthetic-v1/resource_stress/scenario.yaml
@@ -38,6 +39,8 @@ reporting:
 
 long_run_assertions:
   max_unique_track_ids: 10000
+  min_distinct_physical_target_births: 40
+  max_track_id_reuse_events: 0
   require_no_track_id_exhaustion: true
   max_state_contamination_events: 0
   max_false_positive_accumulation_per_camera_minute: 0

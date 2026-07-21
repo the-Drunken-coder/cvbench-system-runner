@@ -23,9 +23,16 @@ class StartedRuntime:
     command: list[str]
     isolation: dict[str, object]
     process_group_id: int | None = None
+    resolved_image_id: str | None = None
 
 
-def _resolve_image(image: str) -> str:
+@dataclass(frozen=True)
+class ResolvedImage:
+    reference: str
+    image_id: str
+
+
+def _resolve_image(image: str) -> ResolvedImage:
     if not shutil.which("docker"):
         raise RuntimeFailure("Docker runtime requested, but docker is not installed")
     result = subprocess.run(
@@ -38,13 +45,13 @@ def _resolve_image(image: str) -> str:
     if result.returncode:
         raise RuntimeFailure(f"Docker image is unavailable: {image}: {result.stderr.strip()}")
     digests, _, image_id = result.stdout.strip().partition("|")
+    if not image_id.startswith("sha256:"):
+        raise RuntimeFailure(f"could not resolve an immutable image ID for Docker image {image}")
     if digests not in {"", "null", "[]"}:
         values = json.loads(digests)
         if values:
-            return str(values[0])
-    if image_id.startswith("sha256:"):
-        return image_id
-    raise RuntimeFailure(f"could not resolve an immutable digest for Docker image {image}")
+            return ResolvedImage(str(values[0]), image_id)
+    return ResolvedImage(image_id, image_id)
 
 
 def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> StartedRuntime:
@@ -53,12 +60,15 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
     environment["CVBENCH_INPUT_SOCKET"] = str(socket_dir / "input.sock")
     cidfile: Path | None = None
     resolved_image: str | None = None
+    resolved_image_id: str | None = None
     if config.runtime_type == "local":
         command = [sys.executable if value == "{python}" else value for value in config.command]
         cwd = config.path.parent.parent
     else:
         assert config.image is not None
-        resolved_image = _resolve_image(config.image)
+        resolution = _resolve_image(config.image)
+        resolved_image = resolution.reference
+        resolved_image_id = resolution.image_id
         cidfile = run_dir / "container.cid"
         command = [
             "docker",
@@ -81,7 +91,7 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
             command.extend(["--memory", f"{memory_limit}m"])
         for key, value in sorted(config.environment.items()):
             command.extend(["--env", f"{key}={value}"])
-        command.extend([config.image, *config.command])
+        command.extend([resolved_image, *config.command])
         cwd = config.path.parent.parent
     try:
         process = subprocess.Popen(
@@ -105,6 +115,13 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
         },
         "status": "not_enforced_local" if config.runtime_type == "local" else "pending_verification",
         "future_frame_isolation": config.runtime_type == "docker",
+        "image_identity": {
+            "configured_reference": config.image,
+            "resolved_reference": resolved_image,
+            "resolved_image_id": resolved_image_id,
+            "executed_reference": None,
+            "executed_image_id": None,
+        },
     }
     return StartedRuntime(
         process,
@@ -113,6 +130,7 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
         command,
         isolation,
         process.pid if config.runtime_type == "local" else None,
+        resolved_image_id,
     )
 
 
@@ -177,6 +195,19 @@ def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: 
     expected_memory = requested.get("memory_limit_mb")
     cpu_applied = host.get("NanoCpus", 0) / 1_000_000_000 if host.get("NanoCpus") else None
     memory_applied = host.get("Memory", 0) / (1024 * 1024) if host.get("Memory") else None
+    executed_image_id = inspected.get("Image")
+    executed_reference = inspected.get("Config", {}).get("Image")
+    image_identity = runtime.isolation["image_identity"]
+    assert isinstance(image_identity, dict)
+    image_identity.update(
+        {
+            "executed_reference": executed_reference,
+            "executed_image_id": executed_image_id,
+        }
+    )
+    identity_ok = (
+        executed_image_id == runtime.resolved_image_id and executed_reference == runtime.resolved_image
+    )
     mount_ok = (
         len(mount_pairs) == 1
         and Path(str(mount_pairs[0]["source"])).resolve() == socket_dir.resolve()
@@ -188,12 +219,15 @@ def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: 
     )
     runtime.isolation.update(
         {
-            "status": "verified" if mount_ok and network_ok and limits_ok else "verification_failed",
+            "status": "verified"
+            if mount_ok and network_ok and limits_ok and identity_ok
+            else "verification_failed",
             "container_id": container_id,
             "mounts": mount_pairs,
             "network_mode": host.get("NetworkMode"),
             "applied": {"cpu_limit": cpu_applied, "memory_limit_mb": memory_applied},
             "future_frame_isolation": mount_ok and network_ok,
+            "image_identity_verified": identity_ok,
         }
     )
     return runtime.isolation

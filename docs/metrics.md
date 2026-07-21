@@ -15,6 +15,10 @@ The report keeps categories separate:
 - Resources: CPU, time, RAM, disk, network where available, process/thread count, GPU/VRAM where NVIDIA tooling exists, and memory growth.
 - Long-running stability: track-ID cardinality/exhaustion signals, cross-stream state contamination, first/second-half false-positive rate, interruption recovery, latency drift, memory growth, and declared assertion results.
 
+## Track-ID lifecycle
+
+Within one sequence, a Version 1 track ID is permanently bound to its first deterministically matched physical target. Repeated observations and reacquisition of that same target remain legitimate, including after a `track_ended` or `lost` event. Assigning the ID to a different physical target is a reuse event: it is reported as `reuse_after_terminal` when the prior lifecycle was closed, or `active_target_alias` when the prior lifecycle was still active. Track-ID exhaustion is derived from these matched lifecycle violations rather than SUT diagnostic wording.
+
 No overall score is computed. Baseline comparison labels improvement, regression, unchanged, or inconclusive and exposes sample count/confidence.
 
 ## Time semantics
