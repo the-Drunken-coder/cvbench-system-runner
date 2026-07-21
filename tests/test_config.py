@@ -108,6 +108,55 @@ def test_output_limits_are_positive_integers(tmp_path: Path, key: str, value: An
         load_benchmark(path)
 
 
+@pytest.mark.parametrize("section", ["input", "thresholds", "reporting", "resources", "long_run_assertions"])
+@pytest.mark.parametrize("value", [[], "invalid", None, True])
+def test_benchmark_mapping_sections_reject_non_objects(tmp_path: Path, section: str, value: Any) -> None:
+    path = _benchmark_file(tmp_path, lambda data: data.__setitem__(section, value))
+    with pytest.raises(ConfigurationError, match=rf"^{section} must be an object$"):
+        load_benchmark(path)
+
+
+@pytest.mark.parametrize("section", ["runtime", "readiness", "shutdown", "resources"])
+@pytest.mark.parametrize("value", [[], "invalid", None, True])
+def test_system_mapping_sections_reject_non_objects(tmp_path: Path, section: str, value: Any) -> None:
+    path = _system_file(tmp_path, lambda data: data.__setitem__(section, value))
+    with pytest.raises(ConfigurationError, match=rf"^{section} must be an object$"):
+        load_system(path)
+
+
+@pytest.mark.parametrize("value", [[], "invalid", None, True])
+def test_runtime_environment_rejects_non_objects(tmp_path: Path, value: Any) -> None:
+    path = _system_file(tmp_path, lambda data: data["runtime"].__setitem__("environment", value))
+    with pytest.raises(ConfigurationError, match=r"^runtime\.environment must be an object$"):
+        load_system(path)
+
+
+def test_optional_mapping_sections_accept_omitted_defaults(tmp_path: Path) -> None:
+    def omit_benchmark_sections(data: dict[str, Any]) -> None:
+        for section in ("thresholds", "reporting", "resources", "long_run_assertions"):
+            data.pop(section, None)
+
+    benchmark = load_benchmark(_benchmark_file(tmp_path, omit_benchmark_sections))
+    assert benchmark.reporting == {
+        "generate_json": True,
+        "generate_html": True,
+        "generate_failure_packets": True,
+    }
+    assert benchmark.resources == {}
+    assert benchmark.long_run_assertions == {}
+
+    def omit_system_sections(data: dict[str, Any]) -> None:
+        data["runtime"].pop("environment", None)
+        for section in ("readiness", "shutdown", "resources"):
+            data.pop(section, None)
+
+    system = load_system(_system_file(tmp_path, omit_system_sections))
+    assert system.environment == {}
+    assert system.resources == {}
+    assert system.readiness_pattern == "CVBENCH_READY"
+    assert system.grace_period_seconds == 10
+
+
 @pytest.mark.parametrize("section,key", [("readiness", "timeout_seconds"), ("shutdown", "grace_period_seconds")])
 @pytest.mark.parametrize("value", ["1", float("nan"), float("inf"), -1])
 def test_system_durations_are_typed_finite_and_nonnegative(

@@ -75,6 +75,13 @@ def _require(data: dict[str, Any], key: str, kind: type) -> Any:
     return value
 
 
+def _mapping(data: dict[str, Any], key: str, *, name: str | None = None) -> dict[str, Any]:
+    value = data.get(key, {})
+    if not isinstance(value, dict):
+        raise ConfigurationError(f"{name or key} must be an object")
+    return value
+
+
 def _boolean(value: Any, name: str) -> bool:
     if not isinstance(value, bool):
         raise ConfigurationError(f"{name} must be boolean")
@@ -116,13 +123,13 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
     data = _load_yaml(path)
     if data.get("schema_version") != "cvbench.benchmark/v1":
         raise ConfigurationError("benchmark schema_version must be cvbench.benchmark/v1")
-    input_config = data.get("input", {})
+    input_config = _mapping(data, "input")
     if input_config.get("mode") not in {"online_replay", "offline_debug"}:
         raise ConfigurationError("input.mode must be online_replay or offline_debug")
     if input_config.get("protocol") != "frame_socket_v1":
         raise ConfigurationError("Version 1 input.protocol must be frame_socket_v1")
     playback_rate = _number(input_config.get("playback_rate", 1.0), "input.playback_rate", positive=True)
-    raw_thresholds = data.get("thresholds", {})
+    raw_thresholds = _mapping(data, "thresholds")
     out_of_bounds = raw_thresholds.get("out_of_bounds", "reject")
     if out_of_bounds not in {"reject", "clip"}:
         raise ConfigurationError("thresholds.out_of_bounds must be reject or clip")
@@ -179,8 +186,8 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
         if not isinstance(raw_path, str):
             raise ConfigurationError("each scenario must provide a path")
         scenarios.append((path.parent / raw_path).resolve())
-    reporting = data.get("reporting", {})
-    resources = data.get("resources", {})
+    reporting = _mapping(data, "reporting")
+    resources = _mapping(data, "resources")
     baseline = data.get("baseline_report")
     max_output_records = _integer(data.get("max_output_records", 100_000), "max_output_records", minimum=1)
     max_output_line_bytes = _integer(
@@ -192,9 +199,7 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
     max_output_records_per_second = _integer(
         data.get("max_output_records_per_second", 10_000), "max_output_records_per_second", minimum=1
     )
-    long_run_assertions = data.get("long_run_assertions", {})
-    if not isinstance(long_run_assertions, dict):
-        raise ConfigurationError("long_run_assertions must be an object")
+    long_run_assertions = _mapping(data, "long_run_assertions")
     return BenchmarkConfig(
         path=path,
         id=_require(data, "id", str),
@@ -226,7 +231,7 @@ def load_system(path: str | Path) -> SystemConfig:
     data = _load_yaml(path)
     if data.get("schema_version") != "cvbench.system/v1":
         raise ConfigurationError("system schema_version must be cvbench.system/v1")
-    runtime = data.get("runtime", {})
+    runtime = _mapping(data, "runtime")
     runtime_type = runtime.get("type")
     if runtime_type not in {"local", "docker"}:
         raise ConfigurationError("runtime.type must be local or docker")
@@ -236,18 +241,19 @@ def load_system(path: str | Path) -> SystemConfig:
     image = runtime.get("image")
     if runtime_type == "docker" and not isinstance(image, str):
         raise ConfigurationError("Docker runtime requires an image")
-    environment = runtime.get("environment", {})
-    if not isinstance(environment, dict) or not all(
+    environment = _mapping(runtime, "environment", name="runtime.environment")
+    if not all(
         isinstance(k, str) and isinstance(v, (str, int, float, bool)) for k, v in environment.items()
     ):
         raise ConfigurationError("runtime.environment must contain scalar values")
-    readiness = data.get("readiness", {})
+    readiness = _mapping(data, "readiness")
     if readiness.get("type", "stdout_pattern") != "stdout_pattern":
         raise ConfigurationError("Version 1 readiness.type must be stdout_pattern")
     pattern = readiness.get("pattern", "CVBENCH_READY")
     if not isinstance(pattern, str) or not pattern:
         raise ConfigurationError("readiness.pattern must be a non-empty string")
-    shutdown = data.get("shutdown", {})
+    shutdown = _mapping(data, "shutdown")
+    resources = _mapping(data, "resources")
     return SystemConfig(
         path=path,
         id=_require(data, "id", str),
@@ -263,5 +269,5 @@ def load_system(path: str | Path) -> SystemConfig:
         grace_period_seconds=_number(
             shutdown.get("grace_period_seconds", 10), "shutdown.grace_period_seconds", minimum=0
         ),
-        resources=data.get("resources", {}),
+        resources=resources,
     )
