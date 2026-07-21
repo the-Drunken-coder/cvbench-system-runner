@@ -11,6 +11,13 @@ import yaml
 WIDTH = 160
 HEIGHT = 120
 STEP_NS = 100_000_000
+CHURN_RECENT_FRAME_WINDOW = 6
+CHURN_RECENT_RADIUS = 45
+CHURN_DORMANT_RADIUS = 12
+CHURN_COLUMNS = 8
+CHURN_ROWS = 6
+CHURN_X_SPACING = 19
+CHURN_Y_SPACING = 18
 
 
 def _target(
@@ -168,7 +175,11 @@ def _occlusion_gap_rows(family: str, index: int, gap_ms: int) -> list[list[dict[
 
 def _track_id_churn_rows(family: str, index: int) -> list[list[dict[str, Any]]]:
     sequence = f"synthetic_{index:02d}_{family}"
-    unused = [(5 + column * 19, 5 + row * 18) for row in range(6) for column in range(8)]
+    unused = [
+        (5 + column * CHURN_X_SPACING, 5 + row * CHURN_Y_SPACING)
+        for row in range(CHURN_ROWS)
+        for column in range(CHURN_COLUMNS)
+    ]
     births: list[tuple[int, tuple[int, int]]] = []
     rows_by_frame: list[list[dict[str, Any]]] = []
     while unused:
@@ -176,7 +187,11 @@ def _track_id_churn_rows(family: str, index: int) -> list[list[dict[str, Any]]]:
 
         def eligible(point: tuple[int, int], current_frame: int = frame_index) -> bool:
             for prior_frame, prior in births:
-                threshold = 45 if current_frame - prior_frame <= 6 else 12
+                threshold = (
+                    CHURN_RECENT_RADIUS
+                    if current_frame - prior_frame <= CHURN_RECENT_FRAME_WINDOW
+                    else CHURN_DORMANT_RADIUS
+                )
                 if (point[0] - prior[0]) ** 2 + (point[1] - prior[1]) ** 2 <= threshold**2:
                     return False
             return True
@@ -191,7 +206,7 @@ def _track_id_churn_rows(family: str, index: int) -> list[list[dict[str, Any]]]:
                 min(
                     (
                         (candidate[0] - prior[0]) ** 2 + (candidate[1] - prior[1]) ** 2
-                        for _, prior in births[-6:]
+                        for _, prior in births[-CHURN_RECENT_FRAME_WINDOW:]
                     ),
                     default=0,
                 ),

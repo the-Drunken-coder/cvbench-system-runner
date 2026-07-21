@@ -3,7 +3,7 @@
   "$id": "https://cvbench.dev/schemas/ground-truth-v1.schema.json",
   "title": "CVBench ground truth v1",
   "type": "object",
-  "required": ["target_id", "sequence_id", "source_timestamp_ns", "on_screen", "eligible_for_detection", "visibility_fraction", "occlusion", "class_id", "bbox_xyxy"],
+  "required": ["target_id", "sequence_id", "source_timestamp_ns", "on_screen", "eligible_for_detection", "visibility_fraction", "occlusion", "class_id"],
   "properties": {
     "target_id": {"type": "string"},
     "sequence_id": {"type": "string"},
@@ -19,5 +19,12 @@
     "vision_loss_interval": {"type": "boolean"},
     "reappearance_event": {"type": "boolean"}
   },
+  "allOf": [{
+    "if": {
+      "required": ["on_screen"],
+      "properties": {"on_screen": {"const": true}}
+    },
+    "then": {"required": ["bbox_xyxy"]}
+  }],
   "additionalProperties": true
 }

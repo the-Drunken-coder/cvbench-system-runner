@@ -30,6 +30,10 @@ def test_docker_command_mounts_only_socket_and_disables_network(tmp_path: Path) 
     assert config.image not in command
     assert runtime.resolved_image_id == "sha256:image-id"
     assert runtime.isolation["status"] == "pending_verification"
+    assert runtime.isolation["expected_mount"] == {
+        "source": str(socket_dir.resolve()),
+        "destination": "/run/cvbench",
+    }
 
 
 def test_docker_inspection_distinguishes_applied_limits(tmp_path: Path) -> None:
@@ -46,6 +50,7 @@ def test_docker_inspection_distinguishes_applied_limits(tmp_path: Path) -> None:
             "requested": {"cpu_limit": 4, "memory_limit_mb": 2048, "network_access": False},
             "status": "pending_verification",
             "future_frame_isolation": True,
+            "expected_mount": {"source": str(tmp_path / "socket"), "destination": "/run/cvbench"},
             "image_identity": {
                 "configured_reference": "good:latest",
                 "resolved_reference": "sha256:image",
@@ -79,11 +84,20 @@ def test_docker_inspection_distinguishes_applied_limits(tmp_path: Path) -> None:
     assert evidence["status"] == "verification_failed"
     assert evidence["image_identity_verified"] is False
 
+    inspected[0]["Image"] = "sha256:image-id"
+    inspected[0]["Mounts"][0]["Source"] = str(tmp_path / "wrong-socket")
+    wrong_mount = MagicMock(returncode=0, stdout=json.dumps(inspected), stderr="")
+    with patch("cvbench.runtime.subprocess.run", return_value=wrong_mount):
+        evidence = verify_docker_isolation(runtime, tmp_path / "socket")
+    assert evidence["status"] == "verification_failed"
+    assert evidence["future_frame_isolation"] is False
+
 
 def test_example_image_does_not_copy_scenarios_or_workspace() -> None:
     dockerfile = (ROOT / "examples/Dockerfile.good").read_text()
     dockerignore = (ROOT / ".dockerignore").read_text()
     assert "COPY ." not in dockerfile
     assert "scenarios" not in dockerfile
+    assert "USER cvbench" in dockerfile
     assert dockerignore.splitlines()[0] == "*"
     assert "!src/**" in dockerignore

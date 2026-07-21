@@ -115,6 +115,11 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
         },
         "status": "not_enforced_local" if config.runtime_type == "local" else "pending_verification",
         "future_frame_isolation": config.runtime_type == "docker",
+        "expected_mount": (
+            {"source": str(socket_dir), "destination": "/run/cvbench"}
+            if config.runtime_type == "docker"
+            else None
+        ),
         "image_identity": {
             "configured_reference": config.image,
             "resolved_reference": resolved_image,
@@ -208,11 +213,13 @@ def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: 
     identity_ok = (
         executed_image_id == runtime.resolved_image_id and executed_reference == runtime.resolved_image
     )
-    mount_ok = (
-        len(mount_pairs) == 1
-        and Path(str(mount_pairs[0]["source"])).resolve() == socket_dir.resolve()
-        and mount_pairs[0]["destination"] == "/run/cvbench"
+    expected_mount = runtime.isolation.get("expected_mount")
+    expected_mount_ok = (
+        isinstance(expected_mount, dict)
+        and expected_mount.get("destination") == "/run/cvbench"
+        and Path(str(expected_mount.get("source"))).resolve() == socket_dir.resolve()
     )
+    mount_ok = expected_mount_ok and mount_pairs == [expected_mount]
     network_ok = host.get("NetworkMode") == "none"
     limits_ok = (expected_cpu is None or float(expected_cpu) == cpu_applied) and (
         expected_memory is None or float(expected_memory) == memory_applied

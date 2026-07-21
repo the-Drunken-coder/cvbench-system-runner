@@ -53,6 +53,14 @@ def test_timestamp_must_be_non_negative_integer() -> None:
         validate_track_record(record)
 
 
+@pytest.mark.parametrize("field", ["sequence_id", "track_id"])
+def test_track_identifiers_must_be_non_empty(field: str) -> None:
+    record = output(123).system_record
+    record[field] = ""
+    with pytest.raises(ProtocolError):
+        validate_track_record(record)
+
+
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
 def test_non_finite_json_numbers_are_rejected(value: float) -> None:
     record = output(123).system_record

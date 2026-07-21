@@ -13,7 +13,7 @@ The report keeps categories separate:
 - Robustness: controlled loss intervals, correct and same-ID reacquisition, gap duration, and latency.
 - Latency: externally measured first and per-update values, percentiles, deadline misses, count groups, and time series.
 - Resources: CPU, time, RAM, disk, network where available, process/thread count, GPU/VRAM where NVIDIA tooling exists, and memory growth.
-- Long-running stability: track-ID cardinality/exhaustion signals, cross-stream state contamination, first/second-half false-positive rate, interruption recovery, latency drift, memory growth, and declared assertion results.
+- Long-running stability: track-ID cardinality/exhaustion signals, cross-stream state contamination, first/second-half false-positive rate, interruption recovery, latency drift, memory growth, and declared assertion results. Assertions with unavailable evidence report `evaluated: false` and `passed: null`; they are never coerced to zero or counted as failures.
 
 ## Track-ID lifecycle
 

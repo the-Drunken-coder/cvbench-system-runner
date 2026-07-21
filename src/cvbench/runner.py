@@ -263,6 +263,8 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         server.bind(str(socket_path))
+        socket_dir.chmod(0o755)
+        socket_path.chmod(0o777)
         server.listen(1)
         server.settimeout(system.readiness_timeout_seconds)
     except OSError:

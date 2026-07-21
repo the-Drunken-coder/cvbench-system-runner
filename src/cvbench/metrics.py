@@ -169,6 +169,9 @@ def calculate_metrics(
     fault_events = fault_events or {}
     outputs = [item.system_record for item in collected]
     observed_matches, matches, unmatched = match_records_by_support(ground_truth, outputs, thresholds)
+    ground_truth_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for gt in ground_truth:
+        ground_truth_by_frame[(gt["sequence_id"], gt["source_timestamp_ns"])].append(gt)
     match_by_target_frame = {
         (match.sequence_id, match.source_timestamp_ns, match.target_id): match for match in matches
     }
@@ -360,12 +363,11 @@ def calculate_metrics(
     for output in unmatched:
         if output.get("event") not in {"track_started", "track_update"}:
             continue
-        for gt in ground_truth:
+        frame_key = (output["sequence_id"], output["source_timestamp_ns"])
+        for gt in ground_truth_by_frame.get(frame_key, []):
             if (
                 gt.get("on_screen")
                 and gt.get("bbox_xyxy")
-                and (gt["sequence_id"], gt["source_timestamp_ns"])
-                == (output["sequence_id"], output["source_timestamp_ns"])
                 and center_error(gt["bbox_xyxy"], output["geometry"]["value"]) <= thresholds.max_match_center_error_px
             ):
                 frame_key = (gt["sequence_id"], gt["source_timestamp_ns"], gt["target_id"])
@@ -386,12 +388,12 @@ def calculate_metrics(
     for output in outputs:
         if output.get("event") not in {"track_started", "track_update"}:
             continue
+        frame_key = (output["sequence_id"], output["source_timestamp_ns"])
         overlapping_targets = sum(
             gt.get("on_screen")
             and gt.get("bbox_xyxy") is not None
-            and (gt["sequence_id"], gt["source_timestamp_ns"]) == (output["sequence_id"], output["source_timestamp_ns"])
             and bbox_iou(gt["bbox_xyxy"], output["geometry"]["value"]) >= thresholds.minimum_match_iou
-            for gt in ground_truth
+            for gt in ground_truth_by_frame.get(frame_key, [])
         )
         if overlapping_targets > 1:
             merges += 1
@@ -553,13 +555,17 @@ def calculate_metrics(
         else None,
     }
 
-    receive_lookup = {id(item.system_record): item.collector_received_timestamp_ns for item in collected}
-    latency_ms = [
-        (receive_lookup[id(item.system_record)] - item.system_record["source_timestamp_ns"]) / 1_000_000
+    timed_outputs = [
+        (
+            item,
+            (item.collector_received_timestamp_ns - item.system_record["source_timestamp_ns"]) / 1_000_000,
+        )
         for item in collected
         if item.system_record.get("event") in {"track_started", "track_update", "track_ended"}
-        and receive_lookup[id(item.system_record)] >= item.system_record["source_timestamp_ns"]
+        and item.collector_received_timestamp_ns >= item.system_record["source_timestamp_ns"]
     ]
+    latency_ms = [value for _item, value in timed_outputs]
+    latency_lookup = {id(item.system_record): value for item, value in timed_outputs}
     latency = _summary(latency_ms)
     latency.update(
         {
@@ -568,17 +574,13 @@ def calculate_metrics(
             if latency_ms
             else None,
             "first_tentative_ms": min(
-                (
-                    (receive_lookup[id(item.system_record)] - item.system_record["source_timestamp_ns"]) / 1_000_000
-                    for item in collected
-                    if item.system_record.get("state") == "tentative"
-                ),
+                (value for item, value in timed_outputs if item.system_record.get("state") == "tentative"),
                 default=None,
             ),
             "first_confirmed_ms": min(
                 (
-                    (receive_lookup[id(item.system_record)] - item.system_record["source_timestamp_ns"]) / 1_000_000
-                    for item in collected
+                    value
+                    for item, value in timed_outputs
                     if item.system_record.get("state") in {"confirmed", "reacquired"}
                 ),
                 default=None,
@@ -618,7 +620,9 @@ def calculate_metrics(
         record = item.system_record
         if record.get("event") not in {"track_started", "track_update", "track_ended"}:
             continue
-        value = (item.collector_received_timestamp_ns - record["source_timestamp_ns"]) / 1_000_000
+        value = latency_lookup.get(id(record))
+        if value is None:
+            continue
         count = count_by_frame.get((record["sequence_id"], record["source_timestamp_ns"]), 0)
         group = "0" if count == 0 else ("1" if count == 1 else ("2" if count == 2 else ("4" if count <= 4 else "8+")))
         latency_by_count[group].append(value)

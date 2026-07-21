@@ -42,6 +42,7 @@ def load_scenario(path: str | Path) -> Scenario:
         frames.append(frame)
     if not frames:
         raise ConfigurationError(f"scenario {path} has no frames")
+    frame_keys = {(frame.sequence_id, frame.relative_timestamp_ns) for frame in frames}
     gt_path = root / data.get("ground_truth", "ground_truth.jsonl")
     ground_truth: list[dict[str, Any]] = []
     try:
@@ -51,6 +52,8 @@ def load_scenario(path: str | Path) -> Scenario:
             record = validate_ground_truth(json.loads(line))
             if record["sequence_id"] != data["sequence_id"]:
                 raise ProtocolError("ground truth sequence_id does not match scenario")
+            if (record["sequence_id"], record["source_timestamp_ns"]) not in frame_keys:
+                raise ProtocolError("ground truth timestamp does not match a scenario frame")
             ground_truth.append(record)
     except (OSError, json.JSONDecodeError, ProtocolError) as exc:
         raise ConfigurationError(f"invalid ground truth {gt_path}: {exc}") from exc

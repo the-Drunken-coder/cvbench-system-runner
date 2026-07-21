@@ -19,4 +19,5 @@ docker-build:
 	docker build -f examples/Dockerfile.good -t cvbench-example-good:v1 .
 
 docker-e2e: docker-build
-	cvbench run --benchmark benchmarks/persistent-target-tracking.yaml --system systems/example-good-docker.yaml --output runs/
+	cvbench run --benchmark benchmarks/persistent-target-tracking.yaml --system systems/example-good-docker.yaml --output docker-runs/
+	python scripts/assert_docker_report.py docker-runs/

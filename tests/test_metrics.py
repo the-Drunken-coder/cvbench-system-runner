@@ -123,6 +123,22 @@ def test_external_latency_uses_collector_timestamp() -> None:
     assert metrics["latency"]["maximum"] == 17
 
 
+def test_outputs_received_before_source_time_never_create_negative_latency() -> None:
+    records = [
+        output(1_000_000_000, state="tentative", received_offset_ns=-10_000_000),
+        output(1_100_000_000, state="confirmed", received_offset_ns=-5_000_000),
+        output(1_200_000_000, state="confirmed", received_offset_ns=7_000_000),
+    ]
+    metrics, _ = calculate_metrics(
+        [gt(1_000_000_000), gt(1_100_000_000), gt(1_200_000_000)], records, Thresholds()
+    )
+    assert metrics["latency"]["sample_count"] == 1
+    assert metrics["latency"]["first_tentative_ms"] is None
+    assert metrics["latency"]["first_confirmed_ms"] == 7
+    assert metrics["latency"]["by_target_count"]["1"]["sample_count"] == 1
+    assert all(value >= 0 for value in metrics["latency"]["over_time_ms"])
+
+
 def test_acceptance_fixture_exact_220_ms_acquisition_and_350_ms_dropout() -> None:
     timestamps = [
         1_000_000_000,

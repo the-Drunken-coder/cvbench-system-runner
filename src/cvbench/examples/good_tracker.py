@@ -46,6 +46,14 @@ def _center(box: list[float]) -> tuple[float, float]:
     return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
 
 
+def _clamp_box(box: list[float], width: int, height: int) -> list[float]:
+    left = min(max(0.0, box[0]), float(width - 1))
+    top = min(max(0.0, box[1]), float(height - 1))
+    right = min(max(left + 1.0, box[2]), float(width))
+    bottom = min(max(top + 1.0, box[3]), float(height))
+    return [left, top, right, bottom]
+
+
 def _emit(event: str, metadata: dict[str, Any], track: Track, state: str, support: str) -> None:
     print(
         json.dumps(
@@ -136,7 +144,7 @@ def main() -> int:
                 track.velocity = (new_center[0] - track.center[0], new_center[1] - track.center[1])
                 track.center = new_center
                 track.box = box
-                track.hits += 1 if track.identifier in matched else 0
+                track.hits += 1
                 state = "reacquired" if track.was_missing else ("confirmed" if track.hits >= 2 else "tentative")
                 event_name = "track_started" if track.hits <= 2 else "track_update"
                 track.misses = 0
@@ -149,12 +157,16 @@ def main() -> int:
                 track = tracks[identifier]
                 track.misses += 1
                 track.was_missing = True
-                track.box = [
-                    track.box[0] + track.velocity[0],
-                    track.box[1] + track.velocity[1],
-                    track.box[2] + track.velocity[0],
-                    track.box[3] + track.velocity[1],
-                ]
+                track.box = _clamp_box(
+                    [
+                        track.box[0] + track.velocity[0],
+                        track.box[1] + track.velocity[1],
+                        track.box[2] + track.velocity[0],
+                        track.box[3] + track.velocity[1],
+                    ],
+                    int(metadata["width"]),
+                    int(metadata["height"]),
+                )
                 track.center = _center(track.box)
                 if track.misses <= 5:
                     _emit("track_update", metadata, track, "coasting", "predicted")

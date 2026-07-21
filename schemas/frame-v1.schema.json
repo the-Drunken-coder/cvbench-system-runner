@@ -15,5 +15,11 @@
     "pixel_format": {"const": "rgb24"},
     "payload_encoding": {"const": "jpeg"}
   },
+  "allOf": [{
+    "if": {"properties": {"event": {"const": "frame"}}},
+    "then": {
+      "required": ["frame_index", "source_timestamp_ns", "width", "height", "pixel_format", "payload_encoding"]
+    }
+  }],
   "additionalProperties": true
 }

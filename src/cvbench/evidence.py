@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -82,9 +83,23 @@ def generate_evidence_packets(
     resources_csv: Path,
     reproduction_command: str,
 ) -> None:
-    for finding in findings:
-        if finding["severity"] not in {"high", "critical"}:
-            continue
+    packet_findings = [finding for finding in findings if finding["severity"] in {"high", "critical"}]
+    if not packet_findings:
+        return
+    shared = run_dir / "failures" / "_shared"
+    shared.mkdir(parents=True, exist_ok=True)
+    shared_input = shared / "input_clip.mp4"
+    shared_overlay = shared / "overlay.mp4"
+    input_created = _video(shared_input, scenarios, False, ground_truth, outputs)
+    overlay_created = _video(shared_overlay, scenarios, True, ground_truth, outputs)
+
+    def attach(source: Path, destination: Path) -> None:
+        try:
+            os.link(source, destination)
+        except OSError:
+            shutil.copy2(source, destination)
+
+    for finding in packet_findings:
         packet = run_dir / "failures" / finding["finding_id"]
         packet.mkdir(parents=True, exist_ok=True)
         write_json(packet / "finding.json", finding)
@@ -123,8 +138,10 @@ def generate_evidence_packets(
         )
         if resources_csv.exists():
             shutil.copy2(resources_csv, packet / "resources.csv")
-        input_created = _video(packet / "input_clip.mp4", scenarios, False, ground_truth, outputs)
-        overlay_created = _video(packet / "overlay.mp4", scenarios, True, ground_truth, outputs)
+        if input_created:
+            attach(shared_input, packet / "input_clip.mp4")
+        if overlay_created:
+            attach(shared_overlay, packet / "overlay.mp4")
         (packet / "README.md").write_text(
             f"# {finding['finding_id']} evidence packet\n\n"
             f"{finding['interpretation']['statement']}\n\n"

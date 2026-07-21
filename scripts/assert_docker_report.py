@@ -18,9 +18,8 @@ def main() -> None:
     assert isolation["future_frame_isolation"] is True
     assert isolation["image_identity_verified"] is True
     assert isolation["network_mode"] == "none"
-    assert isolation["mounts"] == [
-        {"source": isolation["mounts"][0]["source"], "destination": "/run/cvbench"}
-    ]
+    assert isolation["expected_mount"]["destination"] == "/run/cvbench"
+    assert isolation["mounts"] == [isolation["expected_mount"]]
     assert isolation["applied"] == {"cpu_limit": 4.0, "memory_limit_mb": 2048.0}
     assert isolation["requested"] == {
         "cpu_limit": 4,

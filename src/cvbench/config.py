@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,42 @@ def _require(data: dict[str, Any], key: str, kind: type) -> Any:
     return value
 
 
+def _boolean(value: Any, name: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigurationError(f"{name} must be boolean")
+    return value
+
+
+def _integer(value: Any, name: str, *, minimum: int | None = None) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ConfigurationError(f"{name} must be an integer")
+    if minimum is not None and value < minimum:
+        raise ConfigurationError(f"{name} must be at least {minimum}")
+    return value
+
+
+def _number(
+    value: Any,
+    name: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    positive: bool = False,
+) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ConfigurationError(f"{name} must be a number")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ConfigurationError(f"{name} must be finite")
+    if positive and result <= 0:
+        raise ConfigurationError(f"{name} must be positive")
+    if minimum is not None and result < minimum:
+        raise ConfigurationError(f"{name} must be at least {minimum}")
+    if maximum is not None and result > maximum:
+        raise ConfigurationError(f"{name} must be at most {maximum}")
+    return result
+
+
 def load_benchmark(path: str | Path) -> BenchmarkConfig:
     path = Path(path).resolve()
     data = _load_yaml(path)
@@ -84,25 +121,54 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
         raise ConfigurationError("input.mode must be online_replay or offline_debug")
     if input_config.get("protocol") != "frame_socket_v1":
         raise ConfigurationError("Version 1 input.protocol must be frame_socket_v1")
-    playback_rate = float(input_config.get("playback_rate", 1.0))
-    if playback_rate <= 0:
-        raise ConfigurationError("input.playback_rate must be positive")
+    playback_rate = _number(input_config.get("playback_rate", 1.0), "input.playback_rate", positive=True)
     raw_thresholds = data.get("thresholds", {})
     out_of_bounds = raw_thresholds.get("out_of_bounds", "reject")
     if out_of_bounds not in {"reject", "clip"}:
         raise ConfigurationError("thresholds.out_of_bounds must be reject or clip")
+    raw_deadlines = raw_thresholds.get("acquisition_deadlines_ms", [100, 250, 500, 1000])
+    if not isinstance(raw_deadlines, list) or not raw_deadlines:
+        raise ConfigurationError("thresholds.acquisition_deadlines_ms must be a non-empty integer list")
     thresholds = Thresholds(
-        confirmed_track_min_duration_ms=int(raw_thresholds.get("confirmed_track_min_duration_ms", 250)),
-        visible_dropout_tolerance_ms=int(raw_thresholds.get("visible_dropout_tolerance_ms", 100)),
-        max_match_center_error_px=float(raw_thresholds.get("max_match_center_error_px", 50)),
-        minimum_match_iou=float(raw_thresholds.get("minimum_match_iou", 0.3)),
-        acquisition_deadlines_ms=tuple(
-            int(v) for v in raw_thresholds.get("acquisition_deadlines_ms", [100, 250, 500, 1000])
+        confirmed_track_min_duration_ms=_integer(
+            raw_thresholds.get("confirmed_track_min_duration_ms", 250),
+            "thresholds.confirmed_track_min_duration_ms",
+            minimum=0,
         ),
-        latency_deadline_ms=float(raw_thresholds.get("latency_deadline_ms", 250)),
-        high_confidence_threshold=float(raw_thresholds.get("high_confidence_threshold", 0.8)),
+        visible_dropout_tolerance_ms=_integer(
+            raw_thresholds.get("visible_dropout_tolerance_ms", 100),
+            "thresholds.visible_dropout_tolerance_ms",
+            minimum=0,
+        ),
+        max_match_center_error_px=_number(
+            raw_thresholds.get("max_match_center_error_px", 50),
+            "thresholds.max_match_center_error_px",
+            minimum=0,
+        ),
+        minimum_match_iou=_number(
+            raw_thresholds.get("minimum_match_iou", 0.3),
+            "thresholds.minimum_match_iou",
+            minimum=0,
+            maximum=1,
+        ),
+        acquisition_deadlines_ms=tuple(
+            _integer(value, "thresholds.acquisition_deadlines_ms[]", minimum=1) for value in raw_deadlines
+        ),
+        latency_deadline_ms=_number(
+            raw_thresholds.get("latency_deadline_ms", 250),
+            "thresholds.latency_deadline_ms",
+            minimum=0,
+        ),
+        high_confidence_threshold=_number(
+            raw_thresholds.get("high_confidence_threshold", 0.8),
+            "thresholds.high_confidence_threshold",
+            minimum=0,
+            maximum=1,
+        ),
         out_of_bounds=out_of_bounds,
-        class_agnostic=bool(raw_thresholds.get("class_agnostic", False)),
+        class_agnostic=_boolean(
+            raw_thresholds.get("class_agnostic", False), "thresholds.class_agnostic"
+        ),
     )
     scenario_items = data.get("scenarios")
     if not isinstance(scenario_items, list) or not scenario_items:
@@ -116,17 +182,16 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
     reporting = data.get("reporting", {})
     resources = data.get("resources", {})
     baseline = data.get("baseline_report")
-    max_output_records = int(data.get("max_output_records", 100_000))
-    max_output_line_bytes = int(data.get("max_output_line_bytes", 1_000_000))
-    max_total_output_bytes = int(data.get("max_total_output_bytes", 50_000_000))
-    max_output_records_per_second = int(data.get("max_output_records_per_second", 10_000))
-    if min(
-        max_output_records,
-        max_output_line_bytes,
-        max_total_output_bytes,
-        max_output_records_per_second,
-    ) <= 0:
-        raise ConfigurationError("output limits must be positive integers")
+    max_output_records = _integer(data.get("max_output_records", 100_000), "max_output_records", minimum=1)
+    max_output_line_bytes = _integer(
+        data.get("max_output_line_bytes", 1_000_000), "max_output_line_bytes", minimum=1
+    )
+    max_total_output_bytes = _integer(
+        data.get("max_total_output_bytes", 50_000_000), "max_total_output_bytes", minimum=1
+    )
+    max_output_records_per_second = _integer(
+        data.get("max_output_records_per_second", 10_000), "max_output_records_per_second", minimum=1
+    )
     long_run_assertions = data.get("long_run_assertions", {})
     if not isinstance(long_run_assertions, dict):
         raise ConfigurationError("long_run_assertions must be an object")
@@ -139,12 +204,14 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
         thresholds=thresholds,
         scenarios=tuple(scenarios),
         reporting={
-            "generate_json": bool(reporting.get("generate_json", True)),
-            "generate_html": bool(reporting.get("generate_html", True)),
-            "generate_failure_packets": bool(reporting.get("generate_failure_packets", True)),
+            "generate_json": _boolean(reporting.get("generate_json", True), "reporting.generate_json"),
+            "generate_html": _boolean(reporting.get("generate_html", True), "reporting.generate_html"),
+            "generate_failure_packets": _boolean(
+                reporting.get("generate_failure_packets", True), "reporting.generate_failure_packets"
+            ),
         },
         resources=resources,
-        max_run_seconds=float(data.get("max_run_seconds", 120)),
+        max_run_seconds=_number(data.get("max_run_seconds", 120), "max_run_seconds", positive=True),
         max_output_records=max_output_records,
         max_output_line_bytes=max_output_line_bytes,
         max_total_output_bytes=max_total_output_bytes,
@@ -190,7 +257,11 @@ def load_system(path: str | Path) -> SystemConfig:
         image=image,
         environment={str(k): str(v) for k, v in environment.items()},
         readiness_pattern=pattern,
-        readiness_timeout_seconds=float(readiness.get("timeout_seconds", 30)),
-        grace_period_seconds=float(shutdown.get("grace_period_seconds", 10)),
+        readiness_timeout_seconds=_number(
+            readiness.get("timeout_seconds", 30), "readiness.timeout_seconds", minimum=0
+        ),
+        grace_period_seconds=_number(
+            shutdown.get("grace_period_seconds", 10), "shutdown.grace_period_seconds", minimum=0
+        ),
         resources=data.get("resources", {}),
     )

@@ -60,12 +60,14 @@ def validate_track_record(
     event = _require(record, "event", str)
     if event not in EVENTS:
         raise ProtocolError(f"unsupported event: {event}")
-    _require(record, "sequence_id", str)
+    if not _require(record, "sequence_id", str):
+        raise ProtocolError("sequence_id must be a non-empty string")
     timestamp = _require(record, "source_timestamp_ns", int)
     if timestamp < 0:
         raise ProtocolError("source_timestamp_ns must be non-negative")
     if event in TRACK_EVENTS:
-        _require(record, "track_id", str)
+        if not _require(record, "track_id", str):
+            raise ProtocolError("track_id must be a non-empty string")
         if _require(record, "state", str) not in TRACK_STATES:
             raise ProtocolError("invalid track state")
         if _require(record, "support", str) not in SUPPORT_VALUES:

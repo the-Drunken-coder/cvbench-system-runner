@@ -27,5 +27,5 @@ def test_synthetic_pack_contains_exact_gap_and_target_count_matrix(tmp_path: Pat
             )
             gaps.add((first_return - first_hidden) // 1_000_000)
     assert gaps == {100, 250, 500, 1000, 2000}
-    assert {1, 2, 4, 8} <= target_counts
+    assert target_counts == {1, 2, 4, 8}
     assert churn_births == 48

@@ -28,10 +28,25 @@ def test_all_long_run_release_assertions_are_explicit_and_passed() -> None:
     assert set(result["assertions"]) == set(declared)
 
 
-def test_missing_soak_evidence_fails_the_relevant_assertion() -> None:
+def test_missing_soak_evidence_is_explicitly_unavailable() -> None:
     result = evaluate_long_run_assertions(
         {"interruption_recovery_rate": None},
         {"memory_growth_bytes": None},
         {"min_interruption_recovery_rate": 1.0, "max_memory_growth_bytes": 10},
     )
+    assert result["passed"] is None
+    assert result["assertions_evaluated"] == 0
+    assert result["assertions_unavailable"] == ["max_memory_growth_bytes", "min_interruption_recovery_rate"]
+    assert all(check["evaluated"] is False for check in result["assertions"].values())
+    assert all(check["passed"] is None for check in result["assertions"].values())
+
+
+def test_measured_assertion_still_fails_normally() -> None:
+    result = evaluate_long_run_assertions(
+        {"latency_drift_ms": 11.0},
+        {"memory_growth_bytes": None},
+        {"max_absolute_latency_drift_ms": 10.0},
+    )
     assert result["passed"] is False
+    assert result["assertions"]["max_absolute_latency_drift_ms"]["evaluated"] is True
+    assert result["assertions"]["max_absolute_latency_drift_ms"]["passed"] is False

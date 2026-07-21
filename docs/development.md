@@ -18,7 +18,9 @@ ruff check .
 ```bash
 cvbench run --benchmark benchmarks/persistent-target-tracking.yaml \
   --system systems/example-good-local.yaml --output /tmp/cvbench-review-runs
-python -m json.tool /tmp/cvbench-review-runs/*/report.json >/dev/null
+for report in /tmp/cvbench-review-runs/*/report.json; do
+  python -m json.tool "$report" >/dev/null
+done
 ```
 
 The good system must decode and score real JPEG frames. Run the broken system to verify failure detection:
@@ -36,6 +38,7 @@ If a Docker daemon is available:
 docker build -f examples/Dockerfile.good -t cvbench-example-good:v1 .
 cvbench run --benchmark benchmarks/persistent-target-tracking.yaml \
   --system systems/example-good-docker.yaml --output /tmp/cvbench-docker-runs
+python scripts/assert_docker_report.py /tmp/cvbench-docker-runs
 ```
 
 The CI workflow covers install, lint, tests, scenario validation, and a real scored Linux Docker run. The Docker job builds the good image and asserts socket-only mounting, disabled networking, applied CPU/RAM limits, resource samples, an immutable image digest, scored matches, and complete container cleanup. Hardware accelerators are not required. NVIDIA collection degrades explicitly to unavailable.
