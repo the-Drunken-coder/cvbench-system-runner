@@ -36,5 +36,17 @@ reporting:
   generate_html: true
   generate_failure_packets: true
 
+long_run_assertions:
+  max_unique_track_ids: 10000
+  require_no_track_id_exhaustion: true
+  max_state_contamination_events: 0
+  max_false_positive_accumulation_per_camera_minute: 0
+  min_interruption_recovery_rate: 1.0
+  max_absolute_latency_drift_ms: 100
+  max_memory_growth_bytes: 268435456
+
 max_run_seconds: 60
 max_output_records: 200000
+max_output_line_bytes: 1000000
+max_total_output_bytes: 100000000
+max_output_records_per_second: 10000

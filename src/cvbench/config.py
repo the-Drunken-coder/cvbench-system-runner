@@ -35,6 +35,10 @@ class BenchmarkConfig:
     resources: dict[str, Any]
     max_run_seconds: float
     max_output_records: int
+    max_output_line_bytes: int
+    max_total_output_bytes: int
+    max_output_records_per_second: int
+    long_run_assertions: dict[str, Any]
     baseline_report: Path | None
 
 
@@ -112,6 +116,20 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
     reporting = data.get("reporting", {})
     resources = data.get("resources", {})
     baseline = data.get("baseline_report")
+    max_output_records = int(data.get("max_output_records", 100_000))
+    max_output_line_bytes = int(data.get("max_output_line_bytes", 1_000_000))
+    max_total_output_bytes = int(data.get("max_total_output_bytes", 50_000_000))
+    max_output_records_per_second = int(data.get("max_output_records_per_second", 10_000))
+    if min(
+        max_output_records,
+        max_output_line_bytes,
+        max_total_output_bytes,
+        max_output_records_per_second,
+    ) <= 0:
+        raise ConfigurationError("output limits must be positive integers")
+    long_run_assertions = data.get("long_run_assertions", {})
+    if not isinstance(long_run_assertions, dict):
+        raise ConfigurationError("long_run_assertions must be an object")
     return BenchmarkConfig(
         path=path,
         id=_require(data, "id", str),
@@ -127,7 +145,11 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
         },
         resources=resources,
         max_run_seconds=float(data.get("max_run_seconds", 120)),
-        max_output_records=int(data.get("max_output_records", 100_000)),
+        max_output_records=max_output_records,
+        max_output_line_bytes=max_output_line_bytes,
+        max_total_output_bytes=max_total_output_bytes,
+        max_output_records_per_second=max_output_records_per_second,
+        long_run_assertions=long_run_assertions,
         baseline_report=(path.parent / baseline).resolve() if isinstance(baseline, str) else None,
     )
 

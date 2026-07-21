@@ -109,6 +109,18 @@ def _scenario_rows(family: str, index: int) -> tuple[list[list[dict[str, Any]]],
                         entry_event=frame_index == 0,
                     )
                 )
+        elif family == "multi_target_pair":
+            for target_index in range(2):
+                left = 20 + target_index * 90 + (frame_index * 2 if target_index == 0 else -frame_index * 2)
+                rows.append(
+                    _target(
+                        f"gt_pair_{target_index}",
+                        sequence,
+                        timestamp,
+                        [left, 35 + target_index * 30, left + 16, 57 + target_index * 30],
+                        entry_event=frame_index == 0,
+                    )
+                )
         elif family == "resource_stress":
             for target_index in range(8):
                 column, row = target_index % 4, target_index // 4
@@ -127,6 +139,33 @@ def _scenario_rows(family: str, index: int) -> tuple[list[list[dict[str, Any]]],
     return frame_targets, faults
 
 
+def _occlusion_gap_rows(family: str, index: int, gap_ms: int) -> list[list[dict[str, Any]]]:
+    sequence = f"synthetic_{index:02d}_{family}"
+    hidden_frames = gap_ms // 50
+    rows_by_frame: list[list[dict[str, Any]]] = []
+    for frame_index in range(hidden_frames + 5):
+        timestamp = frame_index * 50_000_000
+        hidden = 2 <= frame_index < hidden_frames + 2
+        left = 20 + min(frame_index, 35) * 2
+        rows_by_frame.append(
+            [
+                _target(
+                    f"gt_gap_{gap_ms}",
+                    sequence,
+                    timestamp,
+                    [left, 45, left + 18, 67],
+                    eligible=not hidden,
+                    visibility=0.0 if hidden else 1.0,
+                    occlusion="full" if hidden else "none",
+                    vision_loss_interval=hidden,
+                    reappearance_event=frame_index == hidden_frames + 2,
+                    entry_event=frame_index == 0,
+                )
+            ]
+        )
+    return rows_by_frame
+
+
 def generate_synthetic_pack(output: str | Path) -> list[Path]:
     root = Path(output).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -138,12 +177,25 @@ def generate_synthetic_pack(output: str | Path) -> list[Path]:
         "multi_target_identity",
         "false_detection",
         "resource_stress",
+        "multi_target_pair",
+        "occlusion_gap_100ms",
+        "occlusion_gap_250ms",
+        "occlusion_gap_500ms",
+        "occlusion_gap_1000ms",
+        "occlusion_gap_2000ms",
     ]
     for index, family in enumerate(families, 1):
         scenario_root = root / family
         frames_root = scenario_root / "frames"
         frames_root.mkdir(parents=True, exist_ok=True)
-        rows_by_frame, faults = _scenario_rows(family, index)
+        if family.startswith("occlusion_gap_"):
+            gap_ms = int(family.removeprefix("occlusion_gap_").removesuffix("ms"))
+            rows_by_frame = _occlusion_gap_rows(family, index, gap_ms)
+            faults: list[dict[str, Any]] = []
+            step_ns = 50_000_000
+        else:
+            rows_by_frame, faults = _scenario_rows(family, index)
+            step_ns = STEP_NS
         sequence = f"synthetic_{index:02d}_{family}"
         manifest_frames = []
         ground_truth: list[dict[str, Any]] = []
@@ -167,7 +219,7 @@ def generate_synthetic_pack(output: str | Path) -> list[Path]:
             manifest_frames.append(
                 {
                     "frame_index": frame_index,
-                    "source_timestamp_ns": frame_index * STEP_NS,
+                    "source_timestamp_ns": frame_index * step_ns,
                     "width": WIDTH,
                     "height": HEIGHT,
                     "path": f"frames/{frame_index:04d}.jpg",
@@ -193,8 +245,8 @@ def generate_synthetic_pack(output: str | Path) -> list[Path]:
         manifests.append(manifest_path)
     (root / "README.md").write_text(
         "# Synthetic Version 1 scenario pack\n\n"
-        "These CC0 deterministic images cover acquisition, visible retention, occlusion and "
-        "reacquisition, multi-target identity, false detections, and resource stress. Regenerate "
+        "These CC0 deterministic images cover acquisition, visible retention, exact occlusion-gap "
+        "sweeps, 1/2/4/8-target identity and load, false detections, and resource stress. Regenerate "
         "them with `cvbench scenarios generate scenarios/synthetic-v1`.\n"
     )
     return manifests

@@ -142,3 +142,27 @@ def match_records(
             )
         unmatched.extend(record for index, record in enumerate(records) if index not in used_outputs)
     return matches, unmatched
+
+
+def match_records_by_support(
+    ground_truth: list[dict[str, Any]], outputs: list[dict[str, Any]], thresholds: Thresholds
+) -> tuple[list[Match], list[Match], list[dict[str, Any]]]:
+    """Match observations independently, then fill continuity gaps with predictions.
+
+    A predicted record must never suppress a valid observation. False-detection
+    accounting therefore uses only unmatched observed records.
+    """
+    observed = [record for record in outputs if record.get("support") == "observed"]
+    predicted = [record for record in outputs if record.get("support") == "predicted"]
+    observed_matches, unmatched_observed = match_records(ground_truth, observed, thresholds)
+    observed_keys = {
+        (match.sequence_id, match.source_timestamp_ns, match.target_id) for match in observed_matches
+    }
+    remaining_ground_truth = [
+        row
+        for row in ground_truth
+        if (row["sequence_id"], row["source_timestamp_ns"], row["target_id"]) not in observed_keys
+    ]
+    predicted_matches, _ = match_records(remaining_ground_truth, predicted, thresholds)
+    continuity_matches = [*observed_matches, *predicted_matches]
+    return observed_matches, continuity_matches, unmatched_observed

@@ -38,4 +38,4 @@ cvbench run --benchmark benchmarks/persistent-target-tracking.yaml \
   --system systems/example-good-docker.yaml --output /tmp/cvbench-docker-runs
 ```
 
-The CI workflow covers install, lint, tests, scenario validation, and a fast end-to-end fixture. Hardware accelerators are not required. NVIDIA collection degrades explicitly to unavailable.
+The CI workflow covers install, lint, tests, scenario validation, and a real scored Linux Docker run. The Docker job builds the good image and asserts socket-only mounting, disabled networking, applied CPU/RAM limits, resource samples, an immutable image digest, scored matches, and complete container cleanup. Hardware accelerators are not required. NVIDIA collection degrades explicitly to unavailable.

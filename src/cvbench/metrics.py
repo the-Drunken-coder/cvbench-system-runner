@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import statistics
 from collections import Counter, defaultdict
@@ -7,7 +8,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from .config import Thresholds
-from .matching import bbox_iou, center_error, match_records
+from .matching import bbox_iou, center_error, match_records_by_support
 from .model import CollectedRecord, Match
 
 
@@ -79,9 +80,12 @@ def calculate_metrics(
     fault_timestamps = fault_timestamps or set()
     fault_events = fault_events or {}
     outputs = [item.system_record for item in collected]
-    matches, unmatched = match_records(ground_truth, outputs, thresholds)
+    observed_matches, matches, unmatched = match_records_by_support(ground_truth, outputs, thresholds)
     match_by_target_frame = {
         (match.sequence_id, match.source_timestamp_ns, match.target_id): match for match in matches
+    }
+    observed_match_by_target_frame = {
+        (match.sequence_id, match.source_timestamp_ns, match.target_id): match for match in observed_matches
     }
     durations = _frame_durations(ground_truth)
     eligible_by_target: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
@@ -203,7 +207,7 @@ def calculate_metrics(
     localization_rows: list[dict[str, Any]] = []
     size_groups: dict[str, list[float]] = defaultdict(list)
     visibility_groups: dict[str, list[float]] = defaultdict(list)
-    for match in matches:
+    for match in observed_matches:
         gt_box = match.gt["bbox_xyxy"]
         output_box = match.output["geometry"]["value"]
         width_error = (output_box[2] - output_box[0]) - (gt_box[2] - gt_box[0])
@@ -246,8 +250,11 @@ def calculate_metrics(
     tracks_by_target: dict[tuple[str, str], list[Match]] = defaultdict(list)
     for match in matches:
         tracks_by_target[(match.sequence_id, match.target_id)].append(match)
+    observed_tracks_by_target: dict[tuple[str, str], list[Match]] = defaultdict(list)
+    for match in observed_matches:
+        observed_tracks_by_target[(match.sequence_id, match.target_id)].append(match)
     id_switches = fragments = 0
-    for target_matches in tracks_by_target.values():
+    for target_matches in observed_tracks_by_target.values():
         target_matches.sort(key=lambda match: match.source_timestamp_ns)
         previous_id: str | None = None
         previous_timestamp: int | None = None
@@ -276,7 +283,9 @@ def calculate_metrics(
                 frame_key = (gt["sequence_id"], gt["source_timestamp_ns"], gt["target_id"])
                 overlapping_by_frame_target[frame_key].add(output["track_id"])
                 duplicate_ids_by_target[(gt["sequence_id"], gt["target_id"])].add(output["track_id"])
-    matched_target_frames = {(match.sequence_id, match.source_timestamp_ns, match.target_id) for match in matches}
+    matched_target_frames = {
+        (match.sequence_id, match.source_timestamp_ns, match.target_id) for match in observed_matches
+    }
     duplicate_tracks = len(
         {
             track_id
@@ -363,7 +372,7 @@ def calculate_metrics(
         in_gap = False
         gap_start = 0
         for row in rows:
-            current_match = match_by_target_frame.get(
+            current_match = observed_match_by_target_frame.get(
                 (row["sequence_id"], row["source_timestamp_ns"], row["target_id"])
             )
             eligible = row["on_screen"] and row["eligible_for_detection"]
@@ -374,8 +383,8 @@ def calculate_metrics(
             elif eligible and in_gap:
                 after = [
                     match
-                    for match in tracks_by_target.get(key, [])
-                    if match.source_timestamp_ns >= row["source_timestamp_ns"] and match.output["support"] == "observed"
+                    for match in observed_tracks_by_target.get(key, [])
+                    if match.source_timestamp_ns >= row["source_timestamp_ns"]
                 ]
                 reacquired = min(after, key=lambda match: match.source_timestamp_ns) if after else None
                 gap_matches = [
@@ -384,13 +393,37 @@ def calculate_metrics(
                     if gap_start <= match.source_timestamp_ns < row["source_timestamp_ns"]
                 ]
                 gap_confidences = [float(match.output["confidence"]) for match in gap_matches]
+                pre_gap_assignments = {
+                    other_key[1]: max(
+                        (
+                            match
+                            for match in target_matches
+                            if match.source_timestamp_ns < gap_start
+                        ),
+                        key=lambda match: match.source_timestamp_ns,
+                        default=None,
+                    )
+                    for other_key, target_matches in observed_tracks_by_target.items()
+                    if other_key[0] == key[0]
+                }
+                swapped_with = next(
+                    (
+                        target_id
+                        for target_id, match in sorted(pre_gap_assignments.items())
+                        if target_id != key[1]
+                        and match is not None
+                        and reacquired is not None
+                        and match.track_id == reacquired.track_id
+                    ),
+                    None,
+                )
                 reacquisition_rows.append(
                     {
                         "sequence_id": key[0],
                         "target_id": key[1],
                         "gap_duration_ms": (row["source_timestamp_ns"] - gap_start) / 1_000_000,
                         "full_occlusion": True,
-                        "correct_target": reacquired is not None,
+                        "correct_target": reacquired is not None and swapped_with is None,
                         "same_id": bool(reacquired and prior_match and reacquired.track_id == prior_match.track_id),
                         "track_remained_active": bool(gap_matches),
                         "same_id_preserved_during_gap": bool(
@@ -402,7 +435,8 @@ def calculate_metrics(
                         "confidence_decreased": bool(
                             len(gap_confidences) >= 2 and gap_confidences[-1] < gap_confidences[0]
                         ),
-                        "wrong_target_association": False,
+                        "wrong_target_association": swapped_with is not None,
+                        "swapped_with_target_id": swapped_with,
                         "latency_ms": (
                             (reacquired.source_timestamp_ns - row["source_timestamp_ns"]) / 1_000_000
                             if reacquired
@@ -413,7 +447,7 @@ def calculate_metrics(
                 in_gap = False
             if current_match:
                 prior_match = current_match
-                if eligible and current_match.output["support"] == "observed":
+                if eligible:
                     had_eligible_observation = True
     reacq_latencies = [row["latency_ms"] for row in reacquisition_rows if row["latency_ms"] is not None]
     reacquisition = {
@@ -484,7 +518,7 @@ def calculate_metrics(
         count = count_by_frame[(gt["sequence_id"], gt["source_timestamp_ns"])]
         group = "1" if count == 1 else ("2" if count == 2 else ("4" if count <= 4 else "8+"))
         group_data[group][1] += 1
-        if (gt["sequence_id"], gt["source_timestamp_ns"], gt["target_id"]) in match_by_target_frame:
+        if (gt["sequence_id"], gt["source_timestamp_ns"], gt["target_id"]) in observed_match_by_target_frame:
             group_data[group][0] += 1
     multi_target = {
         group: {"matched": values[0], "eligible": values[1], "coverage": values[0] / values[1]}
@@ -603,6 +637,47 @@ def calculate_metrics(
     reacquisition["after_feed_interruption_rate"] = interruption.get("observed_recovery_rate")
     reacquisition["after_visible_detector_dropout_rate"] = blackout.get("observed_recovery_rate")
 
+    track_records = [
+        record for record in outputs if record.get("event") in {"track_started", "track_update", "track_ended"}
+    ]
+    sequences_by_track: dict[str, set[str]] = defaultdict(set)
+    for record in track_records:
+        sequences_by_track[str(record["track_id"])].add(str(record["sequence_id"]))
+    contaminated_ids = sorted(track_id for track_id, sequences in sequences_by_track.items() if len(sequences) > 1)
+    output_text = " ".join(
+        json.dumps(record, sort_keys=True).lower() for record in outputs if record.get("event") == "system_error"
+    )
+    id_exhaustion_detected = "id" in output_text and any(
+        word in output_text for word in ("exhaust", "overflow", "wraparound", "wrap-around")
+    )
+    sequence_order = list(dict.fromkeys(row["sequence_id"] for row in ground_truth))
+    midpoint = max(1, len(sequence_order) // 2)
+    first_sequences, second_sequences = set(sequence_order[:midpoint]), set(sequence_order[midpoint:])
+
+    def false_rate(sequences: set[str]) -> float | None:
+        duration_ns = sum(sequence_duration_ns.get(sequence, 0) for sequence in sequences)
+        count = sum(record["sequence_id"] in sequences for record in unmatched_tracks)
+        return count / (duration_ns / 60_000_000_000) if duration_ns else None
+
+    first_false_rate = false_rate(first_sequences)
+    second_false_rate = false_rate(second_sequences)
+    false_accumulation = (
+        second_false_rate - first_false_rate
+        if first_false_rate is not None and second_false_rate is not None
+        else None
+    )
+    long_running_stability = {
+        "unique_track_ids": len(sequences_by_track),
+        "track_id_exhaustion_detected": id_exhaustion_detected,
+        "state_contamination_events": len(contaminated_ids),
+        "state_contaminated_track_ids": contaminated_ids,
+        "false_positive_rate_first_half_per_camera_minute": first_false_rate,
+        "false_positive_rate_second_half_per_camera_minute": second_false_rate,
+        "false_positive_accumulation_per_camera_minute": false_accumulation,
+        "interruption_recovery_rate": interruption.get("observed_recovery_rate"),
+        "latency_drift_ms": latency.get("drift_ms"),
+    }
+
     return {
         "acquisition": acquisition,
         "coverage": coverage,
@@ -614,9 +689,11 @@ def calculate_metrics(
         "robustness": robustness,
         "latency": latency,
         "multi_target": multi_target,
+        "long_running_stability": long_running_stability,
         "sample_counts": {
             "ground_truth_records": len(ground_truth),
             "output_records": len(outputs),
-            "matches": len(matches),
+            "matches": len(observed_matches),
+            "continuity_matches": len(matches),
         },
     }, matches

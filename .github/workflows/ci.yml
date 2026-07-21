@@ -18,3 +18,18 @@ jobs:
       - run: ruff check .
       - run: pytest
       - run: cvbench validate --benchmark benchmarks/persistent-target-tracking.yaml --system systems/example-good-local.yaml
+
+  docker-scored-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install .
+      - run: docker build -f examples/Dockerfile.good -t cvbench-example-good:v1 .
+      - run: cvbench run --benchmark benchmarks/persistent-target-tracking.yaml --system systems/example-good-docker.yaml --output docker-runs
+      - run: python scripts/assert_docker_report.py docker-runs
+      - name: Assert no scored container remains
+        run: test -z "$(docker ps -aq --filter ancestor=cvbench-example-good:v1)"

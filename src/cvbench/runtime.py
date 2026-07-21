@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -20,6 +22,7 @@ class StartedRuntime:
     resolved_image: str | None
     command: list[str]
     isolation: dict[str, object]
+    process_group_id: int | None = None
 
 
 def _resolve_image(image: str) -> str:
@@ -89,6 +92,7 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            start_new_session=config.runtime_type == "local",
         )
     except OSError as exc:
         raise RuntimeFailure(f"could not start SUT: {exc}") from exc
@@ -102,7 +106,45 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
         "status": "not_enforced_local" if config.runtime_type == "local" else "pending_verification",
         "future_frame_isolation": config.runtime_type == "docker",
     }
-    return StartedRuntime(process, cidfile, resolved_image, command, isolation)
+    return StartedRuntime(
+        process,
+        cidfile,
+        resolved_image,
+        command,
+        isolation,
+        process.pid if config.runtime_type == "local" else None,
+    )
+
+
+def _signal_process_group(runtime: StartedRuntime, sig: signal.Signals) -> None:
+    if runtime.process_group_id is None:
+        if runtime.process.poll() is None:
+            runtime.process.send_signal(sig)
+        return
+    with contextlib.suppress(ProcessLookupError):
+        os.killpg(runtime.process_group_id, sig)
+
+
+def stop_runtime(runtime: StartedRuntime, grace: float) -> tuple[int | None, bool]:
+    """Stop the runtime and every local descendant owned by its process group."""
+    forced = False
+    try:
+        exit_code = runtime.process.wait(timeout=max(0, grace))
+    except subprocess.TimeoutExpired:
+        forced = True
+        _signal_process_group(runtime, signal.SIGTERM)
+        try:
+            exit_code = runtime.process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            _signal_process_group(runtime, signal.SIGKILL)
+            exit_code = runtime.process.wait(timeout=2)
+    if runtime.process_group_id is not None:
+        # The direct child may exit while descendants remain. They are still
+        # runner-owned and must not survive any benchmark outcome.
+        _signal_process_group(runtime, signal.SIGTERM)
+        time.sleep(0.02)
+        _signal_process_group(runtime, signal.SIGKILL)
+    return exit_code, forced
 
 
 def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: float = 10) -> dict[str, object]:

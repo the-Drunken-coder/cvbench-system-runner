@@ -5,7 +5,6 @@ import json
 import os
 import shutil
 import socket
-import subprocess
 import tempfile
 import time
 import uuid
@@ -28,8 +27,9 @@ from .model import CollectedRecord, RunArtifacts, RuntimeOutcome, Scenario
 from .protocol import send_message
 from .reporting import write_report_files
 from .resources import ResourceMonitor
-from .runtime import StartedRuntime, cleanup_runtime, start_runtime, verify_docker_isolation
+from .runtime import StartedRuntime, cleanup_runtime, start_runtime, stop_runtime, verify_docker_isolation
 from .scenario import load_scenario
+from .stability import evaluate_long_run_assertions
 
 
 def _sha256(path: Path) -> str:
@@ -59,18 +59,6 @@ def _comparison_fingerprint(benchmark: BenchmarkConfig, scenarios: list[Scenario
     }
     encoded = json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest(), inputs
-
-
-def _stop_process(runtime: StartedRuntime, grace: float) -> tuple[int | None, bool]:
-    try:
-        return runtime.process.wait(timeout=grace), False
-    except subprocess.TimeoutExpired:
-        runtime.process.terminate()
-        try:
-            return runtime.process.wait(timeout=2), True
-        except subprocess.TimeoutExpired:
-            runtime.process.kill()
-            return runtime.process.wait(timeout=2), True
 
 
 def _sleep_until(deadline_ns: int, run_deadline: float) -> None:
@@ -117,6 +105,7 @@ def _deliver_scenarios(
     run_deadline: float,
     frame_sizes: dict[tuple[str, int], tuple[int, int]],
     monitor: ResourceMonitor,
+    collector: OutputCollector,
 ) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, list[int]], dict[tuple[str, int], list[str]]]:
     shifted_ground_truth: list[dict[str, Any]] = []
     counters = {
@@ -130,6 +119,8 @@ def _deliver_scenarios(
     sequence_timestamps: dict[str, list[int]] = {}
     fault_events: dict[tuple[str, int], list[str]] = {}
     for scenario in scenarios:
+        if collector.flooded.is_set():
+            raise RuntimeFailure(f"output limit exceeded: {collector.limit_reason}")
         base_ns = time.monotonic_ns() + 20_000_000
         shifted_ground_truth.extend(_shift_ground_truth(scenario, base_ns, config.playback_rate))
         sequence_timestamps[scenario.frames[0].sequence_id] = []
@@ -142,10 +133,14 @@ def _deliver_scenarios(
             },
         )
         for frame in scenario.frames:
+            if collector.flooded.is_set():
+                raise RuntimeFailure(f"output limit exceeded: {collector.limit_reason}")
             timestamp = base_ns + int(frame.relative_timestamp_ns / config.playback_rate)
             sequence_timestamps[frame.sequence_id].append(timestamp)
             if config.input_mode == "online_replay":
                 _sleep_until(timestamp, run_deadline)
+            if collector.flooded.is_set():
+                raise RuntimeFailure(f"output limit exceeded: {collector.limit_reason}")
             fault_actions = _faults_for_frame(scenario, frame.frame_index)
             target_count = sum(
                 row["on_screen"] and row["eligible_for_detection"]
@@ -229,6 +224,8 @@ def _wait_for_readiness(collector: OutputCollector, runtime: StartedRuntime, tim
     while time.monotonic() < deadline:
         if collector.ready.wait(min(0.05, max(0.0, deadline - time.monotonic()))):
             return True
+        if collector.flooded.is_set():
+            return False
         if runtime.process.poll() is not None:
             return False
     return collector.ready.is_set()
@@ -300,6 +297,9 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             runtime.process,
             system.readiness_pattern,
             benchmark.max_output_records,
+            benchmark.max_output_line_bytes,
+            benchmark.max_total_output_bytes,
+            benchmark.max_output_records_per_second,
             frame_sizes,
             benchmark.thresholds.out_of_bounds,
         )
@@ -311,7 +311,9 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         if not _wait_for_readiness(collector, runtime, system.readiness_timeout_seconds):
             exit_code = runtime.process.poll()
             outcome.exit_code = exit_code
-            if exit_code is None:
+            if collector.flooded.is_set():
+                outcome.errors.append(f"output limit exceeded: {collector.limit_reason}")
+            elif exit_code is None:
                 outcome.errors.append("readiness timeout")
                 outcome.timed_out = True
             else:
@@ -323,9 +325,9 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             with connection:
                 connection.settimeout(2)
                 ground_truth, feed_counters, sequence_timestamps, fault_events = _deliver_scenarios(
-                    connection, scenarios, benchmark, run_deadline, frame_sizes, monitor
+                    connection, scenarios, benchmark, run_deadline, frame_sizes, monitor, collector
                 )
-            exit_code, forced = _stop_process(runtime, system.grace_period_seconds)
+            exit_code, forced = stop_runtime(runtime, system.grace_period_seconds)
             outcome.exit_code = exit_code
             outcome.timed_out = forced
             outcome.crashed = exit_code not in {0, None} and not forced
@@ -333,15 +335,12 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     except (OSError, RuntimeFailure, TimeoutError) as exc:
         outcome.errors.append(str(exc))
         outcome.timed_out = isinstance(exc, TimeoutError) or outcome.timed_out
-        if runtime is not None and runtime.process.poll() is None:
-            runtime.process.terminate()
-            try:
-                runtime.process.wait(2)
-            except subprocess.TimeoutExpired:
-                runtime.process.kill()
+        process_had_exited = runtime is not None and runtime.process.poll() is not None
+        if runtime is not None:
+            stop_runtime(runtime, 0)
         if runtime is not None:
             outcome.exit_code = runtime.process.poll()
-            outcome.crashed = outcome.exit_code not in {0, None} and not outcome.timed_out
+            outcome.crashed = process_had_exited and outcome.exit_code not in {0, None} and not outcome.timed_out
     finally:
         server.close()
         if monitor is not None:
@@ -354,14 +353,11 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                 outcome.time_to_first_output_ms = (collector.first_output_timestamp_ns - started_ns) / 1_000_000
             if collector.flooded.is_set():
                 outcome.status = "failed"
-                outcome.errors.append("output flooding")
+                message = f"output limit exceeded: {collector.limit_reason}"
+                if message not in outcome.errors:
+                    outcome.errors.append(message)
         if runtime is not None:
-            if runtime.process.poll() is None:
-                runtime.process.terminate()
-                try:
-                    runtime.process.wait(2)
-                except subprocess.TimeoutExpired:
-                    runtime.process.kill()
+            stop_runtime(runtime, 0)
             outcome.resolved_image = runtime.resolved_image
             cleanup_runtime(runtime)
         shutil.rmtree(socket_dir, ignore_errors=True)
@@ -396,6 +392,9 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             "gpu_available": False,
             "over_time": [],
         }
+    )
+    metrics["long_running_stability"] = evaluate_long_run_assertions(
+        metrics["long_running_stability"], resource_data, benchmark.long_run_assertions
     )
     resources_csv = run_dir / "resources.csv"
     if monitor:

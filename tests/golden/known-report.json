@@ -6,7 +6,7 @@
   "comparison": [],
   "diagnostics": {
     "collector_errors": [],
-    "match_count": 7
+    "match_count": 5
   },
   "feed": {
     "delivered_frames": 16,
@@ -155,7 +155,7 @@
         "p90": 0.0,
         "p95": 0.0,
         "p99": 0.0,
-        "sample_count": 7
+        "sample_count": 5
       },
       "mean_height_error_px": 0.0,
       "mean_iou": 1.0,
@@ -163,8 +163,7 @@
         "small": 1.0
       },
       "mean_iou_by_visibility": {
-        "full": 1.0,
-        "low": 1.0
+        "full": 1.0
       },
       "mean_width_error_px": 0.0,
       "median_iou": 1.0,
@@ -174,9 +173,20 @@
         "p90": 0.0,
         "p95": 0.0,
         "p99": 0.0,
-        "sample_count": 7
+        "sample_count": 5
       },
-      "sample_count": 7
+      "sample_count": 5
+    },
+    "long_running_stability": {
+      "false_positive_accumulation_per_camera_minute": 44.776119402985074,
+      "false_positive_rate_first_half_per_camera_minute": 0.0,
+      "false_positive_rate_second_half_per_camera_minute": 44.776119402985074,
+      "interruption_recovery_rate": null,
+      "latency_drift_ms": 0.0,
+      "state_contaminated_track_ids": [],
+      "state_contamination_events": 0,
+      "track_id_exhaustion_detected": false,
+      "unique_track_ids": 3
     },
     "multi_target": {
       "1": {
@@ -207,6 +217,7 @@
           "same_id": true,
           "same_id_preserved_during_gap": true,
           "sequence_id": "reacquisition",
+          "swapped_with_target_id": null,
           "target_id": "gt-1",
           "track_remained_active": true,
           "wrong_target_association": false
@@ -245,6 +256,7 @@
             "same_id": true,
             "same_id_preserved_during_gap": true,
             "sequence_id": "reacquisition",
+            "swapped_with_target_id": null,
             "target_id": "gt-1",
             "track_remained_active": true,
             "wrong_target_association": false
@@ -257,8 +269,9 @@
       }
     },
     "sample_counts": {
+      "continuity_matches": 7,
       "ground_truth_records": 16,
-      "matches": 7,
+      "matches": 5,
       "output_records": 9
     },
     "visible_dropouts": {

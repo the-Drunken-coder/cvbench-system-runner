@@ -28,6 +28,21 @@ def test_observed_coverage_and_continuity_are_separate() -> None:
     assert metrics["visible_dropouts"]["maximum"] == 200
 
 
+def test_better_prediction_cannot_suppress_valid_observation() -> None:
+    observed = output(0, track="observed", box=[1, 0, 11, 10])
+    predicted = output(
+        0, track="predicted", box=[0, 0, 10, 10], support="predicted", state="coasting"
+    )
+    metrics, _ = calculate_metrics(
+        [gt(0, box=[0, 0, 10, 10]), gt(100_000_000, box=[0, 0, 10, 10])],
+        [predicted, observed, output(100_000_000, track="observed", box=[1, 0, 11, 10])],
+        Thresholds(),
+    )
+    assert metrics["coverage"]["overall_observed"] == 1
+    assert metrics["coverage"]["overall_continuity"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+
+
 def test_reacquisition_latency_is_exactly_180_ms_and_same_id() -> None:
     ground_truth = [
         gt(1_000_000_000),
@@ -47,6 +62,31 @@ def test_reacquisition_latency_is_exactly_180_ms_and_same_id() -> None:
     assert metrics["reacquisition"]["latency_ms"]["median"] == 180
     assert metrics["reacquisition"]["same_id_rate"] == 1
     assert metrics["robustness"]["occlusion_survival"]["track_active_rate"] == 1
+
+
+def test_post_occlusion_swapped_identities_are_wrong_target_associations() -> None:
+    ground_truth = [
+        gt(0, target="left", box=[0, 0, 10, 10]),
+        gt(0, target="right", box=[100, 0, 110, 10]),
+        gt(100_000_000, target="left", box=[0, 0, 10, 10], eligible=False, visibility=0, occlusion="full"),
+        gt(100_000_000, target="right", box=[100, 0, 110, 10], eligible=False, visibility=0, occlusion="full"),
+        gt(200_000_000, target="left", box=[0, 0, 10, 10]),
+        gt(200_000_000, target="right", box=[100, 0, 110, 10]),
+    ]
+    records = [
+        output(0, track="left-id", box=[0, 0, 10, 10]),
+        output(0, track="right-id", box=[100, 0, 110, 10]),
+        output(200_000_000, track="right-id", box=[0, 0, 10, 10], state="reacquired"),
+        output(200_000_000, track="left-id", box=[100, 0, 110, 10], state="reacquired"),
+    ]
+    metrics, _ = calculate_metrics(ground_truth, records, Thresholds())
+    rows = metrics["reacquisition"]["by_gap"]
+    assert metrics["robustness"]["occlusion_survival"]["wrong_target_associations"] == 2
+    assert metrics["reacquisition"]["correct_target_rate"] == 0
+    assert {(row["target_id"], row["swapped_with_target_id"]) for row in rows} == {
+        ("left", "right"),
+        ("right", "left"),
+    }
 
 
 def test_id_switch_count_is_exact() -> None:

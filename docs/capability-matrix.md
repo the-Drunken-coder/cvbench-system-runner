@@ -6,17 +6,17 @@ Status is explicit so architecture hooks are not mistaken for delivered behavior
 |---|---|---|
 | Working local CLI and declarative validation | Implemented-tested | CLI/config unit tests and fresh-install validation |
 | Unix-socket progressive JPEG delivery | Implemented-tested | Binary round-trip tests and real image E2E |
-| Future-frame isolation | Implemented-tested | Docker command/inspection tests prove only the socket is mounted and networking is `none`; the example image excludes scenarios |
-| Docker SUT execution | Implemented-tested | Runtime construction, immutable image resolution, isolation/limit inspection tests; live daemon command documented |
-| Local-process adapter | Implemented-tested | Good, crash, timeout, malformed, missing-readiness, and flood E2E tests |
+| Future-frame isolation | Implemented-tested | Linux CI scores the container with one socket mount and network `none`; the example image excludes scenarios |
+| Docker SUT execution | Implemented-tested | Linux CI asserts completed scoring, immutable digest, applied limits, resources, and no leftover container |
+| Local-process adapter | Implemented-tested | Good, crash, timeout, malformed, readiness, flood, descendant-resource, and process-group cleanup E2E tests |
 | JSONL output and strict schema/geometry validation | Implemented-tested | Valid, malformed, non-finite, bounds, and support tests |
 | External monotonic timestamping and clock mapping | Implemented-tested | Exact latency fixture and real replay; relative timestamps are shifted before delivery |
-| Ground-truth concepts and synthetic public pack | Implemented-tested | Six CC0 families, validated manifests and JSONL |
+| Ground-truth concepts and synthetic public pack | Implemented-tested | Twelve CC0 scenarios, validated manifests and JSONL |
 | Deterministic matching | Implemented-tested | Hungarian global assignment, reorder, tie, class-gate tests |
 | Acquisition, coverage, dropout, localization | Implemented-tested | Hand-calculated fixtures and complete golden report |
 | Identity and false-track metrics | Implemented-tested | Exact switch and 2.0-second false-track fixtures |
-| Occlusion survival and reacquisition | Implemented-tested | Exact 180 ms same-ID test; predicted-output exclusion test |
-| Multi-target grouping | Implemented-tested | 1, 4, and 8-target synthetic scenarios plus metric tests |
+| Occlusion survival and reacquisition | Implemented-tested | Exact 180 ms same-ID and swapped-target tests; 100/250/500/1000/2000 ms matrix |
+| Multi-target grouping | Implemented-tested | 1, 2, 4, and 8-target synthetic scenarios plus metric tests |
 | Frame drop, blackout, interruption, delay, duplicate hooks | Implemented-tested | Online scenario injection and feed counters |
 | External CPU/RAM/process/thread/disk collection | Implemented-tested | Child-process sampler and resource parser tests |
 | Docker limits and container stats | Implemented-tested | Requested-versus-applied inspection and parser tests |
@@ -26,7 +26,7 @@ Status is explicit so architecture hooks are not mistaken for delivered behavior
 | JSON and static HTML reports | Implemented-tested | Complete golden JSON and HTML renderer coverage |
 | Compatible baseline comparison | Implemented-tested | Improvement/regression and incompatible-fingerprint tests |
 | Good and intentionally broken systems | Implemented-tested | Novel shifted/new-seed image E2E and broken behavior runs |
-| Long-running stability configuration | Implemented-tested | Repeatable concatenated stress benchmark and memory-growth reporting |
+| Long-running stability configuration | Implemented-tested | Soak assertions cover ID exhaustion/cardinality, state contamination, false-positive accumulation, recovery, latency drift, and memory growth |
 | Additional GPU vendors | Architecture only—not implemented | Resource fields/interface permit later collectors; Version 1 requires NVIDIA only |
 | Alternate transports and geometry | Architecture only—not implemented | Explicit Version 1 non-goal |
 | Cloud control plane/dashboard | Not implemented | Explicit Version 1 non-goal |

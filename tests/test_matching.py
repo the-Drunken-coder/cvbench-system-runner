@@ -1,5 +1,5 @@
 from cvbench.config import Thresholds
-from cvbench.matching import bbox_iou, center_error, match_records
+from cvbench.matching import bbox_iou, center_error, match_records, match_records_by_support
 from tests.helpers import gt, output
 
 
@@ -34,3 +34,16 @@ def test_class_gate_can_be_configured() -> None:
     agnostic, _ = match_records([gt(0)], [record], Thresholds(class_agnostic=True))
     assert strict == [] and unmatched == [record]
     assert len(agnostic) == 1
+
+
+def test_observation_is_matched_independently_from_better_prediction() -> None:
+    observed = output(0, track="observed", box=[1, 0, 11, 10]).system_record
+    predicted = output(
+        0, track="predicted", box=[0, 0, 10, 10], support="predicted", state="coasting"
+    ).system_record
+    observed_matches, continuity_matches, unmatched_observed = match_records_by_support(
+        [gt(0, box=[0, 0, 10, 10])], [predicted, observed], Thresholds()
+    )
+    assert [match.track_id for match in observed_matches] == ["observed"]
+    assert [match.track_id for match in continuity_matches] == ["observed"]
+    assert unmatched_observed == []

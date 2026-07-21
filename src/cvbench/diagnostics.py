@@ -57,13 +57,28 @@ def generate_findings(
                 "repeat-with-same-run-configuration",
             )
         )
-    if collector_errors:
+    flood_errors = [error for error in collector_errors if error.startswith("output limit exceeded:")]
+    invalid_errors = [error for error in collector_errors if error not in flood_errors]
+    if flood_errors:
+        findings.append(
+            _finding(
+                "OUTPUT-FLOOD-001",
+                "protocol",
+                "critical",
+                {"limits_exceeded": flood_errors},
+                "The SUT exceeded a bounded stdout safety limit.",
+                ["The collector enforced byte and record limits before JSON decoding."],
+                ["The system may be emitting oversized or unbounded output."],
+                "bounded-output-flood-reproduction",
+            )
+        )
+    if invalid_errors:
         findings.append(
             _finding(
                 "OUTPUT-INVALID-001",
                 "protocol",
                 "high",
-                {"invalid_record_count": len(collector_errors), "examples": collector_errors[:3]},
+                {"invalid_record_count": len(invalid_errors), "examples": invalid_errors[:3]},
                 "The SUT emitted records that failed deterministic schema validation.",
                 ["The output collector rejected each listed record."],
                 ["The system output schema may not match cvbench.track/v1."],
