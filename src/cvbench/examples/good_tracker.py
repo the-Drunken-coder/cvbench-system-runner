@@ -24,6 +24,7 @@ class Track:
     hits: int = 1
     misses: int = 0
     was_missing: bool = False
+    ended: bool = False
 
 
 def _detections(payload: bytes) -> list[list[float]]:
@@ -138,6 +139,7 @@ def main() -> int:
                 event_name = "track_started" if track.hits <= 2 else "track_update"
                 track.misses = 0
                 track.was_missing = False
+                track.ended = False
                 _emit(event_name, metadata, track, state, "observed")
             for identifier in list(tracks):
                 if identifier in matched:
@@ -154,9 +156,9 @@ def main() -> int:
                 track.center = _center(track.box)
                 if track.misses <= 5:
                     _emit("track_update", metadata, track, "coasting", "predicted")
-                else:
+                elif not track.ended:
                     _emit("track_ended", metadata, track, "lost", "predicted")
-                    del tracks[identifier]
+                    track.ended = True
     return 0
 
 

@@ -13,6 +13,7 @@ def main() -> None:
     isolation = report["runtime_isolation"]
     assert report["outcome"]["status"] == "completed", report["outcome"]
     assert report["metrics"]["sample_counts"]["matches"] > 0
+    assert report["metrics"]["identity"]["id_switches"] == 0
     assert isolation["status"] == "verified", isolation
     assert isolation["future_frame_isolation"] is True
     assert isolation["network_mode"] == "none"
