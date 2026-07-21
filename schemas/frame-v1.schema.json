@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cvbench.dev/schemas/frame-v1.schema.json",
+  "title": "CVBench progressive frame metadata v1",
+  "type": "object",
+  "required": ["schema_version", "event", "sequence_id"],
+  "properties": {
+    "schema_version": {"const": "cvbench.frame/v1"},
+    "event": {"enum": ["stream_start", "frame", "stream_end", "feed_interruption_start", "feed_interruption_end", "benchmark_end"]},
+    "sequence_id": {"type": "string"},
+    "frame_index": {"type": "integer", "minimum": 0},
+    "source_timestamp_ns": {"type": "integer", "minimum": 0},
+    "width": {"type": "integer", "minimum": 1},
+    "height": {"type": "integer", "minimum": 1},
+    "pixel_format": {"const": "rgb24"},
+    "payload_encoding": {"const": "jpeg"}
+  },
+  "allOf": [{
+    "if": {"properties": {"event": {"const": "frame"}}},
+    "then": {
+      "required": ["frame_index", "source_timestamp_ns", "width", "height", "pixel_format", "payload_encoding"]
+    }
+  }],
+  "additionalProperties": true
+}
