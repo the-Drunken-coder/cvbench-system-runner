@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""Lease and execute at most one trusted CVBench control-plane job."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+IMAGE_PATTERN = re.compile(
+    r"^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?/)?"
+    r"[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$"
+)
+SECRET_ENVIRONMENT_KEYS = {
+    "CVBENCH_RUNNER_TOKEN",
+    "RUNNER_TOKEN",
+    "SUBMISSION_API_KEYS",
+    "CLOUDFLARE_API_TOKEN",
+    "CLOUDFLARE_ACCOUNT_ID",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+}
+
+
+def api_request(
+    base_url: str,
+    token: str,
+    path: str,
+    *,
+    body: dict[str, Any] | None = None,
+) -> tuple[int, dict[str, Any] | None]:
+    url = f"{base_url.rstrip('/')}{path}"
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost"}:
+        raise ValueError("CVBENCH_API_BASE_URL must use HTTPS (except localhost development)")
+    payload = None if body is None else json.dumps(body, separators=(",", ":")).encode()
+    request = urllib.request.Request(
+        url,
+        data=payload or b"",
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "cvbench-trusted-runner/1",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            content = response.read()
+            return response.status, json.loads(content) if content else None
+    except urllib.error.HTTPError as exc:
+        content = exc.read()
+        detail = content.decode(errors="replace")[:1000]
+        raise RuntimeError(f"control-plane request failed ({exc.code}): {detail}") from exc
+
+
+def validate_lease(lease: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    submission = lease.get("submission")
+    lease_data = lease.get("lease")
+    if not isinstance(submission, dict) or not isinstance(lease_data, dict):
+        raise ValueError("lease response is missing submission or lease")
+    image = submission.get("image")
+    argv = submission.get("argv")
+    token = lease_data.get("token")
+    if not isinstance(image, str) or not IMAGE_PATTERN.fullmatch(image):
+        raise ValueError("lease contains an invalid immutable image reference")
+    if (
+        not isinstance(argv, list)
+        or not 1 <= len(argv) <= 32
+        or not all(isinstance(arg, str) and 1 <= len(arg) <= 256 and not has_control_characters(arg) for arg in argv)
+    ):
+        raise ValueError("lease contains invalid argv")
+    if not isinstance(token, str) or not 32 <= len(token) <= 200:
+        raise ValueError("lease token is invalid")
+    return submission, token
+
+
+def has_control_characters(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
+
+
+def sanitized_environment() -> dict[str, str]:
+    return {key: value for key, value in os.environ.items() if key not in SECRET_ENVIRONMENT_KEYS}
+
+
+def write_system_config(path: Path, submission: dict[str, Any]) -> None:
+    config = {
+        "schema_version": "cvbench.system/v1",
+        "id": f"control-plane-{submission['id']}",
+        "revision": str(submission.get("model", {}).get("version", "submitted")),
+        "runtime": {"type": "docker", "image": submission["image"], "command": submission["argv"]},
+        "readiness": {"type": "stdout_pattern", "pattern": "CVBENCH_READY", "timeout_seconds": 30},
+        "shutdown": {"grace_period_seconds": 10},
+        "resources": {"cpu_limit": 4, "memory_limit_mb": 2048, "network_access": False},
+    }
+    path.write_text(json.dumps(config, indent=2) + "\n")
+
+
+def execute_submission(repository: Path, submission: dict[str, Any], work: Path) -> dict[str, Any]:
+    image = submission["image"]
+    environment = sanitized_environment()
+    subprocess.run(
+        ["docker", "pull", "--platform", "linux/amd64", image],
+        cwd=repository,
+        env=environment,
+        timeout=600,
+        check=True,
+    )
+    system_config = work / "submitted-system.json"
+    runs = work / "runs"
+    write_system_config(system_config, submission)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cvbench.cli",
+            "run",
+            "--benchmark",
+            str(repository / "benchmarks/persistent-target-tracking.yaml"),
+            "--system",
+            str(system_config),
+            "--output",
+            str(runs),
+        ],
+        cwd=repository,
+        env=environment,
+        timeout=1500,
+        check=True,
+    )
+    reports = list(runs.glob("*/report.json"))
+    if len(reports) != 1:
+        raise RuntimeError(f"expected exactly one report, found {len(reports)}")
+    report = json.loads(reports[0].read_text())
+    if report.get("outcome", {}).get("status") != "completed":
+        raise RuntimeError(f"benchmark outcome was {report.get('outcome', {}).get('status', 'unknown')}")
+    isolation = report.get("runtime_isolation", {})
+    if isolation.get("status") != "verified" or isolation.get("network_mode") != "none":
+        raise RuntimeError("benchmark did not verify the required container isolation")
+    return report
+
+
+def callback_path(submission_id: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", submission_id):
+        raise ValueError("submission ID is invalid")
+    return f"/api/v1/internal/submissions/{submission_id}/result"
+
+
+def main() -> int:
+    base_url = os.environ.get("CVBENCH_API_BASE_URL", "").strip()
+    runner_token = os.environ.get("CVBENCH_RUNNER_TOKEN", "").strip()
+    if not base_url or not runner_token:
+        raise SystemExit("CVBENCH_API_BASE_URL and CVBENCH_RUNNER_TOKEN are required")
+
+    status, lease = api_request(base_url, runner_token, "/api/v1/internal/leases")
+    if status == 204 or lease is None:
+        print("No queued CVBench submissions.")
+        return 0
+
+    submission, lease_token = validate_lease(lease)
+    path = callback_path(submission["id"])
+    repository = Path(__file__).resolve().parent.parent
+    try:
+        with tempfile.TemporaryDirectory(prefix="cvbench-job-") as temporary:
+            report = execute_submission(repository, submission, Path(temporary))
+        api_request(
+            base_url,
+            runner_token,
+            path,
+            body={"status": "succeeded", "lease_token": lease_token, "report": report},
+        )
+        print(f"Completed CVBench submission {submission['id']}.")
+        return 0
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"[:2000]
+        try:
+            api_request(
+                base_url,
+                runner_token,
+                path,
+                body={"status": "failed", "lease_token": lease_token, "error": error},
+            )
+        except Exception as callback_error:
+            print(f"Result callback also failed: {callback_error}", file=sys.stderr)
+        print(f"CVBench submission {submission['id']} failed: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
