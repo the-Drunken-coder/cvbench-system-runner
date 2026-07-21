@@ -11,6 +11,15 @@ from .model import Frame, Scenario
 from .protocol import validate_ground_truth
 
 
+def _object_list(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    value = data.get(key, [])
+    if not isinstance(value, list):
+        raise ConfigurationError(f"scenario {key} must be a list")
+    if not all(isinstance(item, dict) for item in value):
+        raise ConfigurationError(f"scenario {key} entries must be objects")
+    return value
+
+
 def load_scenario(path: str | Path) -> Scenario:
     path = Path(path).resolve()
     try:
@@ -20,9 +29,11 @@ def load_scenario(path: str | Path) -> Scenario:
     if not isinstance(data, dict) or data.get("schema_version") != "cvbench.scenario/v1":
         raise ConfigurationError(f"{path} is not a cvbench.scenario/v1 manifest")
     root = path.parent
+    raw_frames = _object_list(data, "frames")
+    faults = _object_list(data, "faults")
     frames: list[Frame] = []
     last_timestamp = -1
-    for raw in data.get("frames", []):
+    for raw in raw_frames:
         try:
             frame = Frame(
                 sequence_id=data["sequence_id"],
@@ -63,5 +74,5 @@ def load_scenario(path: str | Path) -> Scenario:
         root=root,
         frames=frames,
         ground_truth=ground_truth,
-        faults=list(data.get("faults", [])),
+        faults=faults,
     )
