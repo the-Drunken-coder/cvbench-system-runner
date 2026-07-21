@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -15,6 +16,9 @@ from .config import SystemConfig
 from .errors import RuntimeFailure
 
 UNPRIVILEGED_SOCKET_UID = 65532
+CONTROL_PLANE_JOB_ID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
 
 
 @dataclass
@@ -114,6 +118,11 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
             command.extend(["--cpus", str(cpu_limit)])
         if memory_limit:
             command.extend(["--memory", f"{memory_limit}m"])
+        control_plane_job_id = os.environ.get("CVBENCH_DOCKER_JOB_ID")
+        if control_plane_job_id:
+            if not CONTROL_PLANE_JOB_ID_PATTERN.fullmatch(control_plane_job_id):
+                raise RuntimeFailure("CVBENCH_DOCKER_JOB_ID must be a UUIDv4")
+            command.extend(["--label", f"cvbench.control-plane-job={control_plane_job_id}"])
         for key, value in sorted(config.environment.items()):
             command.extend(["--env", f"{key}={value}"])
         command.extend([resolved_image, *config.command])

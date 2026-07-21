@@ -19,6 +19,9 @@ IMAGE_PATTERN = re.compile(
     r"^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?/)?"
     r"[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$"
 )
+JOB_ID_PATTERN = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+CONTAINER_ID_PATTERN = re.compile(r"[0-9a-f]{12,64}")
+DOCKER_JOB_LABEL = "cvbench.control-plane-job"
 SECRET_ENVIRONMENT_KEYS = {
     "CVBENCH_RUNNER_TOKEN",
     "RUNNER_TOKEN",
@@ -104,51 +107,89 @@ def write_system_config(path: Path, submission: dict[str, Any]) -> None:
     path.write_text(json.dumps(config, indent=2) + "\n")
 
 
+def _containers_for_job(job_id: str, environment: dict[str, str]) -> list[str]:
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        raise ValueError("submission ID is invalid")
+    result = subprocess.run(
+        ["docker", "ps", "-aq", "--filter", f"label={DOCKER_JOB_LABEL}={job_id}"],
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=20,
+        check=True,
+    )
+    container_ids = [value.strip() for value in result.stdout.splitlines() if value.strip()]
+    if not all(CONTAINER_ID_PATTERN.fullmatch(value) for value in container_ids):
+        raise RuntimeError("Docker returned an invalid container ID during cleanup")
+    return container_ids
+
+
+def cleanup_benchmark_containers(job_id: str, environment: dict[str, str]) -> int:
+    container_ids = _containers_for_job(job_id, environment)
+    if container_ids:
+        subprocess.run(
+            ["docker", "rm", "--force", *container_ids],
+            env=environment,
+            timeout=30,
+            check=True,
+        )
+    if _containers_for_job(job_id, environment):
+        raise RuntimeError("a benchmark container survived forced cleanup")
+    return len(container_ids)
+
+
 def execute_submission(repository: Path, submission: dict[str, Any], work: Path) -> dict[str, Any]:
     image = submission["image"]
     environment = sanitized_environment()
-    subprocess.run(
-        ["docker", "pull", "--platform", "linux/amd64", image],
-        cwd=repository,
-        env=environment,
-        timeout=600,
-        check=True,
-    )
-    system_config = work / "submitted-system.json"
-    runs = work / "runs"
-    write_system_config(system_config, submission)
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "cvbench.cli",
-            "run",
-            "--benchmark",
-            str(repository / "benchmarks/persistent-target-tracking.yaml"),
-            "--system",
-            str(system_config),
-            "--output",
-            str(runs),
-        ],
-        cwd=repository,
-        env=environment,
-        timeout=1500,
-        check=True,
-    )
-    reports = list(runs.glob("*/report.json"))
-    if len(reports) != 1:
-        raise RuntimeError(f"expected exactly one report, found {len(reports)}")
-    report = json.loads(reports[0].read_text())
-    if report.get("outcome", {}).get("status") != "completed":
-        raise RuntimeError(f"benchmark outcome was {report.get('outcome', {}).get('status', 'unknown')}")
-    isolation = report.get("runtime_isolation", {})
-    if isolation.get("status") != "verified" or isolation.get("network_mode") != "none":
-        raise RuntimeError("benchmark did not verify the required container isolation")
-    return report
+    job_id = str(submission["id"])
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        raise ValueError("submission ID is invalid")
+    environment["CVBENCH_DOCKER_JOB_ID"] = job_id
+    try:
+        subprocess.run(
+            ["docker", "pull", "--platform", "linux/amd64", image],
+            cwd=repository,
+            env=environment,
+            timeout=600,
+            check=True,
+        )
+        system_config = work / "submitted-system.json"
+        runs = work / "runs"
+        write_system_config(system_config, submission)
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "cvbench.cli",
+                "run",
+                "--benchmark",
+                str(repository / "benchmarks/persistent-target-tracking.yaml"),
+                "--system",
+                str(system_config),
+                "--output",
+                str(runs),
+            ],
+            cwd=repository,
+            env=environment,
+            timeout=1500,
+            check=True,
+        )
+        reports = list(runs.glob("*/report.json"))
+        if len(reports) != 1:
+            raise RuntimeError(f"expected exactly one report, found {len(reports)}")
+        report = json.loads(reports[0].read_text())
+        if report.get("outcome", {}).get("status") != "completed":
+            raise RuntimeError(f"benchmark outcome was {report.get('outcome', {}).get('status', 'unknown')}")
+        isolation = report.get("runtime_isolation", {})
+        if isolation.get("status") != "verified" or isolation.get("network_mode") != "none":
+            raise RuntimeError("benchmark did not verify the required container isolation")
+        return report
+    finally:
+        cleanup_benchmark_containers(job_id, environment)
 
 
 def callback_path(submission_id: str) -> str:
-    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", submission_id):
+    if not JOB_ID_PATTERN.fullmatch(submission_id):
         raise ValueError("submission ID is invalid")
     return f"/api/v1/internal/submissions/{submission_id}/result"
 

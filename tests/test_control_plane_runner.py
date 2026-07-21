@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -9,6 +11,8 @@ from scripts.run_control_plane_job import (
     IMAGE_PATTERN,
     SECRET_ENVIRONMENT_KEYS,
     callback_path,
+    cleanup_benchmark_containers,
+    execute_submission,
     sanitized_environment,
     validate_lease,
     write_system_config,
@@ -78,3 +82,44 @@ def test_callback_path_and_secret_scrubbing(monkeypatch: pytest.MonkeyPatch) -> 
     environment = sanitized_environment()
     assert environment["SAFE_VALUE"] == "kept"
     assert SECRET_ENVIRONMENT_KEYS.isdisjoint(environment)
+
+
+def test_cleanup_force_removes_only_containers_with_the_unique_job_label() -> None:
+    job_id = "12345678-1234-4123-8123-123456789abc"
+    container_id = "a" * 64
+    listed = MagicMock(stdout=f"{container_id}\n")
+    removed = MagicMock()
+    empty = MagicMock(stdout="")
+    environment = {"PATH": "/usr/bin"}
+    with patch("scripts.run_control_plane_job.subprocess.run", side_effect=[listed, removed, empty]) as run:
+        assert cleanup_benchmark_containers(job_id, environment) == 1
+
+    assert run.call_args_list[0].args[0] == [
+        "docker",
+        "ps",
+        "-aq",
+        "--filter",
+        f"label=cvbench.control-plane-job={job_id}",
+    ]
+    assert run.call_args_list[1].args[0] == ["docker", "rm", "--force", container_id]
+
+
+def test_execution_timeout_still_runs_unique_label_cleanup(tmp_path: Path) -> None:
+    submission = {
+        "id": "12345678-1234-4123-8123-123456789abc",
+        "image": IMAGE,
+        "argv": ["python", "-m", "tracker"],
+    }
+    with (
+        patch(
+            "scripts.run_control_plane_job.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(["docker", "pull"], 600),
+        ),
+        patch("scripts.run_control_plane_job.cleanup_benchmark_containers") as cleanup,
+        pytest.raises(subprocess.TimeoutExpired),
+    ):
+        execute_submission(tmp_path, submission, tmp_path)
+
+    cleanup.assert_called_once()
+    assert cleanup.call_args.args[0] == submission["id"]
+    assert cleanup.call_args.args[1]["CVBENCH_DOCKER_JOB_ID"] == submission["id"]

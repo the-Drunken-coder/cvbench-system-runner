@@ -19,11 +19,11 @@ The Worker source, site, migrations, and JavaScript tests live in `control-plane
 - Submission keys are compared through fixed-length SHA-256 digests with a constant-time byte comparison. D1 stores only the submitter-key digest.
 - `Idempotency-Key` is unique per submitter-key digest. Repeating the same body returns the existing job; changing the body returns `409`.
 - Public reads omit contact, notes, authentication data, and lease data.
-- A trusted runner bearer token protects leases and callbacks. Each lease also gets an independent random token, stored only as a digest, and state updates require `running -> succeeded|failed`.
+- A trusted runner bearer token protects leases and callbacks. Each lease also gets an independent random token, stored only as a digest, and state updates require `running -> succeeded|failed`. The 3000-second lease exceeds the 40-minute workflow timeout with callback margin.
 - Expired leases return to `queued` and can be attempted again. Old callback tokens stop working.
 - The GitHub-hosted runner is ephemeral, has read-only repository permission, runs one job, and has no broad GitHub PAT in Cloudflare.
 - Before invoking CVBench, the runner removes callback, Cloudflare, and GitHub secrets from the benchmark subprocess environment. The Docker adapter passes only `CVBENCH_INPUT_SOCKET` and explicitly submitted system configuration into the tested container.
-- The existing Docker adapter enforces no network, no Docker socket, one socket-directory mount, a host-aligned unprivileged UID/GID, 4 CPUs, 2048 MB memory, and exact image identity verification.
+- The existing Docker adapter enforces no network, no Docker socket, one socket-directory mount, a host-aligned unprivileged UID/GID, 4 CPUs, 2048 MB memory, and exact image identity verification. Every submitted container also gets a unique job label; both the runner and an `if: always()` workflow step force-remove and assert against survivors.
 
 Public registry images are the zero-credential default. A manually operated runner may pre-authenticate Docker to a private registry, but registry credentials must never be added to submission metadata.
 
@@ -96,7 +96,7 @@ In the Cloudflare dashboard:
 
    `SUBMISSION_API_KEYS` accepts comma-separated keys to allow rotation. Do not put either value in `wrangler.jsonc`, Actions variables, job metadata, PR text, or logs.
 
-9. In GitHub repository settings, add the Actions variable `CVBENCH_API_BASE_URL` with the deployed `https://...workers.dev` origin and the Actions secret `CVBENCH_RUNNER_TOKEN` with exactly the same value as the Worker `RUNNER_TOKEN`.
+9. In GitHub repository settings, add the Actions variable `CVBENCH_API_BASE_URL` with the deployed `https://...workers.dev` origin. Create an environment named `cvbench-production`, restrict its deployment branches to `main` only, and put `CVBENCH_RUNNER_TOKEN` in that environment with exactly the same value as the Worker `RUNNER_TOKEN`. Do not keep a repository-level copy of this secret.
 10. Manually dispatch **Trusted benchmark runner** once. The cron schedule checks for one queued job every 15 minutes.
 
 Cloudflare account identifiers and API credentials remain dashboard/runtime configuration and are not committed.

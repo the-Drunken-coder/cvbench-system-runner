@@ -11,7 +11,7 @@ export function createApp(options) {
     submissionKeys: splitKeys(options.submissionKeys),
     runnerToken: String(options.runnerToken || ""),
     maxSubmissionsPerHour: boundedInteger(options.maxSubmissionsPerHour, 20, 1, 1000),
-    leaseSeconds: boundedInteger(options.leaseSeconds, 1800, 60, 7200),
+    leaseSeconds: boundedInteger(options.leaseSeconds, 3000, 60, 7200),
   };
 
   return {
