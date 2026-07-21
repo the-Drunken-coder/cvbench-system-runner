@@ -40,3 +40,9 @@ The runner mounts only a temporary socket directory, disables container networki
 - `cvbench scenarios generate PATH` regenerates the CC0 synthetic Version 1 pack.
 
 See [Architecture](docs/architecture.md), [Protocol](docs/protocol.md), [Metrics](docs/metrics.md), [Development](docs/development.md), the [Version 1 capability matrix](docs/capability-matrix.md), and the [verbatim implementation specification](PROJECT_SPEC_VERBATIM.md).
+
+## Public control plane
+
+The public submission queue is one Cloudflare Worker with Static Assets and D1. It serves the documentation, submission, and result UI plus `/api/v1/*`. Untrusted model code never runs in Cloudflare: a scheduled or manually dispatched ephemeral GitHub-hosted Linux runner leases one digest-pinned OCI image and executes it through the existing Docker-isolated engine.
+
+See the [control-plane architecture, local commands, API lifecycle, security boundary, and Workers Builds setup](docs/control-plane.md). The [exact control-plane implementation input](docs/CONTROL_PLANE_IMPLEMENTATION_PROMPT.md) is preserved alongside the original product specification.

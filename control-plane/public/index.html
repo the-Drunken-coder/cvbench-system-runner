@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="CVBench measures complete online computer-vision tracking systems under repeatable faults, latency, and resource constraints.">
+    <title>CVBench — The system is the model</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="CVBench home"><span class="brand-mark">CV</span>Bench</a>
+      <nav aria-label="Primary navigation">
+        <a href="#measure">Measure</a>
+        <a href="#contract">Contract</a>
+        <a href="#submit">Submit</a>
+        <a href="#results">Results</a>
+        <a href="/api/v1/openapi.json">OpenAPI</a>
+      </nav>
+      <span class="live"><span></span> Public queue</span>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top">
+        <div class="eyebrow">Open benchmark · Reproducible systems · Honest clocks</div>
+        <h1>The system<br>is the model.</h1>
+        <p class="hero-copy">CVBench tests complete online vision trackers—not isolated tensors. Submit an immutable container. We replay progressive video, inject real-world faults, and publish the evidence.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#submit">Submit a model <span>↗</span></a>
+          <a class="button secondary" href="#contract">Read the contract</a>
+        </div>
+        <div class="hero-metrics" aria-label="Benchmark properties">
+          <div><strong>5</strong><span>metric families</span></div>
+          <div><strong>0</strong><span>future frames exposed</span></div>
+          <div><strong>100%</strong><span>external timing</span></div>
+        </div>
+      </section>
+
+      <section class="section dark" id="measure">
+        <div class="section-intro">
+          <span class="section-number">01</span>
+          <div><p class="kicker">What CVBench measures</p><h2>A leaderboard with receipts.</h2></div>
+          <p>Every score is backed by deterministic matching, external timestamps, resource samples, and evidence artifacts. One flattering average cannot hide system failure.</p>
+        </div>
+        <div class="metric-grid">
+          <article><span class="metric-index">A</span><h3>Accuracy</h3><p>Detection, localization, classification, and confidence calibration against frame-level ground truth.</p></article>
+          <article><span class="metric-index">R</span><h3>Robustness</h3><p>Acquisition, visible retention, identity continuity, occlusion recovery, and fault response.</p></article>
+          <article><span class="metric-index">L</span><h3>Latency</h3><p>Receive time minus source-frame time, recorded by the harness—not self-reported by the model.</p></article>
+          <article><span class="metric-index">Ω</span><h3>Resources</h3><p>CPU, memory, process count, and optional GPU telemetry sampled outside the submitted container.</p></article>
+          <article><span class="metric-index">!</span><h3>Diagnostics</h3><p>Structured findings and portable evidence packets for the largest observed failures.</p></article>
+        </div>
+      </section>
+
+      <section class="section contract" id="contract">
+        <div class="section-intro">
+          <span class="section-number">02</span>
+          <div><p class="kicker">The exact container contract</p><h2>Bring one immutable Linux image.</h2></div>
+          <p>CVBench runs submitted code only on ephemeral GitHub-hosted Linux runners. Cloudflare stores and serves control-plane data; it never executes your model.</p>
+        </div>
+        <div class="layout-grid">
+          <div class="steps">
+            <article><span>1</span><div><h3>Ship a digest</h3><p>Use a public or runner-accessible <code>linux/amd64</code> OCI image pinned as <code>registry/repo@sha256:…</code>. Tags are rejected.</p></div></article>
+            <article><span>2</span><div><h3>Connect and become ready</h3><p>Read <code>CVBENCH_INPUT_SOCKET</code>, connect to <code>/run/cvbench/input.sock</code>, then print exactly <code>CVBENCH_READY</code> as one stdout line.</p></div></article>
+            <article><span>3</span><div><h3>Consume ordered frames</h3><p>The same Unix stream stays open for the sequence. Keep temporal or multi-frame state in memory. Messages contain lengths, JSON metadata, then JPEG bytes.</p></div></article>
+            <article><span>4</span><div><h3>Emit tracks</h3><p>Print one <code>cvbench.track/v1</code> JSON object per stdout line. Put logs on stderr. The harness timestamps receipt externally.</p></div></article>
+          </div>
+          <aside class="standard-card">
+            <p class="card-label">STANDARD LAYOUT / V1</p>
+            <pre><code>container
+├── your runtime + weights
+├── argv: ["python", "serve.py"]
+└── environment
+    └── CVBENCH_INPUT_SOCKET
+        = /run/cvbench/input.sock
+
+/run/cvbench/        # only mount
+└── input.sock        # streaming input
+
+stdout                # protocol only
+stderr                # diagnostics
+network               # disabled
+CPU / memory           # 4 / 2048 MB</code></pre>
+            <a href="/api/v1/contract">Machine-readable contract →</a>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section code-section" id="submit">
+        <div class="section-intro">
+          <span class="section-number">03</span>
+          <div><p class="kicker">Submit once, retry safely</p><h2>One API for humans and agents.</h2></div>
+          <p>A submission key creates jobs. Reads are public. Every create request needs a stable idempotency key, so retries cannot accidentally enqueue duplicates.</p>
+        </div>
+        <div class="tab-bar" role="tablist" aria-label="Submission examples">
+          <button class="tab active" role="tab" aria-selected="true" data-tab="curl">curl</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="python">Python</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="agent">AI agent</button>
+        </div>
+        <div class="code-window">
+          <div class="code-toolbar"><span>POST /api/v1/submissions</span><button class="copy" data-copy-target="curl-example">Copy</button></div>
+          <pre id="curl-example" class="code-panel active" data-panel="curl"><code>curl -sS "$CVBENCH_API_BASE_URL/api/v1/submissions" \
+  -H "Authorization: Bearer $CVBENCH_API_KEY" \
+  -H "Idempotency-Key: my-model-v7-001" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "image": "ghcr.io/acme/tracker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "argv": ["python", "-m", "tracker"],
+    "name": "Acme Temporal Tracker",
+    "model_version": "7.0"
+  }'</code></pre>
+          <pre class="code-panel" data-panel="python"><code>import os, uuid, requests
+
+response = requests.post(
+    f"{os.environ['CVBENCH_API_BASE_URL']}/api/v1/submissions",
+    headers={
+        "Authorization": f"Bearer {os.environ['CVBENCH_API_KEY']}",
+        "Idempotency-Key": str(uuid.uuid4()),
+    },
+    json={
+        "image": "ghcr.io/acme/tracker@sha256:...",
+        "argv": ["python", "-m", "tracker"],
+        "name": "Acme Temporal Tracker",
+        "model_version": "7.0",
+    },
+    timeout=30,
+)
+response.raise_for_status()
+print(response.json()["id"])</code></pre>
+          <pre class="code-panel" data-panel="agent"><code>Goal: win the public CVBench benchmark.
+
+1. GET /api/v1/contract and /api/v1/openapi.json.
+2. Build and publish a Linux/amd64 OCI image.
+3. Resolve its registry digest. Never submit a mutable tag.
+4. POST image + argv + metadata with bearer auth and a unique
+   Idempotency-Key. Do not send source, build steps, shell, or env.
+5. Poll the returned Location until status is succeeded or failed.
+6. Inspect result.metrics and diagnostics, improve the system,
+   publish a new digest, and submit with a new idempotency key.</code></pre>
+        </div>
+        <div class="callout"><strong>Need a key?</strong> The operator bootstraps one or more keys into the Worker secret <code>SUBMISSION_API_KEYS</code>. Keys are comma-separated for simple rotation and are never stored in job records.</div>
+      </section>
+
+      <section class="section results" id="results">
+        <div class="section-intro">
+          <span class="section-number">04</span>
+          <div><p class="kicker">Public status and results</p><h2>Follow a run.</h2></div>
+          <p>Queue state, execution attempts, scored report JSON, and failure reasons are public. Submitter contact and internal lease data are not.</p>
+        </div>
+        <form id="status-form" class="status-form">
+          <label for="submission-id">Submission UUID</label>
+          <div><input id="submission-id" name="id" type="text" autocomplete="off" placeholder="xxxxxxxx-xxxx-4xxx-xxxx-xxxxxxxxxxxx" required><button class="button primary" type="submit">Check status</button></div>
+        </form>
+        <div id="status-output" class="status-output" aria-live="polite"><p>Enter a submission ID to load its public record.</p></div>
+      </section>
+
+      <section class="section security">
+        <div class="section-intro">
+          <span class="section-number">05</span>
+          <div><p class="kicker">Security boundary</p><h2>The queue is not the sandbox.</h2></div>
+          <p>The control plane validates intent. The existing CVBench engine enforces execution isolation on a disposable runner.</p>
+        </div>
+        <div class="security-list">
+          <p><span>01</span><strong>Cloudflare Worker</strong>Static assets, API validation, authentication, rate limits, and D1 state only.</p>
+          <p><span>02</span><strong>GitHub-hosted runner</strong>Leases one job, pulls the exact digest, runs CVBench, and posts the report back.</p>
+          <p><span>03</span><strong>Tested container</strong>No network, no Docker socket, an unprivileged UID/GID, CPU and memory caps, and only the progressive socket mount.</p>
+          <p><span>04</span><strong>Secret separation</strong>Runner and callback tokens stay in the host process environment and are removed from the benchmark subprocess environment.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <a class="brand" href="#top"><span class="brand-mark">CV</span>Bench</a>
+      <p>Open evidence for complete computer-vision systems.</p>
+      <div><a href="https://github.com/the-Drunken-coder/cvbench-system-runner">GitHub</a><a href="/api/v1/contract">Contract</a><a href="/api/v1/openapi.json">API</a></div>
+    </footer>
+  </body>
+</html>

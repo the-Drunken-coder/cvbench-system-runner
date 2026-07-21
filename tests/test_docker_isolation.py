@@ -52,6 +52,29 @@ def test_docker_command_mounts_only_socket_and_disables_network(tmp_path: Path) 
     }
 
 
+def test_control_plane_job_id_adds_a_unique_docker_label(tmp_path: Path) -> None:
+    config = load_system(ROOT / "systems/example-good-docker.yaml")
+    socket_dir = tmp_path / "socket"
+    socket_dir.mkdir()
+    socket_path = socket_dir / "input.sock"
+    socket_path.touch()
+    _restrict_socket_access(socket_dir, socket_path)
+    job_id = "12345678-1234-4123-8123-123456789abc"
+    with (
+        patch.dict(os.environ, {"CVBENCH_DOCKER_JOB_ID": job_id}),
+        patch(
+            "cvbench.runtime._resolve_image",
+            return_value=ResolvedImage("registry.example/good@sha256:immutable", "sha256:image-id"),
+        ),
+        patch("cvbench.runtime.subprocess.Popen") as popen,
+    ):
+        popen.return_value = MagicMock(spec=Popen)
+        runtime = start_runtime(config, socket_dir, tmp_path)
+
+    label_index = runtime.command.index("--label")
+    assert runtime.command[label_index + 1] == f"cvbench.control-plane-job={job_id}"
+
+
 def test_docker_inspection_distinguishes_applied_limits(tmp_path: Path) -> None:
     cidfile = tmp_path / "container.cid"
     cidfile.write_text("abc")
