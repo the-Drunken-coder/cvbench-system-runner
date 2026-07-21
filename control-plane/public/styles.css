@@ -114,7 +114,10 @@ footer > div a { font: 700 .72rem var(--mono); text-transform: uppercase; }
 
 @media (max-width: 560px) {
   .live { display: none; }
-  h1 { font-size: 4rem; }
+  .hero { padding-left: 1rem; padding-right: 1rem; }
+  .eyebrow { max-width: 100%; overflow-wrap: anywhere; font-size: .65rem; }
+  h1 { font-size: clamp(3rem, 14vw, 3.5rem); line-height: .83; }
+  .hero-copy { font-size: 1rem; overflow-wrap: anywhere; }
   .hero-actions, .status-form > div, footer { align-items: stretch; flex-direction: column; }
   .hero-metrics { grid-template-columns: 1fr; gap: 1rem; }
   .metric-grid { grid-template-columns: 1fr; }
