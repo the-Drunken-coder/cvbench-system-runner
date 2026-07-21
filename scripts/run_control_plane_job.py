@@ -31,6 +31,11 @@ SECRET_ENVIRONMENT_KEYS = {
     "GH_TOKEN",
     "GITHUB_TOKEN",
 }
+MAX_CALLBACK_BYTES = 1024 * 1024
+
+
+def callback_payload_bytes(body: dict[str, Any]) -> bytes:
+    return json.dumps(body, separators=(",", ":")).encode()
 
 
 def api_request(
@@ -44,7 +49,7 @@ def api_request(
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "localhost"}:
         raise ValueError("CVBENCH_API_BASE_URL must use HTTPS (except localhost development)")
-    payload = None if body is None else json.dumps(body, separators=(",", ":")).encode()
+    payload = None if body is None else callback_payload_bytes(body)
     request = urllib.request.Request(
         url,
         data=payload or b"",
@@ -65,7 +70,7 @@ def api_request(
         raise RuntimeError(f"control-plane request failed ({exc.code}): {detail}") from exc
 
 
-def validate_lease(lease: dict[str, Any]) -> tuple[dict[str, Any], str]:
+def validate_lease(lease: dict[str, Any]) -> tuple[dict[str, Any], str, int]:
     submission = lease.get("submission")
     lease_data = lease.get("lease")
     if not isinstance(submission, dict) or not isinstance(lease_data, dict):
@@ -74,6 +79,7 @@ def validate_lease(lease: dict[str, Any]) -> tuple[dict[str, Any], str]:
     image = submission.get("image")
     argv = submission.get("argv")
     token = lease_data.get("token")
+    max_result_bytes = lease_data.get("max_result_bytes", MAX_CALLBACK_BYTES)
     if not isinstance(job_id, str) or not JOB_ID_PATTERN.fullmatch(job_id):
         raise ValueError("lease contains an invalid submission id")
     if not isinstance(image, str) or not IMAGE_PATTERN.fullmatch(image):
@@ -86,7 +92,62 @@ def validate_lease(lease: dict[str, Any]) -> tuple[dict[str, Any], str]:
         raise ValueError("lease contains invalid argv")
     if not isinstance(token, str) or not 32 <= len(token) <= 200:
         raise ValueError("lease token is invalid")
-    return submission, token
+    if (
+        not isinstance(max_result_bytes, int)
+        or isinstance(max_result_bytes, bool)
+        or not 16 * 1024 <= max_result_bytes <= MAX_CALLBACK_BYTES
+    ):
+        raise ValueError("lease result byte limit is invalid")
+    return submission, token, max_result_bytes
+
+
+def build_success_callback(report: dict[str, Any], lease_token: str, max_bytes: int) -> dict[str, Any]:
+    body = {"status": "succeeded", "lease_token": lease_token, "report": report}
+    if len(callback_payload_bytes(body)) <= max_bytes:
+        return body
+
+    diagnostics = report.get("diagnostics")
+    stderr = diagnostics.get("sut_stderr") if isinstance(diagnostics, dict) else None
+    if not isinstance(stderr, list) or not all(isinstance(line, str) for line in stderr):
+        raise ValueError("report exceeds the callback budget without compactable stderr diagnostics")
+
+    compact_report = dict(report)
+    compact_diagnostics = dict(diagnostics)
+    compact_report["diagnostics"] = compact_diagnostics
+    compact_diagnostics["sut_stderr"] = []
+    compact_diagnostics["sut_stderr_compaction"] = {
+        "truncated": True,
+        "retention": "head_and_tail",
+        "original_lines": len(stderr),
+        "retained_lines": 0,
+        "omitted_lines": len(stderr),
+        "original_utf8_bytes": sum(len(line.encode()) for line in stderr),
+    }
+
+    body = {"status": "succeeded", "lease_token": lease_token, "report": compact_report}
+    if len(callback_payload_bytes(body)) > max_bytes:
+        raise ValueError("score-critical report exceeds the callback budget after diagnostic compaction")
+
+    def retain_stderr(line_count: int) -> bool:
+        head = (line_count + 1) // 2
+        tail = line_count // 2
+        compact_diagnostics["sut_stderr"] = stderr[:head] + (stderr[-tail:] if tail else [])
+        compact_diagnostics["sut_stderr_compaction"].update(
+            {"retained_lines": line_count, "omitted_lines": len(stderr) - line_count}
+        )
+        return len(callback_payload_bytes(body)) <= max_bytes
+
+    low, high = 0, len(stderr)
+    while low < high:
+        retained = (low + high + 1) // 2
+        if retain_stderr(retained):
+            low = retained
+        else:
+            high = retained - 1
+
+    if not retain_stderr(low):
+        raise ValueError("compacted report exceeds the callback budget")
+    return body
 
 
 def has_control_characters(value: str) -> bool:
@@ -208,7 +269,7 @@ def main() -> int:
         print("No queued CVBench submissions.")
         return 0
 
-    submission, lease_token = validate_lease(lease)
+    submission, lease_token, max_result_bytes = validate_lease(lease)
     path = callback_path(submission["id"])
     repository = Path(__file__).resolve().parent.parent
     try:
@@ -231,7 +292,7 @@ def main() -> int:
         base_url,
         runner_token,
         path,
-        body={"status": "succeeded", "lease_token": lease_token, "report": report},
+        body=build_success_callback(report, lease_token, max_result_bytes),
     )
     print(f"Completed CVBench submission {submission['id']}.")
     return 0

@@ -9,8 +9,11 @@ import pytest
 
 from scripts.run_control_plane_job import (
     IMAGE_PATTERN,
+    MAX_CALLBACK_BYTES,
     SECRET_ENVIRONMENT_KEYS,
+    build_success_callback,
     callback_path,
+    callback_payload_bytes,
     cleanup_benchmark_containers,
     execute_submission,
     main,
@@ -30,7 +33,7 @@ def test_image_pattern_requires_digest_and_rejects_shell_like_input() -> None:
 
 
 def test_validate_lease_revalidates_untrusted_control_plane_data() -> None:
-    submission, token = validate_lease(
+    submission, token, max_result_bytes = validate_lease(
         {
             "submission": {
                 "id": "12345678-1234-4123-8123-123456789abc",
@@ -42,6 +45,7 @@ def test_validate_lease_revalidates_untrusted_control_plane_data() -> None:
     )
     assert submission["image"] == IMAGE
     assert token == "b" * 64
+    assert max_result_bytes == MAX_CALLBACK_BYTES
 
     with pytest.raises(ValueError, match="argv"):
         validate_lease(
@@ -159,3 +163,57 @@ def test_success_callback_failure_is_not_converted_to_failed(monkeypatch: pytest
 
     assert request.call_count == 2
     assert request.call_args_list[1].kwargs["body"]["status"] == "succeeded"
+
+
+def test_worst_case_stderr_report_fits_callback_budget_and_records_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = json.loads((Path(__file__).parent / "golden/known-report.json").read_text())
+    original_metrics = json.loads(json.dumps(report["metrics"]))
+    report["diagnostics"]["sut_stderr"] = ["\0" * 4096] * 1000
+    lease_token = "b" * 64
+    oversized = {"status": "succeeded", "lease_token": lease_token, "report": report}
+    assert len(callback_payload_bytes(oversized)) > MAX_CALLBACK_BYTES
+
+    compacted = build_success_callback(report, lease_token, MAX_CALLBACK_BYTES)
+    assert len(callback_payload_bytes(compacted)) <= MAX_CALLBACK_BYTES
+    assert compacted["report"]["metrics"] == original_metrics
+    summary = compacted["report"]["diagnostics"]["sut_stderr_compaction"]
+    assert summary["original_lines"] == 1000
+    assert 0 < summary["retained_lines"] < 1000
+    assert summary["omitted_lines"] == 1000 - summary["retained_lines"]
+
+    submission = {
+        "id": "12345678-1234-4123-8123-123456789abc",
+        "image": IMAGE,
+        "argv": ["python", "-m", "tracker"],
+    }
+    lease = {
+        "submission": submission,
+        "lease": {"token": lease_token, "max_result_bytes": MAX_CALLBACK_BYTES},
+    }
+    terminal: dict[str, object] = {"status": "running"}
+
+    def control_plane_request(
+        _base_url: str,
+        _runner_token: str,
+        _path: str,
+        *,
+        body: dict[str, object] | None = None,
+    ) -> tuple[int, dict[str, object] | None]:
+        if body is None:
+            return 200, lease
+        assert len(callback_payload_bytes(body)) <= MAX_CALLBACK_BYTES
+        terminal.update(status=body["status"], report=body["report"])
+        return 200, terminal
+
+    monkeypatch.setenv("CVBENCH_API_BASE_URL", "https://cvbench.test")
+    monkeypatch.setenv("CVBENCH_RUNNER_TOKEN", "runner-token")
+    with (
+        patch("scripts.run_control_plane_job.api_request", side_effect=control_plane_request),
+        patch("scripts.run_control_plane_job.execute_submission", return_value=report),
+    ):
+        assert main() == 0
+
+    assert terminal["status"] == "succeeded"
+    assert terminal["report"]["metrics"] == original_metrics

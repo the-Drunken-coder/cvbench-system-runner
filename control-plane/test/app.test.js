@@ -63,6 +63,7 @@ test("submission create, public read, idempotent replay, lease, and scored resul
   const leased = await leaseResponse.json();
   assert.equal(leased.submission.id, created.id);
   assert.equal(leased.submission.attempt, 1);
+  assert.equal(leased.lease.max_result_bytes, 1024 * 1024);
   assert.equal((await lease()).status, 204);
 
   const badCallback = await result(created.id, { status: "succeeded", lease_token: "x".repeat(64), report: scoredReport() });
@@ -86,6 +87,18 @@ test("failed jobs require a bounded error and valid running lease", async () => 
   const response = await result(created.id, { status: "failed", lease_token: leased.lease.token, error: "container failed readiness" });
   assert.equal(response.status, 200);
   assert.equal((await response.json()).error, "container failed readiness");
+});
+
+test("result callback payloads cannot exceed the advertised budget", async () => {
+  const created = await (await submit(validBody(), "oversized-result-0001")).json();
+  const leased = await (await lease()).json();
+  const response = await result(created.id, {
+    status: "succeeded",
+    lease_token: leased.lease.token,
+    report: { diagnostics: { sut_stderr: ["x".repeat(1024 * 1024)] } },
+  });
+  assert.equal(response.status, 413);
+  assert.equal((await jsonRequest(`/api/v1/submissions/${created.id}`)).status, "running");
 });
 
 test("hourly limits and payload limits are enforced", async () => {

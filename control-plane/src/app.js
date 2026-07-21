@@ -103,6 +103,7 @@ async function route(request, config) {
         token: leaseToken,
         expires_at: iso(submission.leaseExpiresAt),
         result_url: `${url.origin}/api/v1/internal/submissions/${submission.id}/result`,
+        max_result_bytes: MAX_RESULT_BYTES,
       },
     });
   }

@@ -20,6 +20,7 @@ The Worker source, site, migrations, and JavaScript tests live in `control-plane
 - `Idempotency-Key` is unique per submitter-key digest. Repeating the same body returns the existing job; changing the body returns `409`.
 - Public reads omit contact, notes, authentication data, and lease data.
 - A trusted runner bearer token protects leases and callbacks. Each lease also gets an independent random token, stored only as a digest, and state updates require `running -> succeeded|failed`. The 3000-second lease exceeds the 40-minute workflow timeout with callback margin.
+- Each lease advertises the Worker's one-MiB result-body budget. The trusted runner preserves the complete scored report and deterministically retains head-and-tail stderr diagnostics that fit, recording original, retained, and omitted counts in the public result.
 - Expired leases return to `queued` and can be attempted again. Old callback tokens stop working.
 - The GitHub-hosted runner is ephemeral, has read-only repository permission, runs one job, and has no broad GitHub PAT in Cloudflare.
 - Before invoking CVBench, the runner removes callback, Cloudflare, and GitHub secrets from the benchmark subprocess environment. The Docker adapter passes only `CVBENCH_INPUT_SOCKET` and explicitly submitted system configuration into the tested container.
