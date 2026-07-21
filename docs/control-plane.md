@@ -39,12 +39,11 @@ npx wrangler d1 migrations apply cvbench-control-plane --local
 npx wrangler dev
 ```
 
-In another terminal, create local-only secrets:
+Create `control-plane/.dev.vars` with local-only values (the file is ignored by Git):
 
 ```bash
-cd control-plane
-npx wrangler secret put SUBMISSION_API_KEYS --local
-npx wrangler secret put RUNNER_TOKEN --local
+SUBMISSION_API_KEYS="local-submission-key"
+RUNNER_TOKEN="local-runner-token"
 ```
 
 Then open the local URL printed by Wrangler. The health, contract, and OpenAPI endpoints are:
@@ -60,9 +59,12 @@ curl -sS http://localhost:8787/api/v1/openapi.json
 With `wrangler dev` running and a real scored baseline `report.json`, the same lifecycle can be checked against local D1:
 
 ```bash
+set -a
+. ./.dev.vars
+set +a
 CVBENCH_API_BASE_URL=http://127.0.0.1:8787 \
-CVBENCH_API_KEY=local-submission-key \
-CVBENCH_RUNNER_TOKEN=local-runner-token \
+CVBENCH_API_KEY="$SUBMISSION_API_KEYS" \
+CVBENCH_RUNNER_TOKEN="$RUNNER_TOKEN" \
 CVBENCH_REPORT_PATH=/absolute/path/to/report.json \
 npm run test:d1
 ```
@@ -106,13 +108,13 @@ Cloudflare account identifiers and API credentials remain dashboard/runtime conf
 Get the live contract before constructing a model:
 
 ```bash
-curl -sS "$CVBENCH_URL/api/v1/contract"
+curl -sS "$CVBENCH_API_BASE_URL/api/v1/contract"
 ```
 
 Create a job using a digest returned by the registry, never a locally guessed digest:
 
 ```bash
-curl -sS "$CVBENCH_URL/api/v1/submissions" \
+curl -sS "$CVBENCH_API_BASE_URL/api/v1/submissions" \
   -H "Authorization: Bearer $CVBENCH_API_KEY" \
   -H "Idempotency-Key: tracker-v7-001" \
   -H "Content-Type: application/json" \

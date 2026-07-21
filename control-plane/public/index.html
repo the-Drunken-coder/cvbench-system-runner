@@ -100,7 +100,7 @@ CPU / memory           # 4 / 2048 MB</code></pre>
         </div>
         <div class="code-window">
           <div class="code-toolbar"><span>POST /api/v1/submissions</span><button class="copy" data-copy-target="curl-example">Copy</button></div>
-          <pre id="curl-example" class="code-panel active" data-panel="curl"><code>curl -sS "$CVBENCH_URL/api/v1/submissions" \
+          <pre id="curl-example" class="code-panel active" data-panel="curl"><code>curl -sS "$CVBENCH_API_BASE_URL/api/v1/submissions" \
   -H "Authorization: Bearer $CVBENCH_API_KEY" \
   -H "Idempotency-Key: my-model-v7-001" \
   -H "Content-Type: application/json" \
@@ -113,7 +113,7 @@ CPU / memory           # 4 / 2048 MB</code></pre>
           <pre class="code-panel" data-panel="python"><code>import os, uuid, requests
 
 response = requests.post(
-    f"{os.environ['CVBENCH_URL']}/api/v1/submissions",
+    f"{os.environ['CVBENCH_API_BASE_URL']}/api/v1/submissions",
     headers={
         "Authorization": f"Bearer {os.environ['CVBENCH_API_KEY']}",
         "Idempotency-Key": str(uuid.uuid4()),

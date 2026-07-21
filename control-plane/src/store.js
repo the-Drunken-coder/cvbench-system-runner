@@ -18,17 +18,15 @@ export class D1Store {
         : { kind: "conflict" };
     }
 
-    const recent = await this.db
-      .prepare("SELECT COUNT(*) AS count FROM submissions WHERE submitter_key_sha256 = ? AND created_at >= ?")
-      .bind(row.submitterKeyHash, row.now - 3600)
-      .first();
-    if (Number(recent?.count || 0) >= maxPerHour) return { kind: "rate_limited" };
-
     await this.db
       .prepare(`INSERT INTO submissions (
         id, status, image, argv_json, name, model_version, contact, notes,
         idempotency_key, request_sha256, submitter_key_sha256, created_at, updated_at
-      ) VALUES (?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) SELECT ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE (
+        SELECT COUNT(*) FROM submissions
+        WHERE submitter_key_sha256 = ? AND created_at >= ?
+      ) < ?
       ON CONFLICT (submitter_key_sha256, idempotency_key) DO NOTHING`)
       .bind(
         row.id,
@@ -43,6 +41,9 @@ export class D1Store {
         row.submitterKeyHash,
         row.now,
         row.now,
+        row.submitterKeyHash,
+        row.now - 3600,
+        maxPerHour,
       )
       .run();
 
@@ -50,6 +51,7 @@ export class D1Store {
       .prepare("SELECT id, request_sha256 FROM submissions WHERE submitter_key_sha256 = ? AND idempotency_key = ?")
       .bind(row.submitterKeyHash, row.idempotencyKey)
       .first();
+    if (!stored) return { kind: "rate_limited" };
     if (stored.request_sha256 !== row.requestHash) return { kind: "conflict" };
     return { kind: stored.id === row.id ? "created" : "replay", submission: await this.getSubmission(stored.id) };
   }

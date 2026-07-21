@@ -13,6 +13,7 @@ from scripts.run_control_plane_job import (
     callback_path,
     cleanup_benchmark_containers,
     execute_submission,
+    main,
     sanitized_environment,
     validate_lease,
     write_system_config,
@@ -45,7 +46,19 @@ def test_validate_lease_revalidates_untrusted_control_plane_data() -> None:
     with pytest.raises(ValueError, match="argv"):
         validate_lease(
             {
-                "submission": {"image": IMAGE, "argv": ["python\nmalicious"]},
+                "submission": {
+                    "id": "12345678-1234-4123-8123-123456789abc",
+                    "image": IMAGE,
+                    "argv": ["python\nmalicious"],
+                },
+                "lease": {"token": "b" * 64},
+            }
+        )
+
+    with pytest.raises(ValueError, match="submission id"):
+        validate_lease(
+            {
+                "submission": {"id": "../other-job", "image": IMAGE, "argv": ["python"]},
                 "lease": {"token": "b" * 64},
             }
         )
@@ -123,3 +136,26 @@ def test_execution_timeout_still_runs_unique_label_cleanup(tmp_path: Path) -> No
     cleanup.assert_called_once()
     assert cleanup.call_args.args[0] == submission["id"]
     assert cleanup.call_args.args[1]["CVBENCH_DOCKER_JOB_ID"] == submission["id"]
+
+
+def test_success_callback_failure_is_not_converted_to_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    submission = {
+        "id": "12345678-1234-4123-8123-123456789abc",
+        "image": IMAGE,
+        "argv": ["python", "-m", "tracker"],
+    }
+    lease = {"submission": submission, "lease": {"token": "b" * 64}}
+    monkeypatch.setenv("CVBENCH_API_BASE_URL", "https://cvbench.test")
+    monkeypatch.setenv("CVBENCH_RUNNER_TOKEN", "runner-token")
+    with (
+        patch(
+            "scripts.run_control_plane_job.api_request",
+            side_effect=[(200, lease), RuntimeError("success callback unavailable")],
+        ) as request,
+        patch("scripts.run_control_plane_job.execute_submission", return_value={"outcome": {"status": "completed"}}),
+        pytest.raises(RuntimeError, match="success callback unavailable"),
+    ):
+        main()
+
+    assert request.call_count == 2
+    assert request.call_args_list[1].kwargs["body"]["status"] == "succeeded"

@@ -99,6 +99,15 @@ test("hourly limits and payload limits are enforced", async () => {
   assert.equal(oversized.status, 413);
 });
 
+test("concurrent submissions cannot exceed the hourly limit", async () => {
+  const responses = await Promise.all(
+    Array.from({ length: 20 }, (_, index) => submit(validBody(), `concurrent-rate-${String(index).padStart(4, "0")}`)),
+  );
+  const statuses = responses.map((response) => response.status);
+  assert.equal(statuses.filter((status) => status === 201).length, 2);
+  assert.equal(statuses.filter((status) => status === 429).length, 18);
+});
+
 test("expired leases are requeued and stale callbacks are rejected", async () => {
   const created = await (await submit(validBody(), "lease-expiry-0001")).json();
   const first = await (await lease()).json();

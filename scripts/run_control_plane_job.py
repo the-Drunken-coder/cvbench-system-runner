@@ -70,9 +70,12 @@ def validate_lease(lease: dict[str, Any]) -> tuple[dict[str, Any], str]:
     lease_data = lease.get("lease")
     if not isinstance(submission, dict) or not isinstance(lease_data, dict):
         raise ValueError("lease response is missing submission or lease")
+    job_id = submission.get("id")
     image = submission.get("image")
     argv = submission.get("argv")
     token = lease_data.get("token")
+    if not isinstance(job_id, str) or not JOB_ID_PATTERN.fullmatch(job_id):
+        raise ValueError("lease contains an invalid submission id")
     if not isinstance(image, str) or not IMAGE_PATTERN.fullmatch(image):
         raise ValueError("lease contains an invalid immutable image reference")
     if (
@@ -211,14 +214,6 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="cvbench-job-") as temporary:
             report = execute_submission(repository, submission, Path(temporary))
-        api_request(
-            base_url,
-            runner_token,
-            path,
-            body={"status": "succeeded", "lease_token": lease_token, "report": report},
-        )
-        print(f"Completed CVBench submission {submission['id']}.")
-        return 0
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"[:2000]
         try:
@@ -232,6 +227,14 @@ def main() -> int:
             print(f"Result callback also failed: {callback_error}", file=sys.stderr)
         print(f"CVBench submission {submission['id']} failed: {error}", file=sys.stderr)
         return 1
+    api_request(
+        base_url,
+        runner_token,
+        path,
+        body={"status": "succeeded", "lease_token": lease_token, "report": report},
+    )
+    print(f"Completed CVBench submission {submission['id']}.")
+    return 0
 
 
 if __name__ == "__main__":

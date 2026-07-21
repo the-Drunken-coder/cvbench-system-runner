@@ -1,11 +1,18 @@
 export class MemoryStore {
   constructor() {
     this.rows = new Map();
+    this.createTail = Promise.resolve();
   }
 
   async health() {}
 
   async createSubmission(row, maxPerHour) {
+    const operation = this.createTail.then(() => this.createSubmissionAtomic(row, maxPerHour));
+    this.createTail = operation.catch(() => {});
+    return operation;
+  }
+
+  createSubmissionAtomic(row, maxPerHour) {
     const existing = [...this.rows.values()].find(
       (item) => item.submitterKeyHash === row.submitterKeyHash && item.idempotencyKey === row.idempotencyKey,
     );
