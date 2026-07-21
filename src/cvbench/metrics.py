@@ -1,0 +1,622 @@
+from __future__ import annotations
+
+import math
+import statistics
+from collections import Counter, defaultdict
+from collections.abc import Iterable
+from typing import Any
+
+from .config import Thresholds
+from .matching import bbox_iou, center_error, match_records
+from .model import CollectedRecord, Match
+
+
+def percentile(values: Iterable[float], p: float) -> float | None:
+    ordered = sorted(float(value) for value in values)
+    if not ordered:
+        return None
+    if len(ordered) == 1:
+        return ordered[0]
+    position = (len(ordered) - 1) * p
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    return ordered[lower] * (upper - position) + ordered[upper] * (position - lower)
+
+
+def _summary(values: list[float]) -> dict[str, float | int | None]:
+    return {
+        "sample_count": len(values),
+        "median": percentile(values, 0.5),
+        "p90": percentile(values, 0.9),
+        "p95": percentile(values, 0.95),
+        "p99": percentile(values, 0.99),
+        "maximum": max(values) if values else None,
+    }
+
+
+def _frame_durations(ground_truth: list[dict[str, Any]]) -> dict[tuple[str, int], int]:
+    timestamps: dict[str, list[int]] = defaultdict(list)
+    for gt in ground_truth:
+        timestamps[gt["sequence_id"]].append(gt["source_timestamp_ns"])
+    result: dict[tuple[str, int], int] = {}
+    for sequence, raw_timestamps in timestamps.items():
+        unique = sorted(set(raw_timestamps))
+        steps = [right - left for left, right in zip(unique, unique[1:], strict=False) if right > left]
+        fallback = int(statistics.median(steps)) if steps else 0
+        for index, timestamp in enumerate(unique):
+            result[(sequence, timestamp)] = unique[index + 1] - timestamp if index + 1 < len(unique) else fallback
+    return result
+
+
+def _dropout_intervals(rows: list[tuple[int, int, bool]], tolerance_ns: int) -> list[int]:
+    intervals: list[int] = []
+    active = 0
+    for _, duration, observed in rows:
+        if observed:
+            if active > tolerance_ns:
+                intervals.append(active)
+            active = 0
+        else:
+            active += duration
+    if active > tolerance_ns:
+        intervals.append(active)
+    return intervals
+
+
+def calculate_metrics(
+    ground_truth: list[dict[str, Any]],
+    collected: list[CollectedRecord],
+    thresholds: Thresholds,
+    *,
+    sequence_timestamps: dict[str, list[int]] | None = None,
+    scenario_families: dict[str, str] | None = None,
+    fault_timestamps: set[tuple[str, int]] | None = None,
+    fault_events: dict[tuple[str, int], list[str]] | None = None,
+) -> tuple[dict[str, Any], list[Match]]:
+    scenario_families = scenario_families or {}
+    fault_timestamps = fault_timestamps or set()
+    fault_events = fault_events or {}
+    outputs = [item.system_record for item in collected]
+    matches, unmatched = match_records(ground_truth, outputs, thresholds)
+    match_by_target_frame = {
+        (match.sequence_id, match.source_timestamp_ns, match.target_id): match for match in matches
+    }
+    durations = _frame_durations(ground_truth)
+    eligible_by_target: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    all_by_target: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for gt in ground_truth:
+        key = (gt["sequence_id"], gt["target_id"])
+        all_by_target[key].append(gt)
+        if gt["on_screen"] and gt["eligible_for_detection"]:
+            eligible_by_target[key].append(gt)
+
+    acquisition_latencies_ms: list[float] = []
+    acquisition_per_target: dict[str, float | None] = {}
+    acquired_at: dict[tuple[str, str], int] = {}
+    acquired: set[tuple[str, str]] = set()
+    for key, rows in sorted(eligible_by_target.items()):
+        rows.sort(key=lambda row: row["source_timestamp_ns"])
+        eligible_at = rows[0]["source_timestamp_ns"]
+        correct = [
+            match
+            for match in matches
+            if (match.sequence_id, match.target_id) == key
+            and match.source_timestamp_ns >= eligible_at
+            and match.output["state"] in {"confirmed", "reacquired"}
+            and match.output["support"] == "observed"
+        ]
+        latency = None
+        if correct:
+            latency = (min(match.source_timestamp_ns for match in correct) - eligible_at) / 1_000_000
+            acquired_at[key] = min(match.source_timestamp_ns for match in correct)
+            acquisition_latencies_ms.append(latency)
+            acquired.add(key)
+        acquisition_per_target[f"{key[0]}:{key[1]}"] = latency
+    acquisition = _summary(acquisition_latencies_ms)
+    acquisition.update(
+        {
+            "total_eligible_targets": len(eligible_by_target),
+            "acquired_targets": len(acquired),
+            "never_acquired_targets": len(eligible_by_target) - len(acquired),
+            "rate": len(acquired) / len(eligible_by_target) if eligible_by_target else None,
+            "per_target_latency_ms": acquisition_per_target,
+            "within_deadline": {
+                str(deadline): sum(value <= deadline for value in acquisition_latencies_ms) / len(eligible_by_target)
+                if eligible_by_target
+                else None
+                for deadline in thresholds.acquisition_deadlines_ms
+            },
+        }
+    )
+
+    total_eligible_ns = 0
+    observed_ns = 0
+    continuity_ns = 0
+    coverage_by_target: dict[str, dict[str, float | int]] = {}
+    coverage_by_visibility: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    coverage_by_scenario: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    dropout_durations_ns: list[int] = []
+    for key, rows in sorted(eligible_by_target.items()):
+        rows.sort(key=lambda row: row["source_timestamp_ns"])
+        target_total = target_observed = target_continuity = 0
+        dropout_rows: list[tuple[int, int, bool]] = []
+        for row in rows:
+            duration = durations.get((row["sequence_id"], row["source_timestamp_ns"]), 0)
+            match = match_by_target_frame.get((row["sequence_id"], row["source_timestamp_ns"], row["target_id"]))
+            is_active = bool(match and match.output["event"] != "track_ended" and match.output["state"] != "lost")
+            is_observed = bool(is_active and match and match.output["support"] == "observed")
+            is_continuous = is_active
+            target_total += duration
+            target_observed += duration if is_observed else 0
+            target_continuity += duration if is_continuous else 0
+            visibility = (
+                "full"
+                if row["visibility_fraction"] >= 0.8
+                else ("partial" if row["visibility_fraction"] >= 0.3 else "low")
+            )
+            coverage_by_visibility[visibility][0] += duration if is_observed else 0
+            coverage_by_visibility[visibility][1] += duration
+            family = str(row.get("scenario_family", "unknown"))
+            coverage_by_scenario[family][0] += duration if is_observed else 0
+            coverage_by_scenario[family][1] += duration
+            if row["source_timestamp_ns"] >= acquired_at.get(key, 2**63 - 1):
+                dropout_rows.append((row["source_timestamp_ns"], duration, is_observed))
+        total_eligible_ns += target_total
+        observed_ns += target_observed
+        continuity_ns += target_continuity
+        label = f"{key[0]}:{key[1]}"
+        coverage_by_target[label] = {
+            "eligible_duration_ms": target_total / 1_000_000,
+            "observed_coverage": target_observed / target_total if target_total else 0,
+            "continuity": target_continuity / target_total if target_total else 0,
+        }
+        dropout_durations_ns.extend(
+            _dropout_intervals(dropout_rows, thresholds.visible_dropout_tolerance_ms * 1_000_000)
+        )
+    dropout_ms = [duration / 1_000_000 for duration in dropout_durations_ns]
+    target_minutes = total_eligible_ns / 60_000_000_000
+    coverage = {
+        "overall_observed": observed_ns / total_eligible_ns if total_eligible_ns else None,
+        "overall_continuity": continuity_ns / total_eligible_ns if total_eligible_ns else None,
+        "eligible_target_time_ms": total_eligible_ns / 1_000_000,
+        "per_target": coverage_by_target,
+        "by_visibility": {
+            key: values[0] / values[1] if values[1] else None for key, values in sorted(coverage_by_visibility.items())
+        },
+        "by_scenario": {
+            key: values[0] / values[1] if values[1] else None for key, values in sorted(coverage_by_scenario.items())
+        },
+    }
+    dropouts = _summary(dropout_ms)
+    dropouts.update(
+        {
+            "count": len(dropout_ms),
+            "per_target_minute": len(dropout_ms) / target_minutes if target_minutes else None,
+            "exceeding_ms": {
+                str(deadline): sum(duration > deadline for duration in dropout_ms) for deadline in (100, 250, 500, 1000)
+            },
+        }
+    )
+
+    localization_rows: list[dict[str, Any]] = []
+    size_groups: dict[str, list[float]] = defaultdict(list)
+    visibility_groups: dict[str, list[float]] = defaultdict(list)
+    for match in matches:
+        gt_box = match.gt["bbox_xyxy"]
+        output_box = match.output["geometry"]["value"]
+        width_error = (output_box[2] - output_box[0]) - (gt_box[2] - gt_box[0])
+        height_error = (output_box[3] - output_box[1]) - (gt_box[3] - gt_box[1])
+        diagonal = math.hypot(gt_box[2] - gt_box[0], gt_box[3] - gt_box[1])
+        area = (gt_box[2] - gt_box[0]) * (gt_box[3] - gt_box[1])
+        size = "small" if area < 32**2 else ("medium" if area < 96**2 else "large")
+        visibility = (
+            "full"
+            if match.gt["visibility_fraction"] >= 0.8
+            else ("partial" if match.gt["visibility_fraction"] >= 0.3 else "low")
+        )
+        size_groups[size].append(match.iou)
+        visibility_groups[visibility].append(match.iou)
+        localization_rows.append(
+            {
+                "iou": match.iou,
+                "center_error_px": match.center_error_px,
+                "normalized_center_error": match.center_error_px / diagonal if diagonal else 0,
+                "width_error_px": width_error,
+                "height_error_px": height_error,
+            }
+        )
+    localization = {
+        "sample_count": len(localization_rows),
+        "mean_iou": statistics.fmean(row["iou"] for row in localization_rows) if localization_rows else None,
+        "median_iou": percentile((row["iou"] for row in localization_rows), 0.5),
+        "center_error_px": _summary([row["center_error_px"] for row in localization_rows]),
+        "normalized_center_error": _summary([row["normalized_center_error"] for row in localization_rows]),
+        "mean_width_error_px": statistics.fmean(row["width_error_px"] for row in localization_rows)
+        if localization_rows
+        else None,
+        "mean_height_error_px": statistics.fmean(row["height_error_px"] for row in localization_rows)
+        if localization_rows
+        else None,
+        "mean_iou_by_visibility": {key: statistics.fmean(values) for key, values in sorted(visibility_groups.items())},
+        "mean_iou_by_target_size": {key: statistics.fmean(values) for key, values in sorted(size_groups.items())},
+    }
+
+    tracks_by_target: dict[tuple[str, str], list[Match]] = defaultdict(list)
+    for match in matches:
+        tracks_by_target[(match.sequence_id, match.target_id)].append(match)
+    id_switches = fragments = 0
+    for target_matches in tracks_by_target.values():
+        target_matches.sort(key=lambda match: match.source_timestamp_ns)
+        previous_id: str | None = None
+        previous_timestamp: int | None = None
+        for match in target_matches:
+            if previous_id is not None and match.track_id != previous_id:
+                id_switches += 1
+            if previous_timestamp is not None:
+                expected = durations.get((match.sequence_id, previous_timestamp), 0)
+                if match.source_timestamp_ns > previous_timestamp + expected:
+                    fragments += 1
+            previous_id = match.track_id
+            previous_timestamp = match.source_timestamp_ns
+    overlapping_by_frame_target: dict[tuple[str, int, str], set[str]] = defaultdict(set)
+    duplicate_ids_by_target: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for output in unmatched:
+        if output.get("event") not in {"track_started", "track_update"}:
+            continue
+        for gt in ground_truth:
+            if (
+                gt.get("on_screen")
+                and gt.get("bbox_xyxy")
+                and (gt["sequence_id"], gt["source_timestamp_ns"])
+                == (output["sequence_id"], output["source_timestamp_ns"])
+                and center_error(gt["bbox_xyxy"], output["geometry"]["value"]) <= thresholds.max_match_center_error_px
+            ):
+                frame_key = (gt["sequence_id"], gt["source_timestamp_ns"], gt["target_id"])
+                overlapping_by_frame_target[frame_key].add(output["track_id"])
+                duplicate_ids_by_target[(gt["sequence_id"], gt["target_id"])].add(output["track_id"])
+    matched_target_frames = {(match.sequence_id, match.source_timestamp_ns, match.target_id) for match in matches}
+    duplicate_tracks = len(
+        {
+            track_id
+            for key, track_ids in overlapping_by_frame_target.items()
+            if key in matched_target_frames
+            for track_id in track_ids
+        }
+    )
+    merges = 0
+    for output in outputs:
+        if output.get("event") not in {"track_started", "track_update"}:
+            continue
+        overlapping_targets = sum(
+            gt.get("on_screen")
+            and gt.get("bbox_xyxy") is not None
+            and (gt["sequence_id"], gt["source_timestamp_ns"]) == (output["sequence_id"], output["source_timestamp_ns"])
+            and bbox_iou(gt["bbox_xyxy"], output["geometry"]["value"]) >= thresholds.minimum_match_iou
+            for gt in ground_truth
+        )
+        if overlapping_targets > 1:
+            merges += 1
+    splits = sum(
+        bool(track_ids) for key, track_ids in overlapping_by_frame_target.items() if key in matched_target_frames
+    )
+    identity = {
+        "id_switches": id_switches,
+        "track_fragmentation": fragments,
+        "duplicate_tracks": duplicate_tracks,
+        "duplicate_tracks_per_real_target": {
+            f"{key[0]}:{key[1]}": len(track_ids) for key, track_ids in sorted(duplicate_ids_by_target.items())
+        },
+        "track_merges": merges,
+        "track_splits": splits,
+        "id_switches_per_target_minute": id_switches / target_minutes if target_minutes else None,
+    }
+
+    unmatched_tracks = [record for record in unmatched if record.get("event") in {"track_started", "track_update"}]
+    false_by_id: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for record in unmatched_tracks:
+        false_by_id[(record["sequence_id"], record["track_id"])].append(record)
+    false_durations_ms: list[float] = []
+    one_frame_false_detections = 0
+    for records in false_by_id.values():
+        records.sort(key=lambda record: record["source_timestamp_ns"])
+        start, end = records[0]["source_timestamp_ns"], records[-1]["source_timestamp_ns"]
+        step = durations.get((records[-1]["sequence_id"], end), 0)
+        false_durations_ms.append((end - start + step) / 1_000_000)
+        if len(records) == 1:
+            one_frame_false_detections += 1
+    persistent_false_tracks = sum(
+        duration >= thresholds.confirmed_track_min_duration_ms for duration in false_durations_ms
+    )
+    sequence_duration_ns: dict[str, int] = defaultdict(int)
+    for (sequence, _timestamp), duration in durations.items():
+        sequence_duration_ns[sequence] += duration
+    camera_minutes = sum(sequence_duration_ns.values()) / 60_000_000_000
+    camera_hours = camera_minutes / 60
+    false_track_seconds = sum(false_durations_ms) / 1000
+    false_detections = {
+        "detections": len(unmatched_tracks),
+        "one_frame_false_detections": one_frame_false_detections,
+        "detections_per_camera_minute": len(unmatched_tracks) / camera_minutes if camera_minutes else None,
+        "track_births": len(false_by_id),
+        "persistent_track_births": persistent_false_tracks,
+        "track_births_per_camera_hour": len(false_by_id) / camera_hours if camera_hours else None,
+        "track_duration_ms": _summary(false_durations_ms),
+        "false_track_seconds_per_camera_hour": false_track_seconds / camera_hours if camera_hours else None,
+        "longest_lived_false_track_ms": max(false_durations_ms) if false_durations_ms else 0,
+        "high_confidence_false_detections": sum(
+            float(record["confidence"]) >= thresholds.high_confidence_threshold for record in unmatched_tracks
+        ),
+        "by_scenario": dict(
+            sorted(
+                Counter(scenario_families.get(record["sequence_id"], "unknown") for record in unmatched_tracks).items()
+            )
+        ),
+    }
+
+    reacquisition_rows: list[dict[str, Any]] = []
+    for key, rows in sorted(all_by_target.items()):
+        rows.sort(key=lambda row: row["source_timestamp_ns"])
+        prior_match: Match | None = None
+        had_eligible_observation = False
+        in_gap = False
+        gap_start = 0
+        for row in rows:
+            current_match = match_by_target_frame.get(
+                (row["sequence_id"], row["source_timestamp_ns"], row["target_id"])
+            )
+            eligible = row["on_screen"] and row["eligible_for_detection"]
+            if not eligible and prior_match and had_eligible_observation:
+                if not in_gap:
+                    gap_start = row["source_timestamp_ns"]
+                in_gap = True
+            elif eligible and in_gap:
+                after = [
+                    match
+                    for match in tracks_by_target.get(key, [])
+                    if match.source_timestamp_ns >= row["source_timestamp_ns"] and match.output["support"] == "observed"
+                ]
+                reacquired = min(after, key=lambda match: match.source_timestamp_ns) if after else None
+                gap_matches = [
+                    match
+                    for match in tracks_by_target.get(key, [])
+                    if gap_start <= match.source_timestamp_ns < row["source_timestamp_ns"]
+                ]
+                gap_confidences = [float(match.output["confidence"]) for match in gap_matches]
+                reacquisition_rows.append(
+                    {
+                        "sequence_id": key[0],
+                        "target_id": key[1],
+                        "gap_duration_ms": (row["source_timestamp_ns"] - gap_start) / 1_000_000,
+                        "full_occlusion": True,
+                        "correct_target": reacquired is not None,
+                        "same_id": bool(reacquired and prior_match and reacquired.track_id == prior_match.track_id),
+                        "track_remained_active": bool(gap_matches),
+                        "same_id_preserved_during_gap": bool(
+                            gap_matches
+                            and prior_match
+                            and all(match.track_id == prior_match.track_id for match in gap_matches)
+                        ),
+                        "gap_position_error_px": _summary([match.center_error_px for match in gap_matches]),
+                        "confidence_decreased": bool(
+                            len(gap_confidences) >= 2 and gap_confidences[-1] < gap_confidences[0]
+                        ),
+                        "wrong_target_association": False,
+                        "latency_ms": (
+                            (reacquired.source_timestamp_ns - row["source_timestamp_ns"]) / 1_000_000
+                            if reacquired
+                            else None
+                        ),
+                    }
+                )
+                in_gap = False
+            if current_match:
+                prior_match = current_match
+                if eligible and current_match.output["support"] == "observed":
+                    had_eligible_observation = True
+    reacq_latencies = [row["latency_ms"] for row in reacquisition_rows if row["latency_ms"] is not None]
+    reacquisition = {
+        "events": len(reacquisition_rows),
+        "same_id_rate": sum(row["same_id"] for row in reacquisition_rows) / len(reacquisition_rows)
+        if reacquisition_rows
+        else None,
+        "correct_target_rate": sum(row["correct_target"] for row in reacquisition_rows) / len(reacquisition_rows)
+        if reacquisition_rows
+        else None,
+        "latency_ms": _summary(reacq_latencies),
+        "by_gap": reacquisition_rows,
+        "after_full_occlusion_rate": sum(row["correct_target"] for row in reacquisition_rows) / len(reacquisition_rows)
+        if reacquisition_rows
+        else None,
+    }
+
+    receive_lookup = {id(item.system_record): item.collector_received_timestamp_ns for item in collected}
+    latency_ms = [
+        (receive_lookup[id(item.system_record)] - item.system_record["source_timestamp_ns"]) / 1_000_000
+        for item in collected
+        if item.system_record.get("event") in {"track_started", "track_update", "track_ended"}
+        and receive_lookup[id(item.system_record)] >= item.system_record["source_timestamp_ns"]
+    ]
+    latency = _summary(latency_ms)
+    latency.update(
+        {
+            "deadline_ms": thresholds.latency_deadline_ms,
+            "deadline_miss_rate": sum(value > thresholds.latency_deadline_ms for value in latency_ms) / len(latency_ms)
+            if latency_ms
+            else None,
+            "first_tentative_ms": min(
+                (
+                    (receive_lookup[id(item.system_record)] - item.system_record["source_timestamp_ns"]) / 1_000_000
+                    for item in collected
+                    if item.system_record.get("state") == "tentative"
+                ),
+                default=None,
+            ),
+            "first_confirmed_ms": min(
+                (
+                    (receive_lookup[id(item.system_record)] - item.system_record["source_timestamp_ns"]) / 1_000_000
+                    for item in collected
+                    if item.system_record.get("state") in {"confirmed", "reacquired"}
+                ),
+                default=None,
+            ),
+            "over_time_ms": latency_ms,
+        }
+    )
+    if len(latency_ms) >= 2:
+        midpoint = len(latency_ms) // 2
+        first_half = percentile(latency_ms[:midpoint], 0.5)
+        second_half = percentile(latency_ms[midpoint:], 0.5)
+        latency["drift_ms"] = second_half - first_half if first_half is not None and second_half is not None else None
+    else:
+        latency["drift_ms"] = None
+
+    count_by_frame: Counter[tuple[str, int]] = Counter(
+        (gt["sequence_id"], gt["source_timestamp_ns"])
+        for gt in ground_truth
+        if gt["on_screen"] and gt["eligible_for_detection"]
+    )
+    group_data: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    for gt in ground_truth:
+        if not gt["on_screen"] or not gt["eligible_for_detection"]:
+            continue
+        count = count_by_frame[(gt["sequence_id"], gt["source_timestamp_ns"])]
+        group = "1" if count == 1 else ("2" if count == 2 else ("4" if count <= 4 else "8+"))
+        group_data[group][1] += 1
+        if (gt["sequence_id"], gt["source_timestamp_ns"], gt["target_id"]) in match_by_target_frame:
+            group_data[group][0] += 1
+    multi_target = {
+        group: {"matched": values[0], "eligible": values[1], "coverage": values[0] / values[1]}
+        for group, values in sorted(group_data.items())
+    }
+    latency_by_count: dict[str, list[float]] = defaultdict(list)
+    fault_latency: list[float] = []
+    for item in collected:
+        record = item.system_record
+        if record.get("event") not in {"track_started", "track_update", "track_ended"}:
+            continue
+        value = (item.collector_received_timestamp_ns - record["source_timestamp_ns"]) / 1_000_000
+        count = count_by_frame.get((record["sequence_id"], record["source_timestamp_ns"]), 0)
+        group = "0" if count == 0 else ("1" if count == 1 else ("2" if count == 2 else ("4" if count <= 4 else "8+")))
+        latency_by_count[group].append(value)
+        if (record["sequence_id"], record["source_timestamp_ns"]) in fault_timestamps:
+            fault_latency.append(value)
+    latency["by_target_count"] = {group: _summary(values) for group, values in sorted(latency_by_count.items())}
+    latency["under_fault_injection"] = _summary(fault_latency)
+    if sequence_timestamps:
+        total_camera_ns = 0
+        for timestamps_for_sequence in sequence_timestamps.values():
+            ordered = sorted(timestamps_for_sequence)
+            steps = [right - left for left, right in zip(ordered, ordered[1:], strict=False)]
+            total_camera_ns += (
+                (ordered[-1] - ordered[0] + (int(statistics.median(steps)) if steps else 0)) if ordered else 0
+            )
+        camera_minutes = total_camera_ns / 60_000_000_000
+        camera_hours = camera_minutes / 60
+        false_detections["detections_per_camera_minute"] = (
+            len(unmatched_tracks) / camera_minutes if camera_minutes else None
+        )
+        false_detections["track_births_per_camera_hour"] = len(false_by_id) / camera_hours if camera_hours else None
+        false_detections["false_track_seconds_per_camera_hour"] = (
+            false_track_seconds / camera_hours if camera_hours else None
+        )
+    camera_seconds = camera_minutes * 60
+    latency["output_update_rate_hz"] = len(latency_ms) / camera_seconds if camera_seconds else None
+
+    robustness = {
+        "occlusion_survival": {
+            "events": len(reacquisition_rows),
+            "track_active_rate": sum(row["track_remained_active"] for row in reacquisition_rows)
+            / len(reacquisition_rows)
+            if reacquisition_rows
+            else None,
+            "same_id_preserved_rate": sum(row["same_id_preserved_during_gap"] for row in reacquisition_rows)
+            / len(reacquisition_rows)
+            if reacquisition_rows
+            else None,
+            "wrong_target_associations": sum(row["wrong_target_association"] for row in reacquisition_rows),
+            "by_gap": reacquisition_rows,
+        }
+    }
+    timestamps_by_sequence: dict[str, list[int]] = defaultdict(list)
+    for gt_row in ground_truth:
+        timestamps_by_sequence[gt_row["sequence_id"]].append(gt_row["source_timestamp_ns"])
+    fault_recovery: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for (sequence, timestamp), kinds in sorted(fault_events.items()):
+        later = sorted(value for value in set(timestamps_by_sequence[sequence]) if value > timestamp)
+        recovery_timestamp = later[0] if later else None
+        eligible_targets = {
+            gt_row["target_id"]
+            for gt_row in ground_truth
+            if recovery_timestamp is not None
+            and gt_row["sequence_id"] == sequence
+            and gt_row["source_timestamp_ns"] == recovery_timestamp
+            and gt_row["on_screen"]
+            and gt_row["eligible_for_detection"]
+        }
+        recovery_matches = [
+            match
+            for match in matches
+            if recovery_timestamp is not None
+            and match.sequence_id == sequence
+            and match.source_timestamp_ns == recovery_timestamp
+            and match.target_id in eligible_targets
+            and match.output["support"] == "observed"
+        ]
+        before_matches = {
+            match.target_id: match.track_id
+            for match in matches
+            if match.sequence_id == sequence and match.source_timestamp_ns <= timestamp
+        }
+        same_id = sum(before_matches.get(match.target_id) == match.track_id for match in recovery_matches)
+        for kind in kinds:
+            fault_recovery[kind].append(
+                {
+                    "sequence_id": sequence,
+                    "fault_timestamp_ns": timestamp,
+                    "recovery_timestamp_ns": recovery_timestamp,
+                    "eligible_targets": len(eligible_targets),
+                    "observed_recoveries": len(recovery_matches),
+                    "same_id_recoveries": same_id,
+                }
+            )
+    robustness["feed_faults"] = {
+        kind: {
+            "events": len(rows),
+            "observed_recovery_rate": (
+                sum(row["observed_recoveries"] for row in rows) / sum(row["eligible_targets"] for row in rows)
+                if sum(row["eligible_targets"] for row in rows)
+                else None
+            ),
+            "same_id_recovery_rate": (
+                sum(row["same_id_recoveries"] for row in rows) / sum(row["eligible_targets"] for row in rows)
+                if sum(row["eligible_targets"] for row in rows)
+                else None
+            ),
+            "details": rows,
+        }
+        for kind, rows in sorted(fault_recovery.items())
+    }
+    interruption = robustness["feed_faults"].get("feed_interruption", {})
+    blackout = robustness["feed_faults"].get("blackout", {})
+    reacquisition["after_feed_interruption_rate"] = interruption.get("observed_recovery_rate")
+    reacquisition["after_visible_detector_dropout_rate"] = blackout.get("observed_recovery_rate")
+
+    return {
+        "acquisition": acquisition,
+        "coverage": coverage,
+        "visible_dropouts": dropouts,
+        "localization": localization,
+        "identity": identity,
+        "false_detections": false_detections,
+        "reacquisition": reacquisition,
+        "robustness": robustness,
+        "latency": latency,
+        "multi_target": multi_target,
+        "sample_counts": {
+            "ground_truth_records": len(ground_truth),
+            "output_records": len(outputs),
+            "matches": len(matches),
+        },
+    }, matches
