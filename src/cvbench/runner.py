@@ -219,6 +219,11 @@ def _run_id() -> str:
     return f"{stamp}-{uuid.uuid4().hex[:8]}"
 
 
+def _restrict_socket_access(socket_dir: Path, socket_path: Path) -> None:
+    socket_dir.chmod(0o700)
+    socket_path.chmod(0o600)
+
+
 def _wait_for_readiness(collector: OutputCollector, runtime: StartedRuntime, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -263,8 +268,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         server.bind(str(socket_path))
-        socket_dir.chmod(0o755)
-        socket_path.chmod(0o777)
+        _restrict_socket_access(socket_dir, socket_path)
         server.listen(1)
         server.settimeout(system.readiness_timeout_seconds)
     except OSError:

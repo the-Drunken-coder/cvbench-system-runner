@@ -14,6 +14,8 @@ from pathlib import Path
 from .config import SystemConfig
 from .errors import RuntimeFailure
 
+UNPRIVILEGED_SOCKET_UID = 65532
+
 
 @dataclass
 class StartedRuntime:
@@ -30,6 +32,17 @@ class StartedRuntime:
 class ResolvedImage:
     reference: str
     image_id: str
+
+
+def _align_docker_socket_owner(socket_dir: Path) -> tuple[int, int]:
+    socket_path = socket_dir / "input.sock"
+    owner = socket_path.stat()
+    uid, gid = owner.st_uid, owner.st_gid
+    if uid == 0:
+        uid = gid = UNPRIVILEGED_SOCKET_UID
+        os.chown(socket_dir, uid, gid)
+        os.chown(socket_path, uid, gid)
+    return uid, gid
 
 
 def _resolve_image(image: str) -> ResolvedImage:
@@ -61,6 +74,8 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
     cidfile: Path | None = None
     resolved_image: str | None = None
     resolved_image_id: str | None = None
+    container_user: str | None = None
+    socket_access: dict[str, object] | None = None
     if config.runtime_type == "local":
         command = [sys.executable if value == "{python}" else value for value in config.command]
         cwd = config.path.parent.parent
@@ -69,6 +84,14 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
         resolution = _resolve_image(config.image)
         resolved_image = resolution.reference
         resolved_image_id = resolution.image_id
+        socket_uid, socket_gid = _align_docker_socket_owner(socket_dir)
+        container_user = f"{socket_uid}:{socket_gid}"
+        socket_access = {
+            "owner_uid": socket_uid,
+            "owner_gid": socket_gid,
+            "directory_mode": oct(socket_dir.stat().st_mode & 0o777),
+            "socket_mode": oct((socket_dir / "input.sock").stat().st_mode & 0o777),
+        }
         cidfile = run_dir / "container.cid"
         command = [
             "docker",
@@ -78,6 +101,8 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
             str(cidfile),
             "--network",
             "none",
+            "--user",
+            container_user,
             "--volume",
             f"{socket_dir}:/run/cvbench",
             "--env",
@@ -115,6 +140,8 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
         },
         "status": "not_enforced_local" if config.runtime_type == "local" else "pending_verification",
         "future_frame_isolation": config.runtime_type == "docker",
+        "expected_container_user": container_user,
+        "socket_access": socket_access,
         "expected_mount": (
             {"source": str(socket_dir), "destination": "/run/cvbench"}
             if config.runtime_type == "docker"
@@ -201,7 +228,9 @@ def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: 
     cpu_applied = host.get("NanoCpus", 0) / 1_000_000_000 if host.get("NanoCpus") else None
     memory_applied = host.get("Memory", 0) / (1024 * 1024) if host.get("Memory") else None
     executed_image_id = inspected.get("Image")
-    executed_reference = inspected.get("Config", {}).get("Image")
+    container_config = inspected.get("Config", {})
+    executed_reference = container_config.get("Image")
+    executed_user = container_config.get("User")
     image_identity = runtime.isolation["image_identity"]
     assert isinstance(image_identity, dict)
     image_identity.update(
@@ -213,6 +242,7 @@ def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: 
     identity_ok = (
         executed_image_id == runtime.resolved_image_id and executed_reference == runtime.resolved_image
     )
+    user_ok = executed_user == runtime.isolation.get("expected_container_user")
     expected_mount = runtime.isolation.get("expected_mount")
     expected_mount_ok = (
         isinstance(expected_mount, dict)
@@ -227,7 +257,7 @@ def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: 
     runtime.isolation.update(
         {
             "status": "verified"
-            if mount_ok and network_ok and limits_ok and identity_ok
+            if mount_ok and network_ok and limits_ok and identity_ok and user_ok
             else "verification_failed",
             "container_id": container_id,
             "mounts": mount_pairs,
@@ -235,6 +265,8 @@ def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: 
             "applied": {"cpu_limit": cpu_applied, "memory_limit_mb": memory_applied},
             "future_frame_isolation": mount_ok and network_ok,
             "image_identity_verified": identity_ok,
+            "executed_container_user": executed_user,
+            "container_user_alignment_verified": user_ok,
         }
     )
     return runtime.isolation

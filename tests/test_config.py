@@ -97,7 +97,10 @@ def test_acquisition_deadlines_are_positive_integer_values(tmp_path: Path, value
         load_benchmark(path)
 
 
-@pytest.mark.parametrize("key", ["max_output_records", "max_output_line_bytes", "max_total_output_bytes"])
+@pytest.mark.parametrize(
+    "key",
+    ["max_output_records", "max_output_line_bytes", "max_total_output_bytes", "max_output_records_per_second"],
+)
 @pytest.mark.parametrize("value", ["10", 0, -1, True])
 def test_output_limits_are_positive_integers(tmp_path: Path, key: str, value: Any) -> None:
     path = _benchmark_file(tmp_path, lambda data: data.__setitem__(key, value))

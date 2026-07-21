@@ -1,6 +1,6 @@
 # Unix-domain-socket frame protocol
 
-Version 1 uses a progressive Unix-domain stream socket. It is local, easy to mount into a container, not exposed on a network, and prevents access to future frames. The runner sends exactly one message at a time in source order.
+Version 1 uses a progressive Unix-domain stream socket. It is local, easy to mount into a container, not exposed on a network, and prevents access to future frames. The temporary directory and socket are owner-only (`0700` and `0600`); Docker runs with that owner's numeric UID/GID. The runner sends exactly one message at a time in source order.
 
 Each message is:
 

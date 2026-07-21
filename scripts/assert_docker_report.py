@@ -17,6 +17,16 @@ def main() -> None:
     assert isolation["status"] == "verified", isolation
     assert isolation["future_frame_isolation"] is True
     assert isolation["image_identity_verified"] is True
+    assert isolation["container_user_alignment_verified"] is True
+    assert isolation["executed_container_user"] == isolation["expected_container_user"]
+    uid, gid = (int(value) for value in isolation["expected_container_user"].split(":"))
+    assert uid > 0 and gid >= 0
+    assert isolation["socket_access"] == {
+        "owner_uid": uid,
+        "owner_gid": gid,
+        "directory_mode": "0o700",
+        "socket_mode": "0o600",
+    }
     assert isolation["network_mode"] == "none"
     assert isolation["expected_mount"]["destination"] == "/run/cvbench"
     assert isolation["mounts"] == [isolation["expected_mount"]]
