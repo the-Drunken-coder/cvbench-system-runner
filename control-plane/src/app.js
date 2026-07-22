@@ -433,8 +433,8 @@ function validateOperatorNote(value) {
 }
 
 function cleanActorId(value) {
-  const actor = String(value || "unattributed-operator").trim();
-  return /^[A-Za-z0-9._:@/-]{1,100}$/.test(actor) && !/^(?:unattributed|legacy)(?:[-_]|$)/i.test(actor) ? actor : null;
+  const actor = String(value || "unattributed-operator").trim().toLowerCase();
+  return /^[A-Za-z0-9._:@/-]{1,100}$/.test(actor) && !/^(?:unattributed|legacy)(?:[._:@/-]|$)/i.test(actor) ? actor : null;
 }
 
 function parseAdjudicatorCredentials(value) {
@@ -448,11 +448,13 @@ function parseAdjudicatorCredentials(value) {
     }
   }
   if (!isObject(parsed) || Array.isArray(parsed)) return [];
+  const seenActors = new Set();
   const seenTokens = new Set();
   const credentials = [];
   for (const [actorId, token] of Object.entries(parsed)) {
     const cleanActor = cleanActorId(actorId);
-    if (!cleanActor || typeof token !== "string" || token.length === 0 || seenTokens.has(token)) return [];
+    if (!cleanActor || seenActors.has(cleanActor) || typeof token !== "string" || token.length === 0 || seenTokens.has(token)) return [];
+    seenActors.add(cleanActor);
     seenTokens.add(token);
     credentials.push({ actorId: cleanActor, token });
   }

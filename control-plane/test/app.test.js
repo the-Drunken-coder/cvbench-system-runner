@@ -248,6 +248,29 @@ test("adjudicator credentials map to distinct actors and cannot cross scopes", a
   });
   assert.equal((await operatorNoteRequest(duplicateActorJson, created.id, "alice-token-a")).status, 401);
 
+  const duplicateNormalizedActor = createApp({
+    store,
+    submissionKeys: SUBMISSION_KEY,
+    runnerToken: RUNNER_TOKEN,
+    operatorReadKeys: OPERATOR_READ_TOKEN,
+    operatorAdjudicatorCredentials: {
+      "operator/alice": "alice-token-a",
+      " operator/alice ": "alice-token-b",
+    },
+  });
+  assert.equal((await operatorNoteRequest(duplicateNormalizedActor, created.id, "alice-token-a")).status, 401);
+
+  for (const actorId of ["unattributed/foo", "legacy/operator"]) {
+    const reservedActor = createApp({
+      store,
+      submissionKeys: SUBMISSION_KEY,
+      runnerToken: RUNNER_TOKEN,
+      operatorReadKeys: OPERATOR_READ_TOKEN,
+      operatorAdjudicatorCredentials: { [actorId]: "reserved-token" },
+    });
+    assert.equal((await operatorNoteRequest(reservedActor, created.id, "reserved-token")).status, 401);
+  }
+
   const unattributed = createApp({
     store,
     submissionKeys: SUBMISSION_KEY,
