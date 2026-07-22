@@ -143,6 +143,10 @@ test("operator API is separate from public and runner credentials", async () => 
   const evidence = await (await request(`/api/v1/operator/jobs/${created.id}/evidence`, { headers })).json();
   assert.equal(evidence.audit_evidence.frame_samples[0].matches[0].target_id, "target-1");
   assert.equal(evidence.audit_evidence.score_explanation.coverage_denominators.observed_coverage, 1);
+  assert.equal(evidence.audit_evidence.neutral_ignored_predictions.count, 1);
+  assert.equal(evidence.audit_evidence.score_explanation.scoreable_target_denominator, 1);
+  assert.equal(evidence.audit_evidence.false_track_segment_count, 1);
+  assert.ok(!evidence.audit_evidence.false_track_segments.some((segment) => segment.track_id === "neutral-track"));
   assert.equal((await request(`/api/v1/operator/jobs/${created.id}/notes`, {
     method: "POST",
     headers: { ...headers, "content-type": "application/json" },
@@ -458,7 +462,13 @@ function validBody() {
 function scoredReport() {
   return {
     outcome: { status: "completed" },
-    metrics: { sample_counts: { matches: 12 }, identity: { id_switches: 0 } },
+    metrics: {
+      sample_counts: { matches: 12, neutral_ignored_predictions: 1 },
+      identity: { id_switches: 0 },
+      acquisition: { total_eligible_targets: 1 },
+      localization: { sample_count: 12 },
+      false_detections: { track_births: 1 },
+    },
     runtime_isolation: { status: "verified", network_mode: "none" },
     diagnostics: { sut_stderr: ["<script>throw new Error('untrusted')</script>"] },
     audit_evidence: {
@@ -467,10 +477,16 @@ function scoredReport() {
         {
           matches: [{ target_id: "target-1", iou: 0.91 }],
           ground_truth: [{ count_reason: "matched_observed_and_counted" }],
-          predictions: [{ track_id: "track-1" }],
+          predictions: [{ track_id: "track-1" }, { track_id: "neutral-track", neutral_ignored: true }],
         },
       ],
-      score_explanation: { coverage_denominators: { observed_coverage: 1 } },
+      neutral_ignored_predictions: { count: 1, annotation_ids: ["ignore-1"] },
+      false_track_segment_count: 1,
+      score_explanation: {
+        scoreable_target_denominator: 1,
+        coverage_denominators: { observed_coverage: 1, eligible_targets: 1 },
+        component_counts: { localization: 12 },
+      },
       flags: [{ id: "false_track", status: "flagged", review_aid_only: true }],
       false_track_segments: [{ track_id: "false-track", duration_ms: 100 }],
     },

@@ -23,6 +23,7 @@ from .config import BenchmarkConfig, load_benchmark, load_system
 from .diagnostics import generate_findings
 from .errors import RuntimeFailure
 from .evidence import generate_evidence_packets
+from .matching import match_records_by_support
 from .metrics import calculate_metrics
 from .model import CollectedRecord, RunArtifacts, RuntimeOutcome, Scenario
 from .protocol import send_message
@@ -597,6 +598,11 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             "Statistical comparison confidence is sample-count based; confidence intervals are not inferred.",
         ],
     }
+    _, _, audit_unmatched = match_records_by_support(
+        ground_truth,
+        [item.system_record for item in scored_collected],
+        benchmark.thresholds,
+    )
     report["audit_evidence"] = build_audit_evidence(
         ground_truth,
         scored_collected,
@@ -605,6 +611,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         feed_counters,
         resource_data,
         report["runtime_isolation"],
+        neutral_outputs=[record for record in audit_unmatched if record.get("neutral_ignored")],
     )
     report["provenance"]["raw_evidence_available"] = False
     report["provenance"]["bounded_audit_evidence_sha256"] = None

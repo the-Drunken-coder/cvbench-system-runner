@@ -86,6 +86,34 @@ assert(evidence.audit_evidence.frame_samples?.length > 0, "operator evidence los
 assert(evidence.audit_evidence.score_explanation?.coverage_denominators, "operator evidence lost denominator explanations");
 assert(evidence.audit_evidence.flags?.length > 0, "operator evidence lost audit flags");
 assert(evidence.audit_evidence.false_track_segments, "operator evidence lost false-track evidence");
+assert(
+  evidence.audit_evidence.neutral_ignored_predictions?.count ===
+    report.metrics.sample_counts.neutral_ignored_predictions,
+  "metric neutral count does not reconcile with operator evidence",
+);
+const neutralTrackIds = new Set(
+  evidence.audit_evidence.frame_samples.flatMap((sample) =>
+    sample.predictions.filter((prediction) => prediction.neutral_ignored).map((prediction) => prediction.track_id),
+  ),
+);
+assert(
+  evidence.audit_evidence.false_track_segments.every((segment) => !neutralTrackIds.has(segment.track_id)),
+  "neutral predictions appeared as false tracks",
+);
+assert(
+  evidence.audit_evidence.score_explanation.scoreable_target_denominator ===
+    report.metrics.acquisition.total_eligible_targets,
+  "scoreable target denominator does not reconcile with metrics",
+);
+assert(
+  evidence.audit_evidence.score_explanation.component_counts.localization ===
+    report.metrics.localization.sample_count,
+  "localization component does not reconcile with operator evidence",
+);
+assert(
+  evidence.audit_evidence.false_track_segment_count === report.metrics.false_detections.track_births,
+  "false-track component does not reconcile with operator evidence",
+);
 const noteResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/notes`, {
   method: "POST",
   headers: { authorization: `Bearer ${operatorWriteToken}`, "content-type": "application/json" },
