@@ -82,3 +82,28 @@ def test_matched_ineligible_rows_are_not_claimed_as_coverage_score() -> None:
     assert "including an ineligible row" in evidence["score_explanation"]["component_eligibility"]["localization"]
     assert evidence["score_explanation"]["component_counts"]["observed_coverage"] == 10
     assert evidence["score_explanation"]["component_counts"]["localization"] == 12
+
+
+def test_eligible_unmatched_frame_is_a_denominator_miss_not_not_counted() -> None:
+    ground_truth = [gt(0, sequence="two-frame"), gt(1_000_000, sequence="two-frame")]
+    records = [output(0, sequence="two-frame")]
+    metrics, matches = calculate_metrics(ground_truth, records, Thresholds())
+    evidence = build_audit_evidence(
+        ground_truth,
+        records,
+        matches,
+        metrics,
+        {"delivered_frames": 2},
+        {"sample_count": 1},
+        {"status": "verified", "network_mode": "none"},
+    )
+
+    assert metrics["coverage"]["overall_observed"] == 0.5
+    assert evidence["score_explanation"]["coverage_denominators"]["observed_coverage"] == 2
+    assert evidence["score_explanation"]["component_counts"]["observed_coverage"] == 1
+    assert evidence["score_explanation"]["eligible_without_gated_match"] == 1
+    miss = evidence["frame_samples"][1]["ground_truth"][0]
+    assert miss["denominator_eligible"]["observed_coverage"] is True
+    assert miss["matched"] is False
+    assert miss["counted_toward_score"]["observed_coverage"] is False
+    assert miss["count_reason"] == "eligible_without_gated_match"

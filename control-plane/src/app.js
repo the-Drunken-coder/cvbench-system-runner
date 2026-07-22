@@ -13,8 +13,7 @@ export function createApp(options) {
     submissionKeys: splitKeys(options.submissionKeys),
     runnerToken: String(options.runnerToken || ""),
     operatorReadKeys: splitKeys(options.operatorReadKeys || options.operatorToken),
-    operatorWriteKeys: splitKeys(options.operatorWriteKeys),
-    operatorActorId: cleanActorId(options.operatorActorId),
+    operatorAdjudicatorCredentials: parseAdjudicatorCredentials(options.operatorAdjudicatorCredentials),
     maxSubmissionsPerHour: boundedInteger(options.maxSubmissionsPerHour, 20, 1, 1000),
     leaseSeconds: boundedInteger(options.leaseSeconds, 3000, 60, 7200),
   };
@@ -146,8 +145,11 @@ async function route(request, config) {
     const id = operatorMatch[1];
     const subresource = operatorMatch[2];
     const write = request.method === "POST" && subresource === "notes";
-    const operatorKeys = write ? config.operatorWriteKeys : config.operatorReadKeys;
-    if (!(await authorized(bearerToken(request), operatorKeys))) return unauthorized(write ? "adjudicator token" : "operator read token");
+    const token = bearerToken(request);
+    const actorId = write ? await actorForCredential(token, config.operatorAdjudicatorCredentials) : null;
+    if (write ? !actorId : !(await authorized(token, config.operatorReadKeys))) {
+      return unauthorized(write ? "adjudicator credential" : "operator read token");
+    }
     if (!id) {
       if (request.method !== "GET") return problem(405, "method_not_allowed", "Only GET is supported for the operator job list.");
       const status = url.searchParams.get("status") || "";
@@ -178,8 +180,8 @@ async function route(request, config) {
         verdict: validation.value.verdict,
         note: validation.value.note,
         createdAt: unixTime(),
-        operatorKeyHash: await sha256(bearerToken(request)),
-        actorId: config.operatorActorId,
+        operatorKeyHash: await sha256(token),
+        actorId,
       });
       return json(note, 201);
     }
@@ -365,8 +367,10 @@ function operatorEvidence(value) {
     schema_version: "cvbench.audit/v1",
     job_id: value.id,
     audit_evidence: report.audit_evidence || null,
-    artifacts: report.provenance?.evidence_artifacts || [],
-    raw_artifact_policy: "Large raw JSONL/video artifacts are retained as authenticated GitHub Actions artifacts for 7 days; the manifest hash provides integrity evidence and access expires with retention.",
+    artifacts: [],
+    raw_evidence_available: report.provenance?.raw_evidence_available === true,
+    bounded_audit_evidence_sha256: report.provenance?.bounded_audit_evidence_sha256 || null,
+    raw_artifact_policy: "Raw ground-truth and model-output artifacts are not uploaded or exposed by this public repository; only bounded authenticated audit evidence and integrity hashes are retained.",
   };
 }
 
@@ -415,7 +419,27 @@ function validateOperatorNote(value) {
 
 function cleanActorId(value) {
   const actor = String(value || "unattributed-operator").trim();
-  return /^[A-Za-z0-9._:@/-]{1,100}$/.test(actor) ? actor : "unattributed-operator";
+  return /^[A-Za-z0-9._:@/-]{1,100}$/.test(actor) && !/^(?:unattributed|legacy)(?:[-_]|$)/i.test(actor) ? actor : null;
+}
+
+function parseAdjudicatorCredentials(value) {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  const entries = Array.isArray(parsed)
+    ? parsed.map((item) => [item?.actorId, item?.token])
+    : isObject(parsed)
+      ? Object.entries(parsed)
+      : [];
+  return entries.flatMap(([actorId, token]) => {
+    const cleanActor = cleanActorId(actorId);
+    return cleanActor && typeof token === "string" && token.length > 0 ? [{ actorId: cleanActor, token }] : [];
+  });
 }
 
 function parseCursor(value) {
@@ -461,6 +485,17 @@ async function authorized(candidate, expectedTokens) {
     match |= constantTimeEqual(candidateDigest, expectedDigest) ? 1 : 0;
   }
   return match === 1;
+}
+
+async function actorForCredential(candidate, credentials) {
+  if (!candidate || credentials.length === 0) return null;
+  const candidateDigest = await digest(candidate);
+  let actorId = null;
+  for (const credential of credentials) {
+    const expectedDigest = await digest(credential.token || "invalid-placeholder");
+    if (constantTimeEqual(candidateDigest, expectedDigest)) actorId = credential.actorId;
+  }
+  return actorId;
 }
 
 function constantTimeEqual(left, right) {
@@ -621,7 +656,7 @@ export const OPENAPI = {
       get: { operationId: "getOperatorAudit", security: [{ operatorReadKey: [] }], responses: { 200: { description: "Review-only anomaly flags and fairness explanation" } } },
     },
     "/api/v1/operator/jobs/{id}/evidence": {
-      get: { operationId: "getOperatorEvidence", security: [{ operatorReadKey: [] }], responses: { 200: { description: "Bounded sampled frame evidence and 7-day authenticated artifact references" } } },
+      get: { operationId: "getOperatorEvidence", security: [{ operatorReadKey: [] }], responses: { 200: { description: "Bounded sampled frame evidence, integrity hash, and explicit raw-evidence availability" } } },
     },
     "/api/v1/operator/jobs/{id}/notes": {
       get: { operationId: "listOperatorNotes", security: [{ operatorReadKey: [] }], responses: { 200: { description: "Adjudication trail" } } },
@@ -632,7 +667,7 @@ export const OPENAPI = {
     securitySchemes: {
       submissionKey: { type: "http", scheme: "bearer" },
       operatorReadKey: { type: "http", scheme: "bearer", description: "Least-privilege operator read credential; never the submission, adjudicator, or runner token." },
-      operatorAdjudicatorKey: { type: "http", scheme: "bearer", description: "Separate least-privilege adjudication write credential; it cannot read operator routes and is never exposed or stored as a bearer value." },
+      operatorAdjudicatorKey: { type: "http", scheme: "bearer", description: "Credential mapped to one stable actor identity; it cannot read operator routes and is never exposed or stored as a bearer value." },
     },
     schemas: {
       CreateSubmission: {

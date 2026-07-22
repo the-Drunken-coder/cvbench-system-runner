@@ -19,7 +19,7 @@ The Worker source, site, migrations, and JavaScript tests live in `control-plane
 - Submission keys are compared through fixed-length SHA-256 digests with a constant-time byte comparison. D1 stores only the submitter-key digest.
 - `Idempotency-Key` is unique per submitter-key digest. Repeating the same body returns the existing job; changing the body returns `409`.
 - Public reads omit contact, notes, authentication data, lease data, raw model output, stderr, and raw evidence artifacts. They return score summaries and finding statements only.
-- Operator reads use `OPERATOR_READ_API_KEYS`; adjudication writes use a separate `OPERATOR_ADJUDICATOR_API_KEYS` credential and stable non-secret `OPERATOR_ACTOR_ID`. Submission, runner, and read-only tokens cannot write notes. All bearer verification uses the same SHA-256 digest plus constant-time comparison path; only credential digests and the actor ID are stored, never bearer values.
+- Operator reads use `OPERATOR_READ_API_KEYS`; adjudication writes use the secret JSON mapping `OPERATOR_ADJUDICATOR_CREDENTIALS={"actor/id":"token"}`. Each credential maps to exactly one stable actor identity; invalid or generic identities fail closed. Submission, runner, and read-only tokens cannot write notes. All bearer verification uses the same SHA-256 digest plus constant-time comparison path; only credential digests and the mapped actor ID are stored, never bearer values.
 - Operator flags are deterministic review aids. They never automatically disqualify a model; adjudication is an explicit note/verdict trail.
 - A trusted runner bearer token protects leases and callbacks. Each lease also gets an independent random token, stored only as a digest, and state updates require `running -> succeeded|failed`. The 3000-second lease exceeds the 40-minute workflow timeout with callback margin.
 - Each lease advertises the Worker's one-MiB result-body budget. The trusted runner preserves the complete scored report and deterministically retains head-and-tail stderr diagnostics that fit, recording original, retained, and omitted counts in the public result.
@@ -48,8 +48,7 @@ Create `control-plane/.dev.vars` with local-only values (the file is ignored by 
 SUBMISSION_API_KEYS="local-submission-key"
 RUNNER_TOKEN="local-runner-token"
 OPERATOR_READ_API_KEYS="local-operator-read-token"
-OPERATOR_ADJUDICATOR_API_KEYS="local-operator-write-token"
-OPERATOR_ACTOR_ID="local-operator"
+OPERATOR_ADJUDICATOR_CREDENTIALS='{"local/alice":"local-alice-write-token","local/bob":"local-bob-write-token"}'
 ```
 
 Then open the local URL printed by Wrangler. The health, contract, and OpenAPI endpoints are:
@@ -72,7 +71,10 @@ CVBENCH_API_BASE_URL=http://127.0.0.1:8787 \
 CVBENCH_API_KEY="$SUBMISSION_API_KEYS" \
 CVBENCH_RUNNER_TOKEN="$RUNNER_TOKEN" \
 CVBENCH_OPERATOR_READ_TOKEN="$OPERATOR_READ_API_KEYS" \
-CVBENCH_OPERATOR_WRITE_TOKEN="$OPERATOR_ADJUDICATOR_API_KEYS" \
+CVBENCH_OPERATOR_WRITE_TOKEN="local-alice-write-token" \
+CVBENCH_OPERATOR_SECOND_WRITE_TOKEN="local-bob-write-token" \
+CVBENCH_OPERATOR_ACTOR_ID="local/alice" \
+CVBENCH_OPERATOR_SECOND_ACTOR_ID="local/bob" \
 CVBENCH_REPORT_PATH=/absolute/path/to/report.json \
 npm run test:d1
 ```
@@ -103,10 +105,10 @@ In the Cloudflare dashboard:
    npx wrangler secret put SUBMISSION_API_KEYS
    npx wrangler secret put RUNNER_TOKEN
    npx wrangler secret put OPERATOR_READ_API_KEYS
-   npx wrangler secret put OPERATOR_ADJUDICATOR_API_KEYS
+   npx wrangler secret put OPERATOR_ADJUDICATOR_CREDENTIALS
    ```
 
-   `SUBMISSION_API_KEYS`, `OPERATOR_READ_API_KEYS`, and `OPERATOR_ADJUDICATOR_API_KEYS` accept comma-separated keys to allow rotation. Set the non-secret Worker variable `OPERATOR_ACTOR_ID` to the stable operator identity. Do not put bearer values in `wrangler.jsonc`, Actions variables, job metadata, PR text, or logs.
+   `SUBMISSION_API_KEYS` and `OPERATOR_READ_API_KEYS` accept comma-separated keys to allow rotation. `OPERATOR_ADJUDICATOR_CREDENTIALS` is a secret JSON actor-to-token mapping; rotate it as one secret and do not put bearer values in `wrangler.jsonc`, Actions variables, job metadata, PR text, or logs.
 
 9. In GitHub repository settings, add the Actions variable `CVBENCH_API_BASE_URL` with the deployed `https://...workers.dev` origin. Create an environment named `cvbench-production`, restrict its deployment branches to `main` only, and put `CVBENCH_RUNNER_TOKEN` in that environment with exactly the same value as the Worker `RUNNER_TOKEN`. Do not keep a repository-level copy of this secret.
 10. Manually dispatch **Trusted benchmark runner** once. The cron schedule checks for one queued job every 15 minutes.
@@ -162,7 +164,7 @@ CVBENCH_POLL_MS=5000 node scripts/cvbench-operator.mjs watch "$JOB_ID"
 node scripts/cvbench-operator.mjs audit "$JOB_ID"
 ```
 
-The operator job shape includes queue timestamps, lease expiry, attempts/retries, exact OCI digest, benchmark/scenario and comparison fingerprints, runner commit and workflow link, score components, failure reasons, and audit-flag counts. `/audit` explains counted score components and marks every anomaly as `review_aid_only`; `/evidence` returns bounded frame samples, matching decisions, observed/predicted/coasting counts, occlusion/reacquisition events, false-track segments, resource/isolation evidence, and reproducibility inputs. Large JSONL/video artifacts remain runner-owned and must be exposed only through controlled expiring links recorded under `provenance.evidence_artifacts`.
+The operator job shape includes queue timestamps, lease expiry, attempts/retries, exact OCI digest, benchmark/scenario and comparison fingerprints, runner commit and workflow link, score components, failure reasons, and audit-flag counts. `/audit` explains denominator eligibility and positive credit and marks every anomaly as `review_aid_only`; `/evidence` returns bounded frame samples, matching decisions, observed/predicted/coasting counts, occlusion/reacquisition events, false-track segments, resource/isolation evidence, and reproducibility inputs. Raw JSONL/video artifacts are not uploaded or exposed by this public repository; evidence reports carry bounded-audit integrity hashes and `raw_evidence_available=false`.
 
 Leave a fairness/adjudication trail without changing the score:
 

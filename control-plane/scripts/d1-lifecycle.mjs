@@ -5,6 +5,9 @@ const submissionKey = required("CVBENCH_API_KEY");
 const runnerToken = required("CVBENCH_RUNNER_TOKEN");
 const operatorReadToken = required("CVBENCH_OPERATOR_READ_TOKEN");
 const operatorWriteToken = required("CVBENCH_OPERATOR_WRITE_TOKEN");
+const operatorSecondWriteToken = required("CVBENCH_OPERATOR_SECOND_WRITE_TOKEN");
+const expectedActorId = required("CVBENCH_OPERATOR_ACTOR_ID");
+const expectedSecondActorId = required("CVBENCH_OPERATOR_SECOND_ACTOR_ID");
 const report = JSON.parse(await readFile(required("CVBENCH_REPORT_PATH"), "utf8"));
 const digest = "b".repeat(64);
 const idempotencyKey = `safe-baseline-${crypto.randomUUID()}`;
@@ -83,7 +86,16 @@ const noteResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/
 });
 await assertStatus(noteResponse, 201, "operator adjudication note");
 const note = await noteResponse.json();
-assert(note.actorId, "operator note is missing stable actor attribution");
+assert(note.actorId === expectedActorId, "operator note has the wrong actor attribution");
+const secondNoteResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/notes`, {
+  method: "POST",
+  headers: { authorization: `Bearer ${operatorSecondWriteToken}`, "content-type": "application/json" },
+  body: JSON.stringify({ verdict: "needs_review", note: "Second actor attribution proof." }),
+});
+await assertStatus(secondNoteResponse, 201, "second operator adjudication note");
+const secondNote = await secondNoteResponse.json();
+assert(secondNote.actorId === expectedSecondActorId, "second operator note has the wrong actor attribution");
+assert(note.actorId !== secondNote.actorId, "adjudicator credentials must map to distinct actors");
 
 console.log(JSON.stringify({
   submission_id: completed.id,
@@ -92,7 +104,7 @@ console.log(JSON.stringify({
   benchmark_outcome: completed.result.outcome.status,
   audit_schema: evidence.audit_evidence.schema_version,
   flagged_review_aids: audit.flags.filter((flag) => flag.status === "flagged").map((flag) => flag.id),
-  actor_id: note.actorId,
+  actor_ids: [note.actorId, secondNote.actorId],
 }));
 
 function required(name) {

@@ -40,7 +40,7 @@ def build_audit_evidence(
     resources: dict[str, Any],
     runtime_isolation: dict[str, Any],
 ) -> dict[str, Any]:
-    """Return a small evidence packet; raw JSONL remains a runner artifact."""
+    """Return a small bounded evidence packet; raw JSONL is not retained by the control plane."""
 
     gt_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for row in ground_truth:
@@ -103,7 +103,7 @@ def build_audit_evidence(
             elif not row["eligible_for_detection"]:
                 reason = "not_eligible"
             elif match is None:
-                reason = "no_gated_match"
+                reason = "eligible_without_gated_match"
             elif observed_match:
                 reason = "matched_observed_and_counted"
             else:
@@ -116,6 +116,11 @@ def build_audit_evidence(
                     "eligible_for_detection": row["eligible_for_detection"],
                     "visibility_fraction": row["visibility_fraction"],
                     "occlusion": row["occlusion"],
+                    "denominator_eligible": {
+                        "observed_coverage": eligible,
+                        "continuity_coverage": eligible,
+                        "acquisition": eligible,
+                    },
                     "matched": match is not None,
                     "counted_toward_score": counted_toward_score,
                     "counted_as": match.output.get("support") if match else None,
@@ -296,6 +301,15 @@ def build_audit_evidence(
             "localization": "any observed gated match, including an ineligible row when geometry is scored",
             "acquisition": "on_screen and eligible_for_detection with an observed confirmed or reacquired match",
         },
+        "coverage_denominators": {
+            "eligible_rows": sum(row["on_screen"] and row["eligible_for_detection"] for row in ground_truth),
+            "observed_coverage": sum(row["on_screen"] and row["eligible_for_detection"] for row in ground_truth),
+            "continuity_coverage": sum(row["on_screen"] and row["eligible_for_detection"] for row in ground_truth),
+        },
+        "positive_credit_meaning": (
+            "component_counts records positive credit, while coverage_denominators records eligible rows "
+            "including misses"
+        ),
         "component_counts": {
             "observed_coverage": sum(
                 row["on_screen"]
@@ -361,6 +375,6 @@ def build_audit_evidence(
             "resources": {**resources, "over_time": _head_tail(resources.get("over_time", []))},
             "runtime_isolation": runtime_isolation,
         },
-        "reproducibility": {"feed_counters": feed, "raw_artifacts_are_runner_owned": True},
+        "reproducibility": {"feed_counters": feed, "raw_evidence_available": False},
         "flags": flags,
     }

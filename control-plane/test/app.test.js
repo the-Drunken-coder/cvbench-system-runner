@@ -7,7 +7,8 @@ import { MemoryStore } from "./memory-store.js";
 const SUBMISSION_KEY = "submission-key-with-enough-entropy";
 const RUNNER_TOKEN = "runner-token-with-enough-entropy";
 const OPERATOR_READ_TOKEN = "operator-read-token-with-enough-entropy";
-const OPERATOR_WRITE_TOKEN = "operator-write-token-with-enough-entropy";
+const OPERATOR_WRITE_TOKEN = "operator-alice-write-token-with-enough-entropy";
+const OPERATOR_SECOND_WRITE_TOKEN = "operator-bob-write-token-with-enough-entropy";
 const IMAGE = `ghcr.io/example/tracker@sha256:${"a".repeat(64)}`;
 let app;
 let store;
@@ -19,8 +20,10 @@ beforeEach(() => {
     submissionKeys: SUBMISSION_KEY,
     runnerToken: RUNNER_TOKEN,
     operatorReadKeys: OPERATOR_READ_TOKEN,
-    operatorWriteKeys: OPERATOR_WRITE_TOKEN,
-    operatorActorId: "operator/alice",
+    operatorAdjudicatorCredentials: {
+      "operator/alice": OPERATOR_WRITE_TOKEN,
+      "operator/bob": OPERATOR_SECOND_WRITE_TOKEN,
+    },
     maxSubmissionsPerHour: 2,
     leaseSeconds: 3000,
   });
@@ -170,12 +173,47 @@ test("duplicate review aids are store-wide and never claim unavailable compariso
   await result(first.id, { status: "succeeded", lease_token: firstLease.lease.token, report: scoredReport() });
   const secondLease = await (await lease()).json();
   await result(second.id, { status: "succeeded", lease_token: secondLease.lease.token, report: scoredReport() });
+  assert.equal(store.rows.get(first.id).resultSha256, store.rows.get(second.id).resultSha256);
 
   const list = await (await request("/api/v1/operator/jobs?limit=100", { headers: { authorization: `Bearer ${OPERATOR_READ_TOKEN}` } })).json();
   assert.equal(list.comparison.scope, "store_wide");
   assert.equal(list.comparison.truncated, false);
   assert.equal(list.jobs.filter((job) => job.diagnostics.duplicate_model_fingerprint === "review").length, 2);
   assert.equal(list.jobs.filter((job) => job.diagnostics.duplicate_result_fingerprint === "review").length, 2);
+});
+
+test("adjudicator credentials map to distinct actors and cannot cross scopes", async () => {
+  const created = await (await submit(validBody(), "multi-actor-0001")).json();
+  const aliceNote = await (await request(`/api/v1/operator/jobs/${created.id}/notes`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${OPERATOR_WRITE_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ verdict: "needs_review", note: "Alice review." }),
+  })).json();
+  const bobNote = await (await request(`/api/v1/operator/jobs/${created.id}/notes`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${OPERATOR_SECOND_WRITE_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ verdict: "accepted", note: "Bob adjudication." }),
+  })).json();
+  assert.equal(aliceNote.actorId, "operator/alice");
+  assert.equal(bobNote.actorId, "operator/bob");
+  assert.notEqual(aliceNote.actorId, bobNote.actorId);
+  assert.equal((await request(`/api/v1/operator/jobs/${created.id}`, { headers: { authorization: `Bearer ${OPERATOR_WRITE_TOKEN}` } })).status, 401);
+  assert.equal((await request(`/api/v1/operator/jobs/${created.id}`, { headers: { authorization: `Bearer ${OPERATOR_SECOND_WRITE_TOKEN}` } })).status, 401);
+  const notes = await (await request(`/api/v1/operator/jobs/${created.id}/notes`, { headers: { authorization: `Bearer ${OPERATOR_READ_TOKEN}` } })).json();
+  assert.deepEqual(notes.notes.map((note) => note.actorId).sort(), ["operator/alice", "operator/bob"].sort());
+
+  const failClosed = createApp({
+    store,
+    submissionKeys: SUBMISSION_KEY,
+    runnerToken: RUNNER_TOKEN,
+    operatorReadKeys: OPERATOR_READ_TOKEN,
+    operatorAdjudicatorCredentials: { "unattributed-operator": OPERATOR_WRITE_TOKEN },
+  });
+  assert.equal((await failClosed.fetch(new Request(`https://cvbench.test/api/v1/operator/jobs/${created.id}/notes`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${OPERATOR_WRITE_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ verdict: "accepted", note: "must fail closed" }),
+  }))).status, 401);
 });
 
 test("hourly limits and payload limits are enforced", async () => {

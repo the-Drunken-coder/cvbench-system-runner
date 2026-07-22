@@ -11,4 +11,3 @@ runs/
 node_modules/
 .wrangler/
 .dev.vars
-.cvbench-artifacts/
