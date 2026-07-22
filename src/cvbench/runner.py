@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import shutil
 import socket
 import tempfile
@@ -189,7 +190,6 @@ def _deliver_scenarios(
                 "sequence_id": frame.sequence_id,
                 "frame_index": frame.frame_index,
                 "source_timestamp_ns": timestamp,
-                "scenario_source_timestamp_ns": frame.relative_timestamp_ns,
                 "width": frame.width,
                 "height": frame.height,
                 "pixel_format": "rgb24",
@@ -237,10 +237,15 @@ def _wait_for_readiness(collector: OutputCollector, runtime: StartedRuntime, tim
     return collector.ready.is_set()
 
 
-def _load_unique_scenarios(paths: tuple[Path, ...]) -> list[Scenario]:
+def _load_unique_scenarios(
+    paths: tuple[Path, ...], evaluation_order_seed: str | int | None = None
+) -> list[Scenario]:
     scenarios: list[Scenario] = []
     seen: dict[str, int] = {}
-    for path in paths:
+    ordered_paths = list(paths)
+    if evaluation_order_seed is not None:
+        random.Random(evaluation_order_seed).shuffle(ordered_paths)
+    for path in ordered_paths:
         scenario = load_scenario(path)
         sequence = scenario.frames[0].sequence_id
         seen[sequence] = seen.get(sequence, 0) + 1
@@ -261,7 +266,7 @@ def _load_unique_scenarios(paths: tuple[Path, ...]) -> list[Scenario]:
 def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_root: str | Path) -> RunArtifacts:
     benchmark = load_benchmark(benchmark_path)
     system = load_system(system_path)
-    scenarios = _load_unique_scenarios(benchmark.scenarios)
+    scenarios = _load_unique_scenarios(benchmark.scenarios, benchmark.evaluation_order_seed)
     run_dir = Path(output_root).resolve() / _run_id()
     run_dir.mkdir(parents=True)
     socket_dir = Path(tempfile.mkdtemp(prefix="cvb-", dir="/tmp"))

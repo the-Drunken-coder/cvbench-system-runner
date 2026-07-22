@@ -41,6 +41,7 @@ class BenchmarkConfig:
     max_output_records_per_second: int
     long_run_assertions: dict[str, Any]
     baseline_report: Path | None
+    evaluation_order_seed: str | int | None
 
 
 @dataclass(frozen=True)
@@ -189,6 +190,9 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
     reporting = _mapping(data, "reporting")
     resources = _mapping(data, "resources")
     baseline = data.get("baseline_report")
+    evaluation_order_seed = data.get("evaluation_order_seed")
+    if evaluation_order_seed is not None and not isinstance(evaluation_order_seed, (str, int)):
+        raise ConfigurationError("evaluation_order_seed must be a string or integer")
     max_output_records = _integer(data.get("max_output_records", 100_000), "max_output_records", minimum=1)
     max_output_line_bytes = _integer(
         data.get("max_output_line_bytes", 1_000_000), "max_output_line_bytes", minimum=1
@@ -223,6 +227,7 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
         max_output_records_per_second=max_output_records_per_second,
         long_run_assertions=long_run_assertions,
         baseline_report=(path.parent / baseline).resolve() if isinstance(baseline, str) else None,
+        evaluation_order_seed=evaluation_order_seed,
     )
 
 

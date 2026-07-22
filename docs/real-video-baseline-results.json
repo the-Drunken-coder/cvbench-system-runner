@@ -1,0 +1,40 @@
+{
+  "schema_version": "cvbench.real-video-baseline-evidence/v1",
+  "command": "cvbench run --benchmark benchmarks/real-video-v1.yaml --system systems/real-video-baseline-local.yaml --output reports/real-video-v1",
+  "real_run_id": "20260722T010416Z-9373cc08",
+  "synthetic_reference_run_id": "20260722T010431Z-3ed48d77",
+  "real_video": {
+    "status": "completed",
+    "delivered_frames": 78,
+    "matched_samples": 51,
+    "acquisition_rate": 1.0,
+    "overall_observed_coverage": 0.5858585859,
+    "overall_continuity": 0.7777777778,
+    "mean_iou": 0.2884865847,
+    "id_switches": 13,
+    "false_detections": 573,
+    "latency_p99_ms": 153.4094126,
+    "coverage_by_scenario": {
+      "real_camera_motion_scale": 0.5806451613,
+      "real_crowding_occlusion": 0.3333333333,
+      "real_low_light_crowding": 1.0
+    }
+  },
+  "synthetic_reference": {
+    "status": "completed",
+    "delivered_frames": 185,
+    "matched_samples": 224,
+    "acquisition_rate": 1.0,
+    "overall_observed_coverage": 0.9905437352,
+    "overall_continuity": 0.9952718676,
+    "mean_iou": 0.6495593760,
+    "id_switches": 0,
+    "false_detections": 0,
+    "latency_p99_ms": 21.84233484
+  },
+  "interpretation": [
+    "The same runner reports a much lower real-video coverage and IoU than the synthetic reference.",
+    "Crowding/occlusion is the weakest real tranche scenario, followed by camera motion and scale.",
+    "The classical baseline generates substantial false detections under real texture, glare, and traffic density."
+  ]
+}
