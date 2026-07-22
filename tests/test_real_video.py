@@ -153,7 +153,6 @@ def test_static_roi_object_coverage_and_fairness_regressions() -> None:
             assert metrics["false_detections"]["detections"] == 0
 
     crowd_manifest = ROOT / "scenarios/real-video-v1/rv1-a7f3/scenario.yaml"
-    crowd_manifest_data = yaml.safe_load(crowd_manifest.read_text())
     crowd_ground_truth = [
         json.loads(line)
         for line in crowd_manifest.parent.joinpath("ground_truth.jsonl").read_text().splitlines()
