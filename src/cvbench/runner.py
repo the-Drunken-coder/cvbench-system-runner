@@ -51,6 +51,15 @@ def _portable_path(path: Path) -> str:
     return path.name or "<path>"
 
 
+def _redact_docker_audit_evidence(report: dict[str, Any]) -> None:
+    """Keep uploaded Docker reports useful without publishing annotation geometry."""
+    report["audit_evidence"] = {
+        "schema_version": "cvbench.audit/v1-redacted",
+        "redacted": True,
+        "reason": "annotation and prediction geometry is restricted to the runner",
+    }
+
+
 def _comparison_fingerprint(benchmark: BenchmarkConfig, scenarios: list[Scenario]) -> tuple[str, dict[str, Any]]:
     scenario_inputs = []
     for scenario in scenarios:
@@ -589,6 +598,8 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         resource_data,
         report["runtime_isolation"],
     )
+    if system.runtime_type == "docker":
+        _redact_docker_audit_evidence(report)
     report["provenance"]["raw_evidence_available"] = False
     report["provenance"]["bounded_audit_evidence_sha256"] = None
     report["provenance"]["bounded_audit_evidence_hash_algorithm"] = (
