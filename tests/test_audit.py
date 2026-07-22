@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from cvbench.audit import build_audit_evidence
+import json
+
+from cvbench.audit import AUDIT_EVIDENCE_MAX_BYTES, build_audit_evidence
 from cvbench.config import Thresholds
 from cvbench.metrics import calculate_metrics
 from tests.helpers import gt, output
@@ -107,3 +109,24 @@ def test_eligible_unmatched_frame_is_a_denominator_miss_not_not_counted() -> Non
     assert miss["matched"] is False
     assert miss["counted_toward_score"]["observed_coverage"] is False
     assert miss["count_reason"] == "eligible_without_gated_match"
+
+
+def test_audit_evidence_hard_budget_truncates_near_limit_model_strings() -> None:
+    ground_truth = [gt(0, sequence="near-limit")]
+    records = [output(0, sequence="near-limit", track=f"track-{index}-" + "x" * 60_000) for index in range(16)]
+    metrics, matches = calculate_metrics(ground_truth, records, Thresholds())
+
+    evidence = build_audit_evidence(
+        ground_truth,
+        records,
+        matches,
+        metrics,
+        {"delivered_frames": 1},
+        {"sample_count": 1, "over_time": []},
+        {"status": "verified", "network_mode": "none"},
+    )
+
+    serialized = json.dumps(evidence, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    assert len(serialized) <= AUDIT_EVIDENCE_MAX_BYTES
+    assert evidence["serialized_byte_budget"]["truncated"] is True
+    assert len(evidence["frame_samples"][0]["predictions"][0]["track_id"].encode("utf-8")) <= 256

@@ -290,6 +290,8 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="cvbench-job-") as temporary:
             report = execute_submission(repository, submission, Path(temporary))
+        success_body = build_success_callback(report, lease_token, max_result_bytes)
+        api_request(base_url, runner_token, path, body=success_body)
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"[:2000]
         try:
@@ -303,12 +305,6 @@ def main() -> int:
             print(f"Result callback also failed: {callback_error}", file=sys.stderr)
         print(f"CVBench submission {submission['id']} failed: {error}", file=sys.stderr)
         return 1
-    api_request(
-        base_url,
-        runner_token,
-        path,
-        body=build_success_callback(report, lease_token, max_result_bytes),
-    )
     print(f"Completed CVBench submission {submission['id']}.")
     return 0
 

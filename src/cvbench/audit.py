@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from typing import Any
 
@@ -11,6 +12,10 @@ MAX_FRAME_SAMPLES = 64
 MAX_PREDICTIONS_PER_FRAME = 16
 MAX_FALSE_SEGMENTS = 32
 MAX_TIMELINE_SAMPLES = 64
+MAX_TARGETS_PER_FRAME = 16
+MAX_MATCHES_PER_FRAME = 16
+MAX_AUDIT_STRING_BYTES = 256
+AUDIT_EVIDENCE_MAX_BYTES = 256 * 1024
 
 
 def _head_tail(values: list[Any], limit: int = MAX_TIMELINE_SAMPLES) -> list[Any]:
@@ -29,6 +34,99 @@ def _flag(identifier: str, status: str, reason: str, *, count: int = 0, severity
         "count": count,
         "reason": reason,
     }
+
+
+def _serialized_bytes(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+
+
+def _bounded_text(value: str) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= MAX_AUDIT_STRING_BYTES:
+        return value
+    suffix = "…[truncated]"
+    prefix_bytes = max(0, MAX_AUDIT_STRING_BYTES - len(suffix.encode("utf-8")))
+    return encoded[:prefix_bytes].decode("utf-8", errors="ignore") + suffix
+
+
+def _bound_strings(value: Any) -> Any:
+    if isinstance(value, str):
+        return _bounded_text(value)
+    if isinstance(value, list):
+        return [_bound_strings(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            _bounded_text(key) if isinstance(key, str) else key: _bound_strings(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _halve_list(value: list[Any]) -> list[Any]:
+    return _head_tail(value, max(1, len(value) // 2)) if len(value) > 1 else []
+
+
+def _enforce_audit_budget(evidence: dict[str, Any]) -> dict[str, Any]:
+    """Bound untrusted text and compact optional arrays until JSON fits the callback budget."""
+
+    bounded = _bound_strings(evidence)
+    budget = {"max_bytes": AUDIT_EVIDENCE_MAX_BYTES, "truncated": bounded != evidence}
+    evidence = bounded
+    evidence["serialized_byte_budget"] = budget
+
+    def reduce_first_available() -> bool:
+        frame_samples = evidence.get("frame_samples")
+        if isinstance(frame_samples, list) and len(frame_samples) > 1:
+            evidence["frame_samples"] = _halve_list(frame_samples)
+            evidence["sampled_frame_count"] = len(evidence["frame_samples"])
+            return True
+        if isinstance(frame_samples, list):
+            for sample in frame_samples:
+                for field in ("ground_truth", "predictions", "matches"):
+                    values = sample.get(field)
+                    if isinstance(values, list) and len(values) > 1:
+                        sample[field] = _halve_list(values)
+                        return True
+        for path in (
+            ("false_track_segments",),
+            ("occlusion_and_reacquisition", "reacquisition_events"),
+            ("resources_and_isolation", "resources", "over_time"),
+        ):
+            current: Any = evidence
+            for part in path[:-1]:
+                current = current.get(part) if isinstance(current, dict) else None
+            values = current.get(path[-1]) if isinstance(current, dict) else None
+            if isinstance(values, list) and len(values) > 1:
+                current[path[-1]] = _halve_list(values)
+                return True
+        return False
+
+    while _serialized_bytes(evidence) > AUDIT_EVIDENCE_MAX_BYTES and reduce_first_available():
+        budget["truncated"] = True
+
+    if _serialized_bytes(evidence) > AUDIT_EVIDENCE_MAX_BYTES:
+        budget["truncated"] = True
+        evidence["frame_samples"] = []
+        evidence["false_track_segments"] = []
+        evidence["resources_and_isolation"] = {"truncated": True}
+        evidence["occlusion_and_reacquisition"] = {"truncated": True}
+        evidence["reproducibility"] = {"truncated": True}
+        evidence["timeline"] = {"truncated": True}
+        evidence["sampled_frame_count"] = 0
+
+    # The fallback above leaves only bounded scalar fields and review flags. Keep
+    # this assertion as a development invariant; it is never exposed to a model.
+    if _serialized_bytes(evidence) > AUDIT_EVIDENCE_MAX_BYTES:
+        return {
+            "schema_version": "cvbench.audit/v1",
+            "review_disposition": "review_aid_only; never an automatic disqualification",
+            "frame_samples": [],
+            "sampled_frame_count": 0,
+            "source_frame_count": evidence.get("source_frame_count", 0),
+            "false_track_segments": [],
+            "serialized_byte_budget": {"max_bytes": AUDIT_EVIDENCE_MAX_BYTES, "truncated": True},
+        }
+    return evidence
 
 
 def build_audit_evidence(
@@ -84,7 +182,7 @@ def build_audit_evidence(
             predictions.append(prediction)
         frame_matches = matches_by_frame.get(key, [])
         ground_truth_explanations = []
-        for row in gt_by_frame[key]:
+        for row in gt_by_frame[key][:MAX_TARGETS_PER_FRAME]:
             match = match_by_target_frame.get((sequence_id, timestamp, row["target_id"]))
             observed_match = match is not None and match.output.get("support") == "observed"
             eligible = row["on_screen"] and row["eligible_for_detection"]
@@ -133,6 +231,7 @@ def build_audit_evidence(
                 "sequence_id": sequence_id,
                 "source_timestamp_ns": timestamp,
                 "ground_truth": ground_truth_explanations,
+                "ground_truth_omitted": max(0, len(gt_by_frame[key]) - len(ground_truth_explanations)),
                 "predictions": predictions,
                 "matches": [
                     {
@@ -143,8 +242,9 @@ def build_audit_evidence(
                         "support": match.output.get("support"),
                         "state": match.output.get("state"),
                     }
-                    for match in frame_matches
+                    for match in frame_matches[:MAX_MATCHES_PER_FRAME]
                 ],
+                "matches_omitted": max(0, len(frame_matches) - MAX_MATCHES_PER_FRAME),
             }
         )
 
@@ -344,7 +444,7 @@ def build_audit_evidence(
             ),
         },
     }
-    return {
+    return _enforce_audit_budget({
         "schema_version": "cvbench.audit/v1",
         "review_disposition": "review_aid_only; never an automatic disqualification",
         "frame_samples": frame_samples,
@@ -377,4 +477,4 @@ def build_audit_evidence(
         },
         "reproducibility": {"feed_counters": feed, "raw_evidence_available": False},
         "flags": flags,
-    }
+    })

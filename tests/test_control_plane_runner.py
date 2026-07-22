@@ -142,7 +142,7 @@ def test_execution_timeout_still_runs_unique_label_cleanup(tmp_path: Path) -> No
     assert cleanup.call_args.args[1]["CVBENCH_DOCKER_JOB_ID"] == submission["id"]
 
 
-def test_success_callback_failure_is_not_converted_to_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_success_callback_build_failure_is_converted_to_failed(monkeypatch: pytest.MonkeyPatch) -> None:
     submission = {
         "id": "12345678-1234-4123-8123-123456789abc",
         "image": IMAGE,
@@ -154,15 +154,17 @@ def test_success_callback_failure_is_not_converted_to_failed(monkeypatch: pytest
     with (
         patch(
             "scripts.run_control_plane_job.api_request",
-            side_effect=[(200, lease), RuntimeError("success callback unavailable")],
+            side_effect=[(200, lease), (200, {"status": "failed"})],
         ) as request,
-        patch("scripts.run_control_plane_job.execute_submission", return_value={"outcome": {"status": "completed"}}),
-        pytest.raises(RuntimeError, match="success callback unavailable"),
+        patch(
+            "scripts.run_control_plane_job.execute_submission",
+            return_value={"audit_evidence": "x" * MAX_CALLBACK_BYTES},
+        ),
     ):
-        main()
+        assert main() == 1
 
     assert request.call_count == 2
-    assert request.call_args_list[1].kwargs["body"]["status"] == "succeeded"
+    assert request.call_args_list[1].kwargs["body"]["status"] == "failed"
 
 
 def test_worst_case_stderr_report_fits_callback_budget_and_records_success(
