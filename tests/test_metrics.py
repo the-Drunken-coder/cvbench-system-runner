@@ -217,6 +217,61 @@ def test_ignore_annotations_neutralize_unmatched_predictions_after_target_matchi
     assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
 
 
+def test_class_aware_wrong_class_ordinary_ignore_is_false_and_births_a_track() -> None:
+    ignored_car = gt(0, target="ignore-car", box=[20, 20, 40, 40])
+    ignored_car["ignore"] = True
+    ignored_car["class_id"] = "car"
+    prediction = output(0, track="person-over-car-ignore", box=[20, 20, 40, 40])
+    metrics, _ = calculate_metrics([ignored_car], [prediction], Thresholds(ignore_match_iou=0.5))
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 0
+    assert metrics["false_detections"]["detections"] == 1
+    assert metrics["false_detections"]["track_births"] == 1
+
+
+def test_class_aware_same_class_ordinary_ignore_is_neutral() -> None:
+    ignored_person = gt(0, target="ignore-person", box=[20, 20, 40, 40])
+    ignored_person["ignore"] = True
+    metrics, _ = calculate_metrics(
+        [ignored_person], [output(0, track="person-over-person-ignore", box=[20, 20, 40, 40])], Thresholds()
+    )
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+
+
+def test_class_agnostic_wrong_class_ordinary_ignore_is_neutral() -> None:
+    ignored_car = gt(0, target="ignore-car", box=[20, 20, 40, 40])
+    ignored_car["ignore"] = True
+    ignored_car["class_id"] = "car"
+    metrics, _ = calculate_metrics(
+        [ignored_car],
+        [output(0, track="person-over-car-ignore", box=[20, 20, 40, 40])],
+        Thresholds(class_agnostic=True),
+    )
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+
+
+def test_class_aware_ignore_region_requires_a_compatible_class() -> None:
+    ignored_car = gt(0, target="ignore-car-region", box=[0, 0, 100, 100])
+    ignored_car["ignore"] = True
+    ignored_car["ignore_region"] = True
+    ignored_car["class_id"] = "car"
+    wrong_class = output(0, track="person-in-car-region", box=[10, 10, 20, 20])
+    wrong_metrics, _ = calculate_metrics([ignored_car], [wrong_class], Thresholds())
+    assert wrong_metrics["sample_counts"]["neutral_ignored_predictions"] == 0
+    assert wrong_metrics["false_detections"]["detections"] == 1
+    same_class = output(0, track="car-in-car-region", box=[10, 10, 20, 20])
+    same_class.system_record["class_id"] = "car"
+    same_metrics, _ = calculate_metrics([ignored_car], [same_class], Thresholds())
+    assert same_metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert same_metrics["false_detections"]["detections"] == 0
+    agnostic_metrics, _ = calculate_metrics(
+        [ignored_car], [wrong_class], Thresholds(class_agnostic=True)
+    )
+    assert agnostic_metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert agnostic_metrics["false_detections"]["detections"] == 0
+
+
 def test_ignored_ground_truth_rows_are_not_in_multi_target_denominator() -> None:
     target = gt(0, target="target", box=[0, 0, 10, 10])
     ignored = gt(0, target="unlabeled", box=[20, 20, 40, 40])
