@@ -8,32 +8,32 @@
   },
   "runs": {
     "real": {
-      "run_id": "20260722T042045Z-acfd4ed3",
+      "run_id": "20260722T052120Z-d12f0aa1",
       "report": "real-video-evidence/real-baseline-report.json",
-      "report_sha256": "9d708ac8c9c6f080394416049d1ad70ab737b2982bcff22bd4bd6355b537a832",
-      "benchmark_fingerprint": "b1b1a41e596bdf728f4192dc26411456c2985280062f99d3554872f049274d60",
+      "report_sha256": "c655061e31b91a4b3ad560a37c70485ad6cbb2c555ea9f9f79c7c26459ce3304",
+      "benchmark_fingerprint": "c1bc8bf02139dfae092c1c6669c7b13e2070e8a539e7dde6b0d74db2eca1c157",
       "status": "completed",
       "delivered_frames": 78,
-      "output_records": 1413,
+      "output_records": 947,
       "matched_samples": 53,
-      "neutral_ignored_predictions": 87,
+      "neutral_ignored_predictions": 96,
       "acquisition_rate": 1.0,
       "overall_observed_coverage": 0.6344086022,
       "overall_continuity": 0.8064516129,
       "mean_iou": 0.2820430087,
       "id_switches": 13,
-      "false_detections": 484,
-      "latency_p99_ms": 38.88639308,
+      "false_detections": 329,
+      "latency_p99_ms": 43.00095882,
       "coverage_by_scenario": {
         "real_camera_motion_scale": 0.6129032258,
-        "real_crowding_occlusion": 0.3333333333,
+        "real_crowding_occlusion": 0.3888888889,
         "real_low_light_crowding": 1.0
       }
     },
     "synthetic_same_sut": {
-      "run_id": "20260722T042053Z-6ef8f198",
+      "run_id": "20260722T052139Z-c13c447c",
       "report": "real-video-evidence/synthetic-same-sut-report.json",
-      "report_sha256": "aba1f8f7c01729fe85de49803b73cd766113f60e8c691e92b84d70dcd6bb9ea1",
+      "report_sha256": "4bab29ecbe1a5cc0b5975aa5a33a597930487dbbecccb2150ac347e7cef47f7b",
       "benchmark_fingerprint": "08205802398fa9dffa29f10fab3ce24bc8976e2eadea7975d09626f7c6a58587",
       "status": "completed",
       "delivered_frames": 185,
@@ -46,7 +46,7 @@
       "mean_iou": null,
       "id_switches": 0,
       "false_detections": 105,
-      "latency_p99_ms": 120.49574364000124
+      "latency_p99_ms": 100.19625264000126
     }
   },
   "comparison": {
@@ -56,7 +56,7 @@
     "interpretation": [
       "This is a same-SUT behavior contrast, not a statistically comparable score delta.",
       "The real clips expose identity switches and incomplete coverage while the same detector fails to acquire the synthetic target contract.",
-      "Narrow reviewed ignore boxes neutralize only covered non-target objects; background hallucinations outside those boxes and duplicate target predictions remain scored penalties."
+      "Static reviewed clip ROIs exclude out-of-scope geometry; inside each ROI, narrow reviewed ignore boxes neutralize covered non-target objects, while background hallucinations and duplicate target predictions remain scored penalties."
     ]
   }
 }

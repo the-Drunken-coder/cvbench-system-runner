@@ -5,18 +5,18 @@ The same `classical-motion-baseline` revision and system configuration were run 
 | Metric | Real video | Synthetic, same SUT |
 | --- | ---: | ---: |
 | Delivered frames | 78 | 185 |
-| Output records | 1,413 | 143 |
+| Output records | 947 | 143 |
 | Matched samples | 53 | 0 |
 | Acquisition rate | 1.0000 | 0.0000 |
 | Overall observed coverage | 0.6344 | 0.0000 |
 | Overall continuity | 0.8065 | 0.0000 |
 | Mean IoU | 0.2820 | n/a |
 | ID switches | 13 | 0 |
-| False detections | 484 | 105 |
-| Neutral ignored predictions | 87 | 0 |
-| Latency p99 | 38.89 ms | 120.50 ms |
+| False detections | 329 | 105 |
+| Neutral ignored predictions | 96 | 0 |
+| Latency p99 | 43.00 ms | 100.20 ms |
 
-The benchmark fingerprints differ, so this is deliberately marked non-comparable; the runner's comparison gate returns inconclusive rather than inventing score deltas. The behavior contrast is still useful: real footage exposes identity switches, incomplete coverage, and background hallucinations outside reviewed object ignores, while this deliberately simple motion detector fails to acquire the synthetic contract. Duplicate target predictions remain identity penalties; legitimate non-target objects are neutral only inside their narrow reviewed boxes.
+The benchmark fingerprints differ (`c1bc8bf02139dfae092c1c6669c7b13e2070e8a539e7dde6b0d74db2eca1c157` real versus `08205802398fa9dffa29f10fab3ce24bc8976e2eadea7975d09626f7c6a58587` synthetic), so this is deliberately marked non-comparable; the runner's comparison gate returns inconclusive rather than inventing score deltas. The behavior contrast is still useful: real footage exposes identity switches, incomplete coverage, and background hallucinations inside genuine negative-background space, while this deliberately simple motion detector fails to acquire the synthetic contract. Duplicate target predictions remain identity penalties; legitimate non-target objects are neutral only inside the fixed reviewed ROI and its narrow ignore boxes.
 
 Preparation and verification:
 

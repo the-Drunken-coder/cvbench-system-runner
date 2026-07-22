@@ -47,6 +47,16 @@ the source-frame ranges and strides in the importer, output JPEG quality is
 source WebM files and generated JPEGs are ignored and are never mounted into a
 SUT.
 
+Each generated scenario also records one static, reviewed `scoreable_roi`.
+The ROI is selected per clip to include the target and real negative-background
+space while avoiding claims of exhaustive full-frame annotation. Predictions
+whose geometry does not intersect the ROI are excluded from scoring; within the
+ROI, every visible same-class non-target is represented by a narrow ignore box.
+The ROI is not target-centered and is not a full-frame ignore. Target matching
+always precedes ignore matching, so a background hallucination in the ROI and a
+duplicate target prediction remain penalties. The generated contact sheets
+show the ROI and ignore annotations for all selected frames.
+
 ## Selected scenarios
 
 | Opaque scenario | Source range | Failure mode captured |
@@ -56,8 +66,12 @@ SUT.
 | `rv1-c3d1` | Amsterdam frames 300–360, every 2nd frame | moving camera, rapid target scale change, and background motion |
 
 The boxes are human-reviewed keyframes with deterministic linear interpolation
-between anchors. Non-target people/cars are covered by small reviewed ignore
-boxes that never intersect the target; genuine background remains scoreable.
+between anchors. Each clip's fixed scoreable ROI leaves visible negative
+background for hallucination tests. Within that ROI, non-target people/cars are
+covered by reviewed narrow ignore boxes that never intersect the target;
+objects outside the ROI are deliberately out of scope rather than treated as
+negative evidence. Background hallucinations inside the ROI remain false, and
+duplicate target predictions remain duplicate/split penalties.
 Crowd output frames 16–20 were manually reannotated after visual inspection.
 Reviewable deterministic contact sheets are checked in for all three clips at
 `scenarios/real-video-v1/*/review/`.

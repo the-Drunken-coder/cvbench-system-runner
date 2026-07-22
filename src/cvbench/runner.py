@@ -270,6 +270,7 @@ def _load_unique_scenarios(paths: tuple[Path, ...], run_id: str) -> list[Scenari
                 frames=[replace(frame, sequence_id=unique_sequence) for frame in scenario.frames],
                 ground_truth=[{**row, "sequence_id": unique_sequence} for row in scenario.ground_truth],
                 faults=scenario.faults,
+                scoreable_roi=scenario.scoreable_roi,
             )
         run_sequence = f"run-{run_id[-8:]}-seq-{len(scenarios):02d}"
         scenario = Scenario(
@@ -279,9 +280,28 @@ def _load_unique_scenarios(paths: tuple[Path, ...], run_id: str) -> list[Scenari
             frames=[replace(frame, sequence_id=run_sequence) for frame in scenario.frames],
             ground_truth=[{**row, "sequence_id": run_sequence} for row in scenario.ground_truth],
             faults=scenario.faults,
+            scoreable_roi=scenario.scoreable_roi,
         )
         scenarios.append(scenario)
     return scenarios
+
+
+def _box_intersects_roi(box: list[float], roi: tuple[float, float, float, float]) -> bool:
+    return min(box[2], roi[2]) > max(box[0], roi[0]) and min(box[3], roi[3]) > max(box[1], roi[1])
+
+
+def _filter_outputs_to_scoreable_rois(
+    collected: list[CollectedRecord], scenarios: list[Scenario]
+) -> list[CollectedRecord]:
+    rois = {scenario.frames[0].sequence_id: scenario.scoreable_roi for scenario in scenarios}
+    filtered: list[CollectedRecord] = []
+    for item in collected:
+        roi = rois.get(item.system_record.get("sequence_id"))
+        geometry = item.system_record.get("geometry", {})
+        box = geometry.get("value") if isinstance(geometry, dict) else None
+        if roi is None or not box or _box_intersects_roi(box, roi):
+            filtered.append(item)
+    return filtered
 
 
 def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_root: str | Path) -> RunArtifacts:
@@ -404,9 +424,10 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             ground_truth.extend(_shift_ground_truth(scenario, cursor, benchmark.playback_rate))
             cursor += int((scenario.frames[-1].relative_timestamp_ns + 100_000_000) / benchmark.playback_rate)
     scenario_families = {scenario.frames[0].sequence_id: scenario.family for scenario in scenarios}
+    scored_collected = _filter_outputs_to_scoreable_rois(collected, scenarios)
     metrics, matches = calculate_metrics(
         ground_truth,
-        collected,
+        scored_collected,
         benchmark.thresholds,
         sequence_timestamps=sequence_timestamps or None,
         scenario_families=scenario_families,

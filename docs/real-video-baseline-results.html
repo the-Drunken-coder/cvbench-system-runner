@@ -4,7 +4,7 @@
 <h1>CVBench real-video baseline evidence</h1>
 <p>The exact same <code>classical-motion-baseline</code> revision was run on both inputs. The benchmark fingerprints differ, so the comparison is explicitly non-comparable; see the <a href="real-video-evidence/">full reports</a>.</p>
 <table><thead><tr><th>Metric</th><th>Real video</th><th>Synthetic, same SUT</th></tr></thead><tbody>
-<tr><td>Observed coverage</td><td>0.6344</td><td>0.0000</td></tr><tr><td>Continuity</td><td>0.8065</td><td>0.0000</td></tr><tr><td>Mean IoU</td><td>0.2820</td><td>n/a</td></tr><tr><td>ID switches</td><td>13</td><td>0</td></tr><tr><td>False detections</td><td>484</td><td>105</td></tr><tr><td>Neutral ignored predictions</td><td>87</td><td>0</td></tr><tr><td>Latency p99 (ms)</td><td>38.89</td><td>120.50</td></tr>
+<tr><td>Observed coverage</td><td>0.6344</td><td>0.0000</td></tr><tr><td>Continuity</td><td>0.8065</td><td>0.0000</td></tr><tr><td>Mean IoU</td><td>0.2820</td><td>n/a</td></tr><tr><td>ID switches</td><td>13</td><td>0</td></tr><tr><td>False detections</td><td>329</td><td>105</td></tr><tr><td>Neutral ignored predictions</td><td>96</td><td>0</td></tr><tr><td>Latency p99 (ms)</td><td>43.00</td><td>100.20</td></tr>
 </tbody></table>
-<p>Real footage exposes identity switches, incomplete coverage, and background hallucinations. Only narrow reviewed ignore boxes neutralize legitimate non-target objects; predictions outside them and duplicate target predictions remain scored.</p>
+<p>Real footage exposes identity switches, incomplete coverage, and background hallucinations. Fixed reviewed clip ROIs define scope; within them, narrow reviewed ignore boxes neutralize legitimate non-target objects, while background hallucinations and duplicate target predictions remain scored.</p>
 </html>

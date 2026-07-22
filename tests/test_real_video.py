@@ -12,8 +12,9 @@ import yaml
 
 from cvbench.config import load_benchmark
 from cvbench.examples.real_video_baseline import _lifecycle_event
+from cvbench.metrics import calculate_metrics
 from cvbench.protocol import receive_message
-from cvbench.runner import _deliver_scenarios, _load_unique_scenarios
+from cvbench.runner import _deliver_scenarios, _filter_outputs_to_scoreable_rois, _load_unique_scenarios
 from cvbench.scenario import load_scenario
 from scripts.prepare_real_video import (
     CLIPS,
@@ -25,7 +26,7 @@ from scripts.prepare_real_video import (
     _verify_source_checksum,
     verify_artifacts,
 )
-from tests.helpers import gt
+from tests.helpers import gt, output
 
 ROOT = Path(__file__).parents[1]
 
@@ -92,6 +93,124 @@ def test_all_real_clips_have_ignore_coverage_and_crowd_frames_are_locked() -> No
     assert by_frame[18]["eligible_for_detection"] is False
     assert by_frame[19]["eligible_for_detection"] is False
     assert by_frame[20]["on_screen"] is False
+
+
+def test_static_roi_object_coverage_and_fairness_regressions() -> None:
+    for clip in CLIPS:
+        manifest = ROOT / "scenarios/real-video-v1" / clip["id"] / "scenario.yaml"
+        scenario = load_scenario(manifest)
+        assert scenario.scoreable_roi is not None
+        roi = scenario.scoreable_roi
+        targets = [row for row in scenario.ground_truth if not row.get("ignore")]
+        assert all(
+            min(row["bbox_xyxy"][2], roi[2]) > max(row["bbox_xyxy"][0], roi[0])
+            and min(row["bbox_xyxy"][3], roi[3]) > max(row["bbox_xyxy"][1], roi[1])
+            for row in targets
+            if row["on_screen"]
+        )
+        for timestamp in {row["source_timestamp_ns"] for row in targets}:
+            ignored = [
+                row
+                for row in scenario.ground_truth
+                if row.get("ignore") and row["source_timestamp_ns"] == timestamp
+            ]
+            assert ignored, f"no reviewed object annotations at {clip['id']}:{timestamp}"
+        roi_ignored = [
+            row
+            for row in scenario.ground_truth
+            if row.get("ignore")
+            and min(row["bbox_xyxy"][2], roi[2]) > max(row["bbox_xyxy"][0], roi[0])
+            and min(row["bbox_xyxy"][3], roi[3]) > max(row["bbox_xyxy"][1], roi[1])
+        ]
+        assert roi_ignored
+        assert all(row.get("ignore_region_id") for row in roi_ignored)
+        for ignored in roi_ignored[:3]:
+            target = next(row for row in targets if row["source_timestamp_ns"] == ignored["source_timestamp_ns"])
+            target_output = output(
+                target["source_timestamp_ns"],
+                sequence=target["sequence_id"],
+                box=target["bbox_xyxy"],
+            )
+            target_output.system_record["class_id"] = target["class_id"]
+            ignored_output = output(
+                target["source_timestamp_ns"],
+                sequence=target["sequence_id"],
+                track="reviewed-object",
+                box=ignored["bbox_xyxy"],
+            )
+            ignored_output.system_record["class_id"] = target["class_id"]
+            metrics, _ = calculate_metrics(
+                [target, ignored],
+                [target_output, ignored_output],
+                load_benchmark(ROOT / "benchmarks/real-video-v1.yaml").thresholds,
+            )
+            assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
+            assert metrics["false_detections"]["detections"] == 0
+
+    crowd = load_scenario(ROOT / "scenarios/real-video-v1/rv1-a7f3/scenario.yaml")
+    crowd_target = next(
+        row for row in crowd.ground_truth if not row.get("ignore") and row["source_timestamp_ns"] == 10 * 4 * FPS_NS
+    )
+    foreground = next(
+        row
+        for row in crowd.ground_truth
+        if row.get("ignore_region_id") == "foreground-pedestrian-mid"
+        and row["source_timestamp_ns"] == crowd_target["source_timestamp_ns"]
+    )
+    target_output = output(
+        crowd_target["source_timestamp_ns"],
+        sequence=crowd_target["sequence_id"],
+        box=crowd_target["bbox_xyxy"],
+    )
+    target_output.system_record["class_id"] = crowd_target["class_id"]
+    foreground_output = output(
+        crowd_target["source_timestamp_ns"],
+        sequence=crowd_target["sequence_id"],
+        track="foreground",
+        box=foreground["bbox_xyxy"],
+    )
+    foreground_output.system_record["class_id"] = crowd_target["class_id"]
+    metrics, _ = calculate_metrics(
+        [crowd_target, foreground],
+        [target_output, foreground_output],
+        load_benchmark(ROOT / "benchmarks/real-video-v1.yaml").thresholds,
+    )
+    assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+
+    hallucination = output(
+        crowd_target["source_timestamp_ns"],
+        sequence=crowd_target["sequence_id"],
+        track="background",
+        box=[1200, 850, 1300, 950],
+    )
+    hallucination.system_record["class_id"] = crowd_target["class_id"]
+    duplicate = output(
+        crowd_target["source_timestamp_ns"],
+        sequence=crowd_target["sequence_id"],
+        track="duplicate",
+        box=crowd_target["bbox_xyxy"],
+    )
+    duplicate.system_record["class_id"] = crowd_target["class_id"]
+    metrics, _ = calculate_metrics(
+        [crowd_target, foreground],
+        [target_output, hallucination, duplicate],
+        load_benchmark(ROOT / "benchmarks/real-video-v1.yaml").thresholds,
+    )
+    assert metrics["false_detections"]["detections"] == 2
+    assert metrics["identity"]["duplicate_tracks"] == 1
+    assert metrics["identity"]["track_splits"] == 1
+
+
+def test_static_scoreable_roi_filters_out_of_scope_predictions() -> None:
+    scenarios = _load_unique_scenarios(
+        (ROOT / "scenarios/real-video-v1/rv1-a7f3/scenario.yaml",), "20260722T010416Z-aaaa1111"
+    )
+    sequence = scenarios[0].frames[0].sequence_id
+    timestamp = scenarios[0].frames[0].relative_timestamp_ns
+    kept = output(timestamp, sequence=sequence, box=[100, 100, 200, 200])
+    dropped = output(timestamp, sequence=sequence, box=[1810, 100, 1900, 200])
+    assert _filter_outputs_to_scoreable_rois([kept, dropped], scenarios) == [kept]
 
 
 def test_canonical_frame_manifest_has_exactly_78_hashes_and_prep_is_container_only() -> None:

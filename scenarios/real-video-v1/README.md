@@ -8,9 +8,12 @@ validation or scoring. The importer regenerates these manifests
 deterministically and verifies `data/real-video-v1/artifacts.sha256`. Raw
 media, prepared frames, and annotations remain ignored. The model container
 receives only the owner-only frame socket; repository paths, media, and
-ground truth are not mounted. Each selected frame has only narrow, reviewed
-ignore boxes around visible non-target objects; genuine background remains
-scoreable. Deterministic review contact sheets for all clips live under each
-clip's `review/` directory. Scoreable target matches are resolved first, and
-only then are unmatched predictions neutralized using
+ground truth are not mounted. Each clip has a static, human-reviewed
+`scoreable_roi` with genuine negative-background space. Predictions whose boxes
+do not intersect that ROI are out of scope; predictions inside it are scored,
+and every visible same-class non-target inside the ROI is covered by a narrow
+reviewed ignore box. The ROI is fixed for the clip, never target-centered, and
+never the full frame. Deterministic review contact sheets for all clips live
+under each clip's `review/` directory. Scoreable target matches are resolved
+first, and only then are unmatched predictions neutralized using
 intersection-over-prediction-area.
