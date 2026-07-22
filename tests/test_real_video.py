@@ -109,7 +109,9 @@ def test_canonical_frame_manifest_has_exactly_78_hashes_and_prep_is_container_on
 
 def test_prep_toolchain_uses_digest_addressed_base_image() -> None:
     dockerfile = (ROOT / "examples/Dockerfile.real-video-prep").read_text()
-    assert "FROM python:3.12-slim@sha256:" in dockerfile
+    assert "python:3.12-slim@sha256:" in dockerfile
+    assert "FROM --platform=linux/amd64" in dockerfile
+    assert "--platform linux/amd64" in (ROOT / "scripts/prepare_real_video_container.sh").read_text()
     assert "scripts/prepare_real_video_container.sh" in (ROOT / "docs/real-video-sources.md").read_text()
 
 

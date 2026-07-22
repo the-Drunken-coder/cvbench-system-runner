@@ -10,6 +10,7 @@ docker image inspect "$image" >/dev/null 2>&1 || {
 }
 
 docker run --rm \
+  --platform linux/amd64 \
   --network bridge \
   --user "$(id -u):$(id -g)" \
   --env CVBENCH_PREP_CONTAINER=1 \

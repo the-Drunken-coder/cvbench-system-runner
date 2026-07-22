@@ -18,8 +18,9 @@ The CC0 file does not require attribution, but the source credit is retained
 for provenance. The source media is not fetched implicitly by the benchmark.
 The exact preparation dependencies are pinned in `requirements-real-video.lock`:
 Python 3.12, OpenCV 4.13.0.92, NumPy 2.5.1, PyYAML 6.0.3, and psutil 7.2.2.
-Preparation runs only inside the digest-addressed image built from
-`examples/Dockerfile.real-video-prep`; native host decoding is unsupported. The
+Preparation runs only inside the digest-addressed `linux/amd64` image built from
+`examples/Dockerfile.real-video-prep`; the wrapper passes the same platform to
+Docker and native host decoding is unsupported. The
 canonical 78-JPEG manifest is checked in at
 `scenarios/real-video-v1/expected-frame-sha256.txt`, and the corpus fingerprint
 is checked in at `scenarios/real-video-v1/corpus-fingerprint.txt`.

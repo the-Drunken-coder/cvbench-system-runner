@@ -34,6 +34,7 @@ TOOLCHAIN = {
     "PyYAML": "6.0.3",
 }
 PREPARATION_BASE_IMAGE = "python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de"
+PREPARATION_PLATFORM = "linux/amd64"
 
 SOURCES: dict[str, dict[str, Any]] = {
     "pedestrian-area": {
@@ -527,6 +528,7 @@ def prepare(output: Path) -> list[Path]:
         "schema_version": "cvbench.real-video-provenance/v1",
         "preparation_toolchain": {
             "base_image": PREPARATION_BASE_IMAGE,
+            "platform": PREPARATION_PLATFORM,
             "requirements_lock_sha256": _sha256(ROOT / "requirements-real-video.lock"),
         },
         "clips": [],

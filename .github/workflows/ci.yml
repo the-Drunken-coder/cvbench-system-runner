@@ -60,7 +60,7 @@ jobs:
       - name: Prepare and score the isolated real-video tranche
         run: |
           python -m pip install -r requirements-real-video.lock
-          docker build -f examples/Dockerfile.real-video-prep -t cvbench-real-video-prep:v1 .
+          docker build --platform linux/amd64 -f examples/Dockerfile.real-video-prep -t cvbench-real-video-prep:v1 .
           scripts/prepare_real_video_container.sh --output data/real-video-v1
           cp data/real-video-v1/artifacts.sha256 /tmp/real-video-artifacts-run1.sha256
           scripts/prepare_real_video_container.sh --output data/real-video-v1

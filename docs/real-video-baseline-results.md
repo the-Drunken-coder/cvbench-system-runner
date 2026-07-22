@@ -5,16 +5,16 @@ The same `classical-motion-baseline` revision and system configuration were run 
 | Metric | Real video | Synthetic, same SUT |
 | --- | ---: | ---: |
 | Delivered frames | 78 | 185 |
-| Output records | 1,436 | 143 |
-| Matched samples | 51 | 0 |
+| Output records | 1,413 | 143 |
+| Matched samples | 53 | 0 |
 | Acquisition rate | 1.0000 | 0.0000 |
-| Overall observed coverage | 0.6022 | 0.0000 |
-| Overall continuity | 0.7634 | 0.0000 |
-| Mean IoU | 0.2908 | n/a |
+| Overall observed coverage | 0.6344 | 0.0000 |
+| Overall continuity | 0.8065 | 0.0000 |
+| Mean IoU | 0.2820 | n/a |
 | ID switches | 13 | 0 |
-| False detections | 483 | 105 |
-| Neutral ignored predictions | 90 | 0 |
-| Latency p99 | 37.43 ms | 97.32 ms |
+| False detections | 484 | 105 |
+| Neutral ignored predictions | 87 | 0 |
+| Latency p99 | 38.89 ms | 120.50 ms |
 
 The benchmark fingerprints differ, so this is deliberately marked non-comparable; the runner's comparison gate returns inconclusive rather than inventing score deltas. The behavior contrast is still useful: real footage exposes identity switches, incomplete coverage, and background hallucinations outside reviewed object ignores, while this deliberately simple motion detector fails to acquire the synthetic contract. Duplicate target predictions remain identity penalties; legitimate non-target objects are neutral only inside their narrow reviewed boxes.
 
