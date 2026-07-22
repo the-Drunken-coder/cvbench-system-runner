@@ -15,6 +15,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from cvbench.audit import AUDIT_EVIDENCE_MAX_BYTES
+from cvbench.json_contract import serialized_json_bytes
+
 IMAGE_PATTERN = re.compile(
     r"^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?/)?"
     r"[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$"
@@ -35,7 +38,7 @@ MAX_CALLBACK_BYTES = 1024 * 1024
 
 
 def callback_payload_bytes(body: dict[str, Any]) -> bytes:
-    return json.dumps(body, separators=(",", ":")).encode()
+    return serialized_json_bytes(body)
 
 
 def api_request(
@@ -102,6 +105,9 @@ def validate_lease(lease: dict[str, Any]) -> tuple[dict[str, Any], str, int]:
 
 
 def build_success_callback(report: dict[str, Any], lease_token: str, max_bytes: int) -> dict[str, Any]:
+    audit_evidence = report.get("audit_evidence")
+    if audit_evidence is not None and len(serialized_json_bytes(audit_evidence)) > AUDIT_EVIDENCE_MAX_BYTES:
+        raise ValueError("audit_evidence exceeds the serialized evidence budget")
     body = {"status": "succeeded", "lease_token": lease_token, "report": report}
     if len(callback_payload_bytes(body)) <= max_bytes:
         return body

@@ -7,6 +7,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from cvbench.audit import build_audit_evidence
+from cvbench.config import Thresholds
+from cvbench.json_contract import serialized_json_bytes
+from cvbench.metrics import calculate_metrics
 from scripts.run_control_plane_job import (
     IMAGE_PATTERN,
     MAX_CALLBACK_BYTES,
@@ -21,6 +25,7 @@ from scripts.run_control_plane_job import (
     validate_lease,
     write_system_config,
 )
+from tests.helpers import gt, output
 
 IMAGE = f"ghcr.io/example/tracker@sha256:{'a' * 64}"
 
@@ -219,3 +224,36 @@ def test_worst_case_stderr_report_fits_callback_budget_and_records_success(
 
     assert terminal["status"] == "succeeded"
     assert terminal["report"]["metrics"] == original_metrics
+
+
+def test_near_one_megabyte_model_record_fits_actual_callback_boundary() -> None:
+    ground_truth = [gt(0, sequence="near-megabyte")]
+    records = [output(0, sequence="near-megabyte", track="😀" * 250_000)]
+    metrics, matches = calculate_metrics(ground_truth, records, Thresholds())
+    evidence = build_audit_evidence(
+        ground_truth,
+        records,
+        matches,
+        metrics,
+        {"delivered_frames": 1},
+        {"sample_count": 1, "over_time": []},
+        {"status": "verified", "network_mode": "none"},
+    )
+    callback = build_success_callback(
+        {"audit_evidence": evidence},
+        "b" * 64,
+        MAX_CALLBACK_BYTES,
+    )
+
+    assert len(serialized_json_bytes({"audit_evidence": records[0].system_record})) > 900_000
+    assert len(callback_payload_bytes(callback)) <= MAX_CALLBACK_BYTES
+    assert len(serialized_json_bytes(evidence)) <= 256 * 1024
+
+
+def test_callback_boundary_rejects_unbounded_audit_evidence() -> None:
+    with pytest.raises(ValueError, match="audit_evidence exceeds"):
+        build_success_callback(
+            {"audit_evidence": {"track_id": "😀" * 100_000}},
+            "b" * 64,
+            MAX_CALLBACK_BYTES,
+        )

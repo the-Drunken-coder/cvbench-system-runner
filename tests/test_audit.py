@@ -4,6 +4,7 @@ import json
 
 from cvbench.audit import AUDIT_EVIDENCE_MAX_BYTES, build_audit_evidence
 from cvbench.config import Thresholds
+from cvbench.json_contract import serialized_json_bytes
 from cvbench.metrics import calculate_metrics
 from tests.helpers import gt, output
 
@@ -130,3 +131,30 @@ def test_audit_evidence_hard_budget_truncates_near_limit_model_strings() -> None
     assert len(serialized) <= AUDIT_EVIDENCE_MAX_BYTES
     assert evidence["serialized_byte_budget"]["truncated"] is True
     assert len(evidence["frame_samples"][0]["predictions"][0]["track_id"].encode("utf-8")) <= 256
+
+
+def test_non_ascii_full_sample_grid_uses_wire_byte_budget() -> None:
+    ground_truth = [gt(index * 1_000_000, sequence="non-ascii") for index in range(64)]
+    records = [
+        output(
+            index * 1_000_000,
+            sequence="non-ascii",
+            track=f"track-{index}-{prediction}-" + "😀" * 200,
+        )
+        for index in range(64)
+        for prediction in range(16)
+    ]
+    metrics, matches = calculate_metrics(ground_truth, records, Thresholds())
+    evidence = build_audit_evidence(
+        ground_truth,
+        records,
+        matches,
+        metrics,
+        {"delivered_frames": 64},
+        {"sample_count": 64, "over_time": []},
+        {"status": "verified", "network_mode": "none"},
+    )
+
+    assert evidence["source_frame_count"] == 64
+    assert evidence["serialized_byte_budget"]["truncated"] is True
+    assert len(serialized_json_bytes(evidence)) <= AUDIT_EVIDENCE_MAX_BYTES

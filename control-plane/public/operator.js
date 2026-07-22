@@ -3,7 +3,8 @@ let adjudicatorToken = "";
 let selectedJobId = "";
 let timer;
 let nextCursor = null;
-let requestGeneration = 0;
+let listRequestGeneration = 0;
+let detailRequestGeneration = 0;
 let pollGeneration = 0;
 let adjudicationGeneration = 0;
 let jobsController;
@@ -31,8 +32,8 @@ async function refreshJobs() {
   await loadJobs({ reset: true });
 }
 
-function isCurrent(generation) {
-  return generation === requestGeneration;
+function isCurrent(generation, flow) {
+  return generation === (flow === "list" ? listRequestGeneration : detailRequestGeneration);
 }
 
 function currentResponseError(response) {
@@ -41,7 +42,7 @@ function currentResponseError(response) {
 
 async function loadJobs({ reset = false } = {}) {
   if (!operatorToken) return;
-  const generation = ++requestGeneration;
+  const generation = ++listRequestGeneration;
   if (jobsController) jobsController.abort();
   const controller = new AbortController();
   jobsController = controller;
@@ -57,15 +58,15 @@ async function loadJobs({ reset = false } = {}) {
       headers: { authorization: `Bearer ${operatorToken}` },
       signal: controller.signal,
     });
-    if (!isCurrent(generation)) return;
-    if (!response.ok) return showMessage(currentResponseError(response), () => isCurrent(generation));
+    if (!isCurrent(generation, "list")) return;
+    if (!response.ok) return showMessage(currentResponseError(response), () => isCurrent(generation, "list"));
     const body = await response.json();
-    if (!isCurrent(generation)) return;
+    if (!isCurrent(generation, "list")) return;
     const list = document.querySelector("#job-list");
     if (reset) list.replaceChildren();
     nextCursor = body.next_cursor;
     for (const job of body.jobs) {
-      if (!isCurrent(generation)) return;
+      if (!isCurrent(generation, "list")) return;
       const button = document.createElement("button");
       button.className = `job-row${job.id === selectedJobId ? " selected" : ""}`;
       button.type = "button";
@@ -77,13 +78,13 @@ async function loadJobs({ reset = false } = {}) {
       button.append(title, meta);
       list.append(button);
     }
-    if (!isCurrent(generation)) return;
+    if (!isCurrent(generation, "list")) return;
     const loadMore = document.querySelector("#load-more");
     loadMore.hidden = !nextCursor;
     if (selectedJobId) await selectJob(selectedJobId);
   } catch (error) {
-    if (isCurrent(generation) && error.name !== "AbortError") {
-      showMessage(`Operator API request failed: ${error.message}`, () => isCurrent(generation));
+    if (isCurrent(generation, "list") && error.name !== "AbortError") {
+      showMessage(`Operator API request failed: ${error.message}`, () => isCurrent(generation, "list"));
     }
   } finally {
     if (jobsController === controller) jobsController = undefined;
@@ -92,7 +93,7 @@ async function loadJobs({ reset = false } = {}) {
 
 async function selectJob(id) {
   selectedJobId = id;
-  const generation = ++requestGeneration;
+  const generation = ++detailRequestGeneration;
   if (detailController) detailController.abort();
   const controller = new AbortController();
   detailController = controller;
@@ -101,18 +102,18 @@ async function selectJob(id) {
       headers: { authorization: `Bearer ${operatorToken}` },
       signal: controller.signal,
     });
-    if (!isCurrent(generation)) return;
-    if (!response.ok) return showMessage(`Could not load job (${response.status}).`, () => isCurrent(generation));
+    if (!isCurrent(generation, "detail")) return;
+    if (!response.ok) return showMessage(`Could not load job (${response.status}).`, () => isCurrent(generation, "detail"));
     const body = await response.json();
-    if (!isCurrent(generation) || selectedJobId !== id) return;
+    if (!isCurrent(generation, "detail") || selectedJobId !== id) return;
     const title = document.createElement("h3");
     title.textContent = `${body.job.model.name} · ${body.job.status}`;
     const pre = document.createElement("pre");
     pre.textContent = JSON.stringify(body, null, 2);
     document.querySelector("#job-detail").replaceChildren(title, pre);
   } catch (error) {
-    if (isCurrent(generation) && error.name !== "AbortError") {
-      showMessage(`Operator API request failed: ${error.message}`, () => isCurrent(generation));
+    if (isCurrent(generation, "detail") && error.name !== "AbortError") {
+      showMessage(`Operator API request failed: ${error.message}`, () => isCurrent(generation, "detail"));
     }
   } finally {
     if (detailController === controller) detailController = undefined;

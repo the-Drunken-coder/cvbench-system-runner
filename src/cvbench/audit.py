@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from typing import Any
 
+from .json_contract import serialized_json_bytes
 from .model import CollectedRecord, Match
 
 MAX_FRAME_SAMPLES = 64
@@ -37,7 +37,7 @@ def _flag(identifier: str, status: str, reason: str, *, count: int = 0, severity
 
 
 def _serialized_bytes(value: Any) -> int:
-    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    return len(serialized_json_bytes(value))
 
 
 def _bounded_text(value: str) -> str:

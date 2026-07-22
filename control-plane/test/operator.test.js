@@ -146,6 +146,29 @@ test("operator console discards stale list and detail responses", async () => {
   assert.match(harness.elements.get("job-detail").children[0].textContent, /^new/);
 });
 
+test("detail selection does not invalidate a current list response", async () => {
+  const harness = makeHarness();
+  harness.hooks.setTokens("read-token", "write-token");
+  const pending = [];
+  harness.context.fetch = () => new Promise((resolve) => pending.push(resolve));
+
+  const listRequest = harness.hooks.loadJobs({ reset: true });
+  const detailRequest = harness.hooks.selectJob("selected-job");
+  pending[1](response({ job: { model: { name: "selected" }, status: "running" } }));
+  await detailRequest;
+  pending[0](response({
+    next_cursor: "cursor-after-list",
+    jobs: [{ id: "listed-job", status: "queued", model: { name: "listed", version: "1" }, queue: { attempt: 2 } }],
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+  const refreshedDetail = pending[2];
+  refreshedDetail(response({ job: { model: { name: "selected" }, status: "running" } }));
+  await listRequest;
+
+  assert.equal(harness.elements.get("job-list").children.length, 1);
+  assert.equal(harness.elements.get("load-more").hidden, false);
+});
+
 test("operator polling reschedules after transport and JSON failures", async () => {
   const harness = makeHarness();
   harness.hooks.setTokens("read-token", "write-token");
