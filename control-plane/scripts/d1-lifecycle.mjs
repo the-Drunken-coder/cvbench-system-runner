@@ -91,14 +91,32 @@ assert(
     report.metrics.sample_counts.neutral_ignored_predictions,
   "metric neutral count does not reconcile with operator evidence",
 );
-const neutralTrackIds = new Set(
-  evidence.audit_evidence.frame_samples.flatMap((sample) =>
-    sample.predictions.filter((prediction) => prediction.neutral_ignored).map((prediction) => prediction.track_id),
-  ),
+const neutralPredictions = evidence.audit_evidence.frame_samples.flatMap((sample) =>
+  sample.predictions
+    .filter((prediction) => prediction.neutral_ignored)
+    .map((prediction) => ({
+      sequence_id: sample.sequence_id,
+      source_timestamp_ns: sample.source_timestamp_ns,
+      track_id: prediction.track_id,
+    })),
 );
+const falseTrackSegments = evidence.audit_evidence.false_track_segments;
 assert(
-  evidence.audit_evidence.false_track_segments.every((segment) => !neutralTrackIds.has(segment.track_id)),
-  "neutral predictions appeared as false tracks",
+  neutralPredictions.every((prediction) => {
+    const segment = falseTrackSegments.find(
+      (candidate) =>
+        candidate.sequence_id === prediction.sequence_id && candidate.track_id === prediction.track_id,
+    );
+    return (
+      !segment ||
+      !(
+        segment.start_timestamp_ns <= prediction.source_timestamp_ns &&
+        prediction.source_timestamp_ns <= segment.end_timestamp_ns
+      ) ||
+      segment.neutral_ignored_timestamps_ns?.includes(prediction.source_timestamp_ns)
+    );
+  }),
+  "neutral predictions appeared as scored false tracks",
 );
 assert(
   evidence.audit_evidence.score_explanation.scoreable_target_denominator ===

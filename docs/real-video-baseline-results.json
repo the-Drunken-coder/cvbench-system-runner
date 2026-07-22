@@ -8,9 +8,9 @@
   },
   "runs": {
     "real": {
-      "run_id": "20260722T102740Z-9fc4b07a",
+      "run_id": "20260722T103200Z-176ee432",
       "report": "real-video-evidence/real-baseline-report.json",
-      "report_sha256": "5763450158a92d8de560d8fcb0392c3ea53aa48115fad47146e4eaf882714aa4",
+      "report_sha256": "b34d12c4e95d91d5cd94bb4bd0b085cc1bd8a7d8420c188cf180dbcceca78701",
       "benchmark_fingerprint": "6e18e89020104547168ed590732d531e71f7f57437836f549f62e34218f23798",
       "status": "completed",
       "delivered_frames": 78,
@@ -23,7 +23,7 @@
       "mean_iou": 0.2820430087,
       "id_switches": 13,
       "false_detections": 328,
-      "latency_p99_ms": 33.722894499999995,
+      "latency_p99_ms": 34.819923179999996,
       "coverage_by_scenario": {
         "real_camera_motion_scale": 0.6129032258,
         "real_crowding_occlusion": 0.3888888889,
@@ -31,9 +31,9 @@
       }
     },
     "synthetic_same_sut": {
-      "run_id": "20260722T102740Z-b9617b3e",
+      "run_id": "20260722T103200Z-9b581b84",
       "report": "real-video-evidence/synthetic-same-sut-report.json",
-      "report_sha256": "88ba08326403eeedd0d3fa8cf4020a6c8f91a72016bfe1e6fc31e6bc020fbe2b",
+      "report_sha256": "da3fbc84a4498ab4dd2426d4251b4fab959dbb925d7aaf90e38b1b6586822afb",
       "benchmark_fingerprint": "8a9b95b57027b529acbdbe12477cee237654b3c9c177c03febe603c0369ed294",
       "status": "completed",
       "delivered_frames": 185,
@@ -46,7 +46,7 @@
       "mean_iou": null,
       "id_switches": 0,
       "false_detections": 105,
-      "latency_p99_ms": 100.98609636000126
+      "latency_p99_ms": 100.34578200000124
     }
   },
   "comparison": {

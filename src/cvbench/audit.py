@@ -309,8 +309,13 @@ def build_audit_evidence(
 
     false_segments = []
     by_track: dict[tuple[str, str], list[CollectedRecord]] = defaultdict(list)
+    neutral_timestamps_by_track: dict[tuple[str, str], set[int]] = defaultdict(set)
     for item in collected:
         record = item.system_record
+        if id(record) in neutral_by_identity and record.get("track_id"):
+            neutral_timestamps_by_track[(record["sequence_id"], str(record["track_id"]))].add(
+                record["source_timestamp_ns"]
+            )
         if (
             record.get("event") in TRACK_OBSERVATION_EVENTS
             and record.get("support") == "observed"
@@ -322,6 +327,13 @@ def build_audit_evidence(
     false_track_segment_count = len(by_track)
     for (sequence_id, track_id), records in sorted(by_track.items()):
         records.sort(key=lambda item: item.system_record["source_timestamp_ns"])
+        neutral_timestamps = sorted(
+            timestamp
+            for timestamp in neutral_timestamps_by_track[(sequence_id, track_id)]
+            if records[0].system_record["source_timestamp_ns"]
+            <= timestamp
+            <= records[-1].system_record["source_timestamp_ns"]
+        )
         false_segments.append(
             {
                 "sequence_id": sequence_id,
@@ -330,6 +342,8 @@ def build_audit_evidence(
                 "end_timestamp_ns": records[-1].system_record["source_timestamp_ns"],
                 "record_count": len(records),
                 "supports": sorted({item.system_record.get("support") for item in records}),
+                "neutral_ignored_timestamps_ns": _head_tail(neutral_timestamps, MAX_TARGETS_PER_FRAME),
+                "neutral_ignored_timestamp_count": len(neutral_timestamps),
             }
         )
         if len(false_segments) == MAX_FALSE_SEGMENTS:
