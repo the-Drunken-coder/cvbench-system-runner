@@ -71,10 +71,19 @@ def test_non_finite_json_numbers_are_rejected(value: float) -> None:
 
 def test_ground_truth_validation() -> None:
     assert validate_ground_truth(gt(100))["eligible_for_detection"] is True
+    ignored = gt(100)
+    ignored["ignore"] = True
+    assert validate_ground_truth(ignored)["ignore"] is True
     invalid = gt(100)
     invalid["visibility_fraction"] = 1.1
     with pytest.raises(ProtocolError):
         validate_ground_truth(invalid)
+
+
+def test_reacquisition_event_is_in_the_track_contract() -> None:
+    record = output(123).system_record
+    record["event"] = "track_reacquired"
+    assert validate_track_record(record)["event"] == "track_reacquired"
 
 
 def test_binary_frame_round_trip_preserves_timestamp_and_payload() -> None:

@@ -8,7 +8,8 @@ from typing import Any, BinaryIO
 
 from .errors import ProtocolError
 
-TRACK_EVENTS = {"track_started", "track_update", "track_ended"}
+TRACK_EVENTS = {"track_started", "track_update", "track_reacquired", "track_ended"}
+TRACK_OBSERVATION_EVENTS = {"track_started", "track_update", "track_reacquired"}
 EVENTS = TRACK_EVENTS | {"system_status", "system_error"}
 TRACK_STATES = {"tentative", "confirmed", "coasting", "reacquired", "lost"}
 SUPPORT_VALUES = {"observed", "predicted"}
@@ -104,12 +105,16 @@ def validate_ground_truth(record: Any) -> dict[str, Any]:
     }
     for key, kind in required.items():
         _require(record, key, kind)
+    ignore = record.get("ignore", False)
+    if not isinstance(ignore, bool):
+        raise ProtocolError("ignore must be boolean")
     visibility = float(record["visibility_fraction"])
     if not math.isfinite(visibility) or not 0 <= visibility <= 1:
         raise ProtocolError("visibility_fraction must be between zero and one")
     if record["occlusion"] not in OCCLUSION_VALUES:
         raise ProtocolError("invalid occlusion state")
     clean = dict(record)
+    clean["ignore"] = ignore
     if record["on_screen"]:
         clean["bbox_xyxy"] = validate_bbox(record.get("bbox_xyxy"))
     elif record.get("bbox_xyxy") is not None:

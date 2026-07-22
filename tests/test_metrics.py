@@ -178,6 +178,18 @@ def test_freshness_requires_exact_source_timestamp() -> None:
     assert metrics["sample_counts"]["matches"] == 0
 
 
+def test_ignore_annotations_neutralize_unmatched_predictions_after_target_matching() -> None:
+    target = gt(0, box=[0, 0, 10, 10])
+    ignored = gt(0, target="ignore-1", box=[20, 20, 40, 40])
+    ignored["ignore"] = True
+    records = [output(0, box=[0, 0, 10, 10]), output(0, track="unlabeled", box=[20, 20, 40, 40])]
+    metrics, _ = calculate_metrics([target, ignored], records, Thresholds(ignore_match_iou=0.5))
+    assert metrics["sample_counts"]["matches"] == 1
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+    assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
+
+
 def test_eof_uses_median_cadence_and_half_open_intervals() -> None:
     ground_truth = [gt(0), gt(100_000_000), gt(200_000_000)]
     metrics, _ = calculate_metrics(ground_truth, [output(0), output(100_000_000)], Thresholds())

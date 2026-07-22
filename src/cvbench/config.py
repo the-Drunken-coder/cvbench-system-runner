@@ -16,6 +16,7 @@ class Thresholds:
     visible_dropout_tolerance_ms: int = 100
     max_match_center_error_px: float = 50.0
     minimum_match_iou: float = 0.3
+    ignore_match_iou: float = 0.5
     acquisition_deadlines_ms: tuple[int, ...] = (100, 250, 500, 1000)
     latency_deadline_ms: float = 250.0
     high_confidence_threshold: float = 0.8
@@ -156,6 +157,12 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
         minimum_match_iou=_number(
             raw_thresholds.get("minimum_match_iou", 0.3),
             "thresholds.minimum_match_iou",
+            minimum=0,
+            maximum=1,
+        ),
+        ignore_match_iou=_number(
+            raw_thresholds.get("ignore_match_iou", 0.5),
+            "thresholds.ignore_match_iou",
             minimum=0,
             maximum=1,
         ),

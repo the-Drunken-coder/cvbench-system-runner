@@ -16,6 +16,7 @@ thresholds:
   visible_dropout_tolerance_ms: 100
   max_match_center_error_px: 100
   minimum_match_iou: 0.2
+  ignore_match_iou: 0.5
   acquisition_deadlines_ms: [100, 250, 500, 1000]
   latency_deadline_ms: 250
   high_confidence_threshold: 0.8
@@ -24,12 +25,12 @@ thresholds:
 
 # The seed keeps ordering reproducible while preventing a SUT from relying on
 # the public manifest order. Sequence IDs are opaque and do not name labels.
-evaluation_order_seed: 190721
+# Evaluation order is shuffled privately per run; this public manifest is not a secret.
 
 scenarios:
-  - ../scenarios/real-video-v1/rv1-crowd-a7f3/scenario.yaml
-  - ../scenarios/real-video-v1/rv1-night-b2c8/scenario.yaml
-  - ../scenarios/real-video-v1/rv1-motion-c3d1/scenario.yaml
+  - ../scenarios/real-video-v1/rv1-a7f3/scenario.yaml
+  - ../scenarios/real-video-v1/rv1-b2c8/scenario.yaml
+  - ../scenarios/real-video-v1/rv1-c3d1/scenario.yaml
 
 resources:
   cpu_limit: 4

@@ -39,6 +39,10 @@ class Track:
         return ((self.box[0] + self.box[2]) / 2, (self.box[1] + self.box[3]) / 2)
 
 
+def _lifecycle_event(*, created: bool, was_missing: bool) -> str:
+    return "track_started" if created else ("track_reacquired" if was_missing else "track_update")
+
+
 def _detections(payload: bytes, previous: np.ndarray | None) -> tuple[list[list[float]], np.ndarray | None]:
     image = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
@@ -68,12 +72,12 @@ def _clamp(box: list[float], width: int, height: int) -> list[float]:
     return [x1, y1, x2, y2]
 
 
-def _emit(metadata: dict[str, Any], track: Track, state: str, support: str) -> None:
+def _emit(metadata: dict[str, Any], track: Track, state: str, support: str, event: str) -> None:
     print(
         json.dumps(
             {
                 "schema_version": "cvbench.track/v1",
-                "event": "track_started" if track.hits == 1 else "track_update",
+                "event": event,
                 "sequence_id": metadata["sequence_id"],
                 "source_timestamp_ns": metadata["source_timestamp_ns"],
                 "track_id": track.identifier,
@@ -138,6 +142,7 @@ def main() -> int:
                     for identifier, track in tracks.items()
                     if identifier in available
                 )
+                created = False
                 if candidates and candidates[0][0] <= 180**2:
                     identifier = candidates[0][1]
                     available.remove(identifier)
@@ -145,17 +150,20 @@ def main() -> int:
                     identifier = f"motion-{next_id}"
                     next_id += 1
                     tracks[identifier] = Track(identifier, box)
+                    created = True
                 track = tracks[identifier]
+                was_missing = track.was_missing
                 old_center = track.center
                 track.velocity = (center[0] - old_center[0], center[1] - old_center[1])
                 track.box = box
                 track.hits += 1
                 track.misses = 0
+                event_name = _lifecycle_event(created=created, was_missing=was_missing)
                 track.was_missing = False
                 track.ended = False
                 matched.add(identifier)
-                state = "reacquired" if track.hits > 1 and track.was_missing else "confirmed"
-                _emit(metadata, track, state, "observed")
+                state = "reacquired" if event_name == "track_reacquired" else "confirmed"
+                _emit(metadata, track, state, "observed", event_name)
             for identifier, track in list(tracks.items()):
                 if identifier in matched:
                     continue
@@ -172,10 +180,10 @@ def main() -> int:
                     int(metadata["height"]),
                 )
                 if track.misses <= 4:
-                    _emit(metadata, track, "coasting", "predicted")
+                    _emit(metadata, track, "coasting", "predicted", "track_update")
                 elif not track.ended:
                     track.ended = True
-                    _emit(metadata, track, "lost", "predicted")
+                    _emit(metadata, track, "lost", "predicted", "track_ended")
     return 0
 
 

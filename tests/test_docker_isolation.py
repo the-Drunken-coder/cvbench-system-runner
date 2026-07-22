@@ -44,6 +44,9 @@ def test_docker_command_mounts_only_socket_and_disables_network(tmp_path: Path) 
         "destination": "/run/cvbench",
     }
     assert runtime.isolation["expected_container_user"] == f"{EXPECTED_UID}:{EXPECTED_GID}"
+    assert runtime.isolation["ground_truth_access"] is False
+    assert runtime.isolation["repository_access"] is False
+    assert runtime.isolation["media_access"] is False
     assert runtime.isolation["socket_access"] == {
         "owner_uid": EXPECTED_UID,
         "owner_gid": EXPECTED_GID,
@@ -120,6 +123,9 @@ def test_docker_inspection_distinguishes_applied_limits(tmp_path: Path) -> None:
     assert evidence["status"] == "verified"
     assert evidence["applied"] == {"cpu_limit": 4.0, "memory_limit_mb": 2048.0}
     assert evidence["future_frame_isolation"] is True
+    assert evidence["ground_truth_access"] is False
+    assert evidence["repository_access"] is False
+    assert evidence["media_access"] is False
     assert evidence["image_identity_verified"] is True
     assert evidence["container_user_alignment_verified"] is True
     assert evidence["image_identity"]["executed_image_id"] == "sha256:image-id"
@@ -168,3 +174,11 @@ def test_example_image_does_not_copy_scenarios_or_workspace() -> None:
     assert "USER cvbench" in dockerfile
     assert dockerignore.splitlines()[0] == "*"
     assert "!src/**" in dockerignore
+
+
+def test_real_video_image_has_no_scenario_or_media_mount_contract() -> None:
+    dockerfile = (ROOT / "examples/Dockerfile.real-video-baseline").read_text()
+    assert "COPY ." not in dockerfile
+    assert "scenarios" not in dockerfile
+    assert "data/" not in dockerfile
+    assert "real_video_baseline" in dockerfile

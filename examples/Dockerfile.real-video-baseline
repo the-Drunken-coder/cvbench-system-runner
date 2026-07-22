@@ -1,0 +1,4 @@
+FROM cvbench-example-good:v1
+COPY src/cvbench/examples/real_video_baseline.py /app/src/cvbench/examples/real_video_baseline.py
+RUN pip install --no-cache-dir --no-deps .
+CMD ["python", "-m", "cvbench.examples.real_video_baseline"]

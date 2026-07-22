@@ -10,6 +10,9 @@ The report keeps categories separate:
 - Localization: IoU, pixel and normalized center error, size error, visibility groups, and size groups.
 - Identity: switches, fragments, duplicates, merges/splits, and normalized switch rate.
 - False output: unmatched detections, births, persistence, track-seconds, confidence, and scenario.
+- Ignore/unlabeled annotations are matched only after scoreable targets have been assigned. An unmatched observed
+  prediction with IoU at least the benchmark's locked `ignore_match_iou` threshold (0.5 in real-video-v1) is neutral,
+  excluded from every false-detection denominator, and reported separately as `neutral_ignored_predictions`.
 - Robustness: controlled loss intervals, correct and same-ID reacquisition, gap duration, and latency.
 - Latency: externally measured first and per-update values, percentiles, deadline misses, count groups, and time series.
 - Resources: CPU, time, RAM, disk, network where available, process/thread count, GPU/VRAM where NVIDIA tooling exists, and memory growth.

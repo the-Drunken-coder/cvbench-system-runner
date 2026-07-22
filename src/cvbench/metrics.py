@@ -9,6 +9,7 @@ from typing import Any
 from .config import Thresholds
 from .matching import bbox_iou, center_error, match_records_by_support
 from .model import CollectedRecord, Match
+from .protocol import TRACK_EVENTS, TRACK_OBSERVATION_EVENTS
 
 
 def _track_id_lifecycle(
@@ -17,7 +18,7 @@ def _track_id_lifecycle(
     assignments = {
         id(match.output): match
         for match in observed_matches
-        if match.output.get("event") in {"track_started", "track_update"}
+        if match.output.get("event") in TRACK_OBSERVATION_EVENTS
         and match.output.get("state") != "lost"
     }
     events: list[dict[str, Any]] = []
@@ -171,6 +172,8 @@ def calculate_metrics(
     observed_matches, matches, unmatched = match_records_by_support(ground_truth, outputs, thresholds)
     ground_truth_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for gt in ground_truth:
+        if gt.get("ignore", False):
+            continue
         ground_truth_by_frame[(gt["sequence_id"], gt["source_timestamp_ns"])].append(gt)
     match_by_target_frame = {
         (match.sequence_id, match.source_timestamp_ns, match.target_id): match for match in matches
@@ -182,6 +185,8 @@ def calculate_metrics(
     eligible_by_target: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     all_by_target: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for gt in ground_truth:
+        if gt.get("ignore", False):
+            continue
         key = (gt["sequence_id"], gt["target_id"])
         all_by_target[key].append(gt)
         if gt["on_screen"] and gt["eligible_for_detection"]:
@@ -361,7 +366,7 @@ def calculate_metrics(
     overlapping_by_frame_target: dict[tuple[str, int, str], set[str]] = defaultdict(set)
     duplicate_ids_by_target: dict[tuple[str, str], set[str]] = defaultdict(set)
     for output in unmatched:
-        if output.get("event") not in {"track_started", "track_update"}:
+        if output.get("event") not in TRACK_OBSERVATION_EVENTS:
             continue
         frame_key = (output["sequence_id"], output["source_timestamp_ns"])
         for gt in ground_truth_by_frame.get(frame_key, []):
@@ -386,7 +391,7 @@ def calculate_metrics(
     )
     merges = 0
     for output in outputs:
-        if output.get("event") not in {"track_started", "track_update"}:
+        if output.get("event") not in TRACK_OBSERVATION_EVENTS:
             continue
         frame_key = (output["sequence_id"], output["source_timestamp_ns"])
         overlapping_targets = sum(
@@ -412,7 +417,16 @@ def calculate_metrics(
         "id_switches_per_target_minute": id_switches / target_minutes if target_minutes else None,
     }
 
-    unmatched_tracks = [record for record in unmatched if record.get("event") in {"track_started", "track_update"}]
+    neutral_ignored = [
+        record
+        for record in unmatched
+        if record.get("neutral_ignored") and record.get("event") in TRACK_OBSERVATION_EVENTS
+    ]
+    unmatched_tracks = [
+        record
+        for record in unmatched
+        if record.get("event") in TRACK_OBSERVATION_EVENTS and not record.get("neutral_ignored")
+    ]
     false_by_id: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for record in unmatched_tracks:
         false_by_id[(record["sequence_id"], record["track_id"])].append(record)
@@ -451,6 +465,19 @@ def calculate_metrics(
             sorted(
                 Counter(scenario_families.get(record["sequence_id"], "unknown") for record in unmatched_tracks).items()
             )
+        ),
+        "neutral_ignored_predictions": len(neutral_ignored),
+        "neutral_ignored_by_scenario": dict(
+            sorted(
+                Counter(scenario_families.get(record["sequence_id"], "unknown") for record in neutral_ignored).items()
+            )
+        ),
+        "neutral_ignored_annotation_ids": sorted(
+            {
+                annotation_id
+                for record in neutral_ignored
+                for annotation_id in record.get("ignore_annotation_ids", [])
+            }
         ),
     }
 
@@ -561,7 +588,7 @@ def calculate_metrics(
             (item.collector_received_timestamp_ns - item.system_record["source_timestamp_ns"]) / 1_000_000,
         )
         for item in collected
-        if item.system_record.get("event") in {"track_started", "track_update", "track_ended"}
+        if item.system_record.get("event") in TRACK_EVENTS
         and item.collector_received_timestamp_ns >= item.system_record["source_timestamp_ns"]
     ]
     latency_ms = [value for _item, value in timed_outputs]
@@ -599,7 +626,7 @@ def calculate_metrics(
     count_by_frame: Counter[tuple[str, int]] = Counter(
         (gt["sequence_id"], gt["source_timestamp_ns"])
         for gt in ground_truth
-        if gt["on_screen"] and gt["eligible_for_detection"]
+        if not gt.get("ignore", False) and gt["on_screen"] and gt["eligible_for_detection"]
     )
     group_data: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     for gt in ground_truth:
@@ -618,7 +645,7 @@ def calculate_metrics(
     fault_latency: list[float] = []
     for item in collected:
         record = item.system_record
-        if record.get("event") not in {"track_started", "track_update", "track_ended"}:
+        if record.get("event") not in TRACK_EVENTS:
             continue
         value = latency_lookup.get(id(record))
         if value is None:
@@ -730,7 +757,7 @@ def calculate_metrics(
     reacquisition["after_visible_detector_dropout_rate"] = blackout.get("observed_recovery_rate")
 
     track_records = [
-        record for record in outputs if record.get("event") in {"track_started", "track_update", "track_ended"}
+        record for record in outputs if record.get("event") in TRACK_EVENTS
     ]
     sequences_by_track: dict[str, set[str]] = defaultdict(set)
     for record in track_records:
@@ -782,5 +809,6 @@ def calculate_metrics(
             "output_records": len(outputs),
             "matches": len(observed_matches),
             "continuity_matches": len(matches),
+            "neutral_ignored_predictions": len(neutral_ignored),
         },
     }, matches

@@ -57,3 +57,12 @@ jobs:
       - run: python scripts/assert_docker_report.py docker-runs
       - name: Assert no scored container remains
         run: test -z "$(docker ps -aq --filter ancestor=cvbench-example-good:v1)"
+      - name: Prepare and score the isolated real-video tranche
+        run: |
+          python -m pip install -r requirements-real-video.lock
+          python scripts/prepare_real_video.py --output data/real-video-v1
+          docker build -f examples/Dockerfile.real-video-baseline -t cvbench-real-video-baseline:v1 .
+          cvbench run --benchmark benchmarks/real-video-v1.yaml --system systems/real-video-baseline-docker.yaml --output real-video-docker-runs
+          python scripts/assert_docker_report.py real-video-docker-runs --real-video
+      - name: Assert no real-video container remains
+        run: test -z "$(docker ps -aq --filter ancestor=cvbench-real-video-baseline:v1)"

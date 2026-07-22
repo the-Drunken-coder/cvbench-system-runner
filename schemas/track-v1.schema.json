@@ -6,7 +6,7 @@
   "required": ["schema_version", "event", "sequence_id", "source_timestamp_ns"],
   "properties": {
     "schema_version": {"const": "cvbench.track/v1"},
-    "event": {"enum": ["track_started", "track_update", "track_ended", "system_status", "system_error"]},
+    "event": {"enum": ["track_started", "track_update", "track_reacquired", "track_ended", "system_status", "system_error"]},
     "sequence_id": {"type": "string", "minLength": 1},
     "source_timestamp_ns": {"type": "integer", "minimum": 0},
     "track_id": {"type": "string", "minLength": 1},
@@ -26,7 +26,7 @@
     }
   },
   "allOf": [{
-    "if": {"properties": {"event": {"enum": ["track_started", "track_update", "track_ended"]}}},
+    "if": {"properties": {"event": {"enum": ["track_started", "track_update", "track_reacquired", "track_ended"]}}},
     "then": {"required": ["track_id", "state", "support", "class_id", "confidence", "geometry"]}
   }],
   "additionalProperties": true

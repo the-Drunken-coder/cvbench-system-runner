@@ -6,6 +6,9 @@ from pathlib import Path
 
 
 def main() -> None:
+    if len(sys.argv) not in {2, 3} or (len(sys.argv) == 3 and sys.argv[2] != "--real-video"):
+        raise SystemExit("usage: assert_docker_report.py RUNS [--real-video]")
+    real_video = len(sys.argv) == 3
     reports = sorted(Path(sys.argv[1]).glob("*/report.json"))
     if len(reports) != 1:
         raise SystemExit(f"expected one Docker report, found {len(reports)}")
@@ -13,9 +16,16 @@ def main() -> None:
     isolation = report["runtime_isolation"]
     assert report["outcome"]["status"] == "completed", report["outcome"]
     assert report["metrics"]["sample_counts"]["matches"] > 0
-    assert report["metrics"]["identity"]["id_switches"] == 0
+    if real_video:
+        assert report["benchmark"]["id"] == "real-video-v1"
+        assert report["metrics"]["sample_counts"]["neutral_ignored_predictions"] >= 1
+    else:
+        assert report["metrics"]["identity"]["id_switches"] == 0
     assert isolation["status"] == "verified", isolation
     assert isolation["future_frame_isolation"] is True
+    assert isolation["ground_truth_access"] is False
+    assert isolation["repository_access"] is False
+    assert isolation["media_access"] is False
     assert isolation["image_identity_verified"] is True
     assert isolation["container_user_alignment_verified"] is True
     assert isolation["executed_container_user"] == isolation["expected_container_user"]

@@ -6,6 +6,7 @@ from typing import Any
 
 from .config import Thresholds
 from .model import Match
+from .protocol import TRACK_OBSERVATION_EVENTS
 
 INVALID_COST = 1_000_000.0
 
@@ -89,10 +90,10 @@ def match_records(
     gt_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     output_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for gt in ground_truth:
-        if gt.get("on_screen") and gt.get("bbox_xyxy"):
+        if not gt.get("ignore", False) and gt.get("on_screen") and gt.get("bbox_xyxy"):
             gt_by_frame[(gt["sequence_id"], gt["source_timestamp_ns"])].append(gt)
     for output in outputs:
-        if output.get("event") in {"track_started", "track_update", "track_ended"}:
+        if output.get("event") in TRACK_OBSERVATION_EVENTS | {"track_ended"}:
             output_by_frame[(output["sequence_id"], output["source_timestamp_ns"])].append(output)
     matches: list[Match] = []
     unmatched: list[dict[str, Any]] = []
@@ -144,6 +145,42 @@ def match_records(
     return matches, unmatched
 
 
+def mark_ignored_outputs(
+    ground_truth: list[dict[str, Any]],
+    outputs: list[dict[str, Any]],
+    thresholds: Thresholds,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Mark unmatched observed outputs neutral when they overlap an ignore box.
+
+    Scoreable targets have already been matched by ``match_records``.  This
+    second pass therefore cannot let an ignore annotation steal a real target.
+    """
+    ignores_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in ground_truth:
+        if row.get("ignore") and row.get("on_screen") and row.get("bbox_xyxy"):
+            ignores_by_frame[(row["sequence_id"], row["source_timestamp_ns"])].append(row)
+    neutral: list[dict[str, Any]] = []
+    remaining: list[dict[str, Any]] = []
+    for output in outputs:
+        if output.get("event") not in TRACK_OBSERVATION_EVENTS:
+            remaining.append(output)
+            continue
+        candidates = ignores_by_frame.get((output["sequence_id"], output["source_timestamp_ns"]), [])
+        overlaps = [
+            row
+            for row in candidates
+            if bbox_iou(row["bbox_xyxy"], output["geometry"]["value"]) >= thresholds.ignore_match_iou
+        ]
+        if overlaps:
+            marked = dict(output)
+            marked["neutral_ignored"] = True
+            marked["ignore_annotation_ids"] = sorted(row["target_id"] for row in overlaps)
+            neutral.append(marked)
+        else:
+            remaining.append(output)
+    return remaining, neutral
+
+
 def match_records_by_support(
     ground_truth: list[dict[str, Any]], outputs: list[dict[str, Any]], thresholds: Thresholds
 ) -> tuple[list[Match], list[Match], list[dict[str, Any]]]:
@@ -155,6 +192,8 @@ def match_records_by_support(
     observed = [record for record in outputs if record.get("support") == "observed"]
     predicted = [record for record in outputs if record.get("support") == "predicted"]
     observed_matches, unmatched_observed = match_records(ground_truth, observed, thresholds)
+    unmatched_observed, neutral = mark_ignored_outputs(ground_truth, unmatched_observed, thresholds)
+    unmatched_observed.extend(neutral)
     observed_keys = {
         (match.sequence_id, match.source_timestamp_ns, match.target_id) for match in observed_matches
     }

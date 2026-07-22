@@ -1,40 +1,62 @@
 {
-  "schema_version": "cvbench.real-video-baseline-evidence/v1",
-  "command": "cvbench run --benchmark benchmarks/real-video-v1.yaml --system systems/real-video-baseline-local.yaml --output reports/real-video-v1",
-  "real_run_id": "20260722T010416Z-9373cc08",
-  "synthetic_reference_run_id": "20260722T010431Z-3ed48d77",
-  "real_video": {
-    "status": "completed",
-    "delivered_frames": 78,
-    "matched_samples": 51,
-    "acquisition_rate": 1.0,
-    "overall_observed_coverage": 0.5858585859,
-    "overall_continuity": 0.7777777778,
-    "mean_iou": 0.2884865847,
-    "id_switches": 13,
-    "false_detections": 573,
-    "latency_p99_ms": 153.4094126,
-    "coverage_by_scenario": {
-      "real_camera_motion_scale": 0.5806451613,
-      "real_crowding_occlusion": 0.3333333333,
-      "real_low_light_crowding": 1.0
+  "schema_version": "cvbench.real-video-baseline-evidence/v2",
+  "same_sut": {
+    "id": "classical-motion-baseline",
+    "revision": "real-video-v1",
+    "system_sha256": "98baa39d445e5a96b062adad1e8031f155e22b634c325522ac12f1ce1a5ece16",
+    "command": ["{python}", "-m", "cvbench.examples.real_video_baseline"]
+  },
+  "runs": {
+    "real": {
+      "run_id": "20260722T021804Z-d215729a",
+      "report": "real-video-evidence/real-baseline-report.json",
+      "report_sha256": "6060ae5ceec244391f615715145baf1759c681c2ef45b61067fb97bd3dca3d46",
+      "benchmark_fingerprint": "535c19864339cf030f28ce97db0b2f7140af00900d8166e90d4e31af8f425750",
+      "status": "completed",
+      "delivered_frames": 78,
+      "output_records": 1436,
+      "matched_samples": 51,
+      "neutral_ignored_predictions": 1,
+      "acquisition_rate": 1.0,
+      "overall_observed_coverage": 0.6021505376,
+      "overall_continuity": 0.7634408602,
+      "mean_iou": 0.2908117113,
+      "id_switches": 13,
+      "false_detections": 572,
+      "latency_p99_ms": 163.7413706,
+      "coverage_by_scenario": {
+        "real_camera_motion_scale": 0.5806451613,
+        "real_crowding_occlusion": 0.3333333333,
+        "real_low_light_crowding": 1.0
+      }
+    },
+    "synthetic_same_sut": {
+      "run_id": "20260722T021804Z-043a2575",
+      "report": "real-video-evidence/synthetic-same-sut-report.json",
+      "report_sha256": "9a9970f3cec2e37171af19fcc4f3af761cc3f9789b70879ddca155a559bb6b55",
+      "benchmark_fingerprint": "f672d5e98ec36c6bcdf91c2df8dfc5a898142e0094b4cc357a1547e8a6c438dd",
+      "status": "completed",
+      "delivered_frames": 185,
+      "output_records": 143,
+      "matched_samples": 0,
+      "neutral_ignored_predictions": 0,
+      "acquisition_rate": 0.0,
+      "overall_observed_coverage": 0.0,
+      "overall_continuity": 0.0,
+      "mean_iou": null,
+      "id_switches": 0,
+      "false_detections": 105,
+      "latency_p99_ms": 99.3546395
     }
   },
-  "synthetic_reference": {
-    "status": "completed",
-    "delivered_frames": 185,
-    "matched_samples": 224,
-    "acquisition_rate": 1.0,
-    "overall_observed_coverage": 0.9905437352,
-    "overall_continuity": 0.9952718676,
-    "mean_iou": 0.6495593760,
-    "id_switches": 0,
-    "false_detections": 0,
-    "latency_p99_ms": 21.84233484
-  },
-  "interpretation": [
-    "The same runner reports a much lower real-video coverage and IoU than the synthetic reference.",
-    "Crowding/occlusion is the weakest real tranche scenario, followed by camera motion and scale.",
-    "The classical baseline generates substantial false detections under real texture, glare, and traffic density."
-  ]
+  "comparison": {
+    "same_sut_revision": true,
+    "comparable": false,
+    "reason": "benchmark fingerprints differ; compare_reports correctly returns inconclusive rather than a delta",
+    "interpretation": [
+      "This is a same-SUT behavior contrast, not a statistically comparable score delta.",
+      "The real clips expose substantial motion-detector false output and identity switches while the same detector fails to acquire the synthetic target contract.",
+      "Crowding and camera motion remain the real-tranche stressors; one crowd prediction was neutralized by an ignore annotation and is excluded from false-detection denominators."
+    ]
+  }
 }

@@ -237,14 +237,11 @@ def _wait_for_readiness(collector: OutputCollector, runtime: StartedRuntime, tim
     return collector.ready.is_set()
 
 
-def _load_unique_scenarios(
-    paths: tuple[Path, ...], evaluation_order_seed: str | int | None = None
-) -> list[Scenario]:
+def _load_unique_scenarios(paths: tuple[Path, ...], run_id: str) -> list[Scenario]:
     scenarios: list[Scenario] = []
     seen: dict[str, int] = {}
     ordered_paths = list(paths)
-    if evaluation_order_seed is not None:
-        random.Random(evaluation_order_seed).shuffle(ordered_paths)
+    random.Random(hashlib.sha256(run_id.encode()).digest()).shuffle(ordered_paths)
     for path in ordered_paths:
         scenario = load_scenario(path)
         sequence = scenario.frames[0].sequence_id
@@ -259,6 +256,15 @@ def _load_unique_scenarios(
                 ground_truth=[{**row, "sequence_id": unique_sequence} for row in scenario.ground_truth],
                 faults=scenario.faults,
             )
+        run_sequence = f"run-{run_id[-8:]}-seq-{len(scenarios):02d}"
+        scenario = Scenario(
+            id=scenario.id,
+            family=scenario.family,
+            root=scenario.root,
+            frames=[replace(frame, sequence_id=run_sequence) for frame in scenario.frames],
+            ground_truth=[{**row, "sequence_id": run_sequence} for row in scenario.ground_truth],
+            faults=scenario.faults,
+        )
         scenarios.append(scenario)
     return scenarios
 
@@ -266,8 +272,9 @@ def _load_unique_scenarios(
 def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_root: str | Path) -> RunArtifacts:
     benchmark = load_benchmark(benchmark_path)
     system = load_system(system_path)
-    scenarios = _load_unique_scenarios(benchmark.scenarios, benchmark.evaluation_order_seed)
-    run_dir = Path(output_root).resolve() / _run_id()
+    run_id = _run_id()
+    scenarios = _load_unique_scenarios(benchmark.scenarios, run_id)
+    run_dir = Path(output_root).resolve() / run_id
     run_dir.mkdir(parents=True)
     socket_dir = Path(tempfile.mkdtemp(prefix="cvb-", dir="/tmp"))
     socket_path = socket_dir / "input.sock"
@@ -450,7 +457,12 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         "started_at": started_wall,
         "mode": benchmark.input_mode,
         "benchmark": {"id": benchmark.id, "version": benchmark.version},
-        "system": {"id": system.id, "revision": system.revision, "runtime": system.runtime_type},
+        "system": {
+            "id": system.id,
+            "revision": system.revision,
+            "runtime": system.runtime_type,
+            "command": list(system.command),
+        },
         "outcome": asdict(outcome),
         "feed": feed_counters,
         "metrics": metrics,
@@ -472,15 +484,26 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                 runtime.isolation.get("image_identity", {}).get("executed_image_id") if runtime else None
             ),
             "command": command,
+            "system_command": list(system.command),
             "matching": {
                 "algorithm": "deterministic Hungarian assignment",
                 "minimum_iou": benchmark.thresholds.minimum_match_iou,
                 "maximum_center_error_px": benchmark.thresholds.max_match_center_error_px,
                 "class_agnostic": benchmark.thresholds.class_agnostic,
+                "ignore_match_iou": benchmark.thresholds.ignore_match_iou,
             },
             "external_clock": "time.monotonic_ns",
             "comparison_fingerprint": comparison_fingerprint,
             "comparison_inputs": comparison_inputs,
+            "evaluation_order": {
+                "scenario_ids": [scenario.id for scenario in scenarios],
+                "private_per_run": True,
+                "run_scoped_sequence_ids": True,
+                "public_calibration_note": (
+                    "Scenario manifests and calibration clips are public and recognizable; this ordering and "
+                    "the run-scoped sequence IDs do not provide secrecy."
+                ),
+            },
             "platform": {"os": os.name},
         },
         "diagnostics": {
