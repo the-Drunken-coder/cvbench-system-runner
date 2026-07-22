@@ -23,6 +23,7 @@ class Scenario:
     frames: list[Frame]
     ground_truth: list[dict[str, Any]]
     faults: list[dict[str, Any]] = field(default_factory=list)
+    scoreable_roi: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)

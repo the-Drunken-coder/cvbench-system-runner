@@ -69,16 +69,69 @@ assert(publicResponse.status === 200, `public read returned ${publicResponse.sta
 const completed = await publicResponse.json();
 assert(completed.status === "succeeded", "submission did not reach succeeded");
 assert(completed.result.scores.sample_counts.matches > 0, "public result lost scored matches");
+assert(completed.result.audit_evidence === undefined, "public submission exposed detailed audit evidence");
+assert(completed.result.diagnostics === undefined, "public submission exposed diagnostics");
 
 const operatorHeaders = { authorization: `Bearer ${operatorReadToken}` };
 const operatorResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/audit`, { headers: operatorHeaders });
 await assertStatus(operatorResponse, 200, "operator audit");
 const audit = await operatorResponse.json();
 assert(audit.automatic_disqualification === false, "audit flags must not disqualify automatically");
+assert(audit.fairness.explainable_evidence === true, "completed audit lost explainable evidence");
 const evidenceResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/evidence`, { headers: operatorHeaders });
 await assertStatus(evidenceResponse, 200, "operator evidence");
 const evidence = await evidenceResponse.json();
 assert(evidence.audit_evidence?.schema_version === "cvbench.audit/v1", "audit evidence was not retrieved");
+assert(evidence.audit_evidence.frame_samples?.length > 0, "operator evidence lost frame samples");
+assert(evidence.audit_evidence.score_explanation?.coverage_denominators, "operator evidence lost denominator explanations");
+assert(evidence.audit_evidence.flags?.length > 0, "operator evidence lost audit flags");
+assert(evidence.audit_evidence.false_track_segments, "operator evidence lost false-track evidence");
+assert(
+  evidence.audit_evidence.neutral_ignored_predictions?.count ===
+    report.metrics.sample_counts.neutral_ignored_predictions,
+  "metric neutral count does not reconcile with operator evidence",
+);
+const neutralPredictions = evidence.audit_evidence.frame_samples.flatMap((sample) =>
+  sample.predictions
+    .filter((prediction) => prediction.neutral_ignored)
+    .map((prediction) => ({
+      sequence_id: sample.sequence_id,
+      source_timestamp_ns: sample.source_timestamp_ns,
+      track_id: prediction.track_id,
+    })),
+);
+const falseTrackSegments = evidence.audit_evidence.false_track_segments;
+assert(
+  neutralPredictions.every((prediction) => {
+    const segment = falseTrackSegments.find(
+      (candidate) =>
+        candidate.sequence_id === prediction.sequence_id && candidate.track_id === prediction.track_id,
+    );
+    return (
+      !segment ||
+      !(
+        segment.start_timestamp_ns <= prediction.source_timestamp_ns &&
+        prediction.source_timestamp_ns <= segment.end_timestamp_ns
+      ) ||
+      segment.neutral_ignored_timestamps_ns?.includes(prediction.source_timestamp_ns)
+    );
+  }),
+  "neutral predictions appeared as scored false tracks",
+);
+assert(
+  evidence.audit_evidence.score_explanation.scoreable_target_denominator ===
+    report.metrics.acquisition.total_eligible_targets,
+  "scoreable target denominator does not reconcile with metrics",
+);
+assert(
+  evidence.audit_evidence.score_explanation.component_counts.localization ===
+    report.metrics.localization.sample_count,
+  "localization component does not reconcile with operator evidence",
+);
+assert(
+  evidence.audit_evidence.false_track_segment_count === report.metrics.false_detections.track_births,
+  "false-track component does not reconcile with operator evidence",
+);
 const noteResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/notes`, {
   method: "POST",
   headers: { authorization: `Bearer ${operatorWriteToken}`, "content-type": "application/json" },

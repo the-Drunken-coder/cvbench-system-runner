@@ -1,4 +1,7 @@
+import pytest
+
 from cvbench.config import Thresholds
+from cvbench.matching import intersection_over_prediction_area
 from cvbench.metrics import calculate_metrics, percentile
 from tests.helpers import gt, output
 
@@ -105,6 +108,32 @@ def test_duplicate_track_counts_only_extra_unmatched_track() -> None:
     assert metrics["identity"]["track_splits"] == 1
 
 
+def test_background_hallucination_outside_ignore_is_false() -> None:
+    target = gt(0, box=[10, 10, 20, 20])
+    ignored = gt(0, target="ignore-object", box=[30, 30, 40, 40])
+    ignored["ignore"] = True
+    records = [
+        output(0, track="target", box=[10, 10, 20, 20]),
+        output(0, track="background-hallucination", box=[100, 100, 110, 110]),
+    ]
+    metrics, _ = calculate_metrics([target, ignored], records, Thresholds())
+    assert metrics["false_detections"]["detections"] == 1
+    assert metrics["false_detections"]["neutral_ignored_predictions"] == 0
+
+
+def test_duplicate_target_prediction_is_duplicate_and_split_with_narrow_ignore() -> None:
+    target = gt(0, box=[10, 10, 20, 20])
+    ignored = gt(0, target="ignore-object", box=[30, 30, 40, 40])
+    ignored["ignore"] = True
+    records = [
+        output(0, track="target", box=[10, 10, 20, 20]),
+        output(0, track="duplicate-target", box=[11, 10, 21, 20]),
+    ]
+    metrics, _ = calculate_metrics([target, ignored], records, Thresholds())
+    assert metrics["identity"]["duplicate_tracks"] == 1
+    assert metrics["identity"]["track_splits"] == 1
+
+
 def test_false_track_duration_is_exactly_two_seconds() -> None:
     ground_truth = [gt(0, box=[100, 100, 110, 110]), gt(1_000_000_000, box=[100, 100, 110, 110])]
     records = [output(0, track="false", box=[0, 0, 10, 10]), output(1_000_000_000, track="false", box=[0, 0, 10, 10])]
@@ -176,6 +205,151 @@ def test_predicted_output_never_counts_as_reacquisition() -> None:
 def test_freshness_requires_exact_source_timestamp() -> None:
     metrics, _ = calculate_metrics([gt(100)], [output(101)], Thresholds())
     assert metrics["sample_counts"]["matches"] == 0
+
+
+def test_ignore_annotations_neutralize_unmatched_predictions_after_target_matching() -> None:
+    target = gt(0, box=[0, 0, 10, 10])
+    ignored = gt(0, target="ignore-1", box=[20, 20, 40, 40])
+    ignored["ignore"] = True
+    records = [output(0, box=[0, 0, 10, 10]), output(0, track="unlabeled", box=[20, 20, 40, 40])]
+    metrics, _ = calculate_metrics(
+        [target, ignored], records, Thresholds(ignore_match_iou=0.5, max_match_center_error_px=30)
+    )
+    assert metrics["sample_counts"]["matches"] == 1
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+    assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
+
+
+@pytest.mark.parametrize(
+    ("ignore_region", "class_agnostic"),
+    [(False, False), (False, True), (True, False), (True, True)],
+)
+def test_target_compatible_duplicate_survives_overlapping_ignore(
+    ignore_region: bool, class_agnostic: bool
+) -> None:
+    target = gt(0, box=[0, 0, 10, 10])
+    ignored = gt(0, target="ignore-object", box=[20, 0, 30, 10])
+    ignored["ignore"] = True
+    ignored["ignore_region"] = ignore_region
+    ignored["class_id"] = "car" if class_agnostic else "person"
+    primary = output(0, track="primary", box=[0, 0, 10, 10])
+    duplicate = output(0, track="duplicate", box=[20, 0, 30, 10])
+    metrics, _ = calculate_metrics(
+        [target, ignored],
+        [primary, duplicate],
+        Thresholds(class_agnostic=class_agnostic, max_match_center_error_px=30),
+    )
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 0
+    assert metrics["false_detections"]["detections"] == 1
+    assert metrics["false_detections"]["track_births"] == 1
+    assert metrics["identity"]["duplicate_tracks"] == 1
+    assert metrics["identity"]["track_splits"] == 1
+
+
+def test_legitimate_non_target_ignore_still_neutralizes() -> None:
+    target = gt(0, box=[0, 0, 10, 10])
+    ignored = gt(0, target="ignore-object", box=[40, 40, 60, 60])
+    ignored["ignore"] = True
+    prediction = output(0, track="non-target", box=[40, 40, 60, 60])
+    metrics, _ = calculate_metrics([target, ignored], [output(0, track="primary"), prediction], Thresholds())
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+
+
+def test_class_aware_wrong_class_ordinary_ignore_is_false_and_births_a_track() -> None:
+    ignored_car = gt(0, target="ignore-car", box=[20, 20, 40, 40])
+    ignored_car["ignore"] = True
+    ignored_car["class_id"] = "car"
+    prediction = output(0, track="person-over-car-ignore", box=[20, 20, 40, 40])
+    metrics, _ = calculate_metrics([ignored_car], [prediction], Thresholds(ignore_match_iou=0.5))
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 0
+    assert metrics["false_detections"]["detections"] == 1
+    assert metrics["false_detections"]["track_births"] == 1
+
+
+def test_class_aware_same_class_ordinary_ignore_is_neutral() -> None:
+    ignored_person = gt(0, target="ignore-person", box=[20, 20, 40, 40])
+    ignored_person["ignore"] = True
+    metrics, _ = calculate_metrics(
+        [ignored_person], [output(0, track="person-over-person-ignore", box=[20, 20, 40, 40])], Thresholds()
+    )
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+
+
+def test_class_agnostic_wrong_class_ordinary_ignore_is_neutral() -> None:
+    ignored_car = gt(0, target="ignore-car", box=[20, 20, 40, 40])
+    ignored_car["ignore"] = True
+    ignored_car["class_id"] = "car"
+    metrics, _ = calculate_metrics(
+        [ignored_car],
+        [output(0, track="person-over-car-ignore", box=[20, 20, 40, 40])],
+        Thresholds(class_agnostic=True),
+    )
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+
+
+def test_class_aware_ignore_region_requires_a_compatible_class() -> None:
+    ignored_car = gt(0, target="ignore-car-region", box=[0, 0, 100, 100])
+    ignored_car["ignore"] = True
+    ignored_car["ignore_region"] = True
+    ignored_car["class_id"] = "car"
+    wrong_class = output(0, track="person-in-car-region", box=[10, 10, 20, 20])
+    wrong_metrics, _ = calculate_metrics([ignored_car], [wrong_class], Thresholds())
+    assert wrong_metrics["sample_counts"]["neutral_ignored_predictions"] == 0
+    assert wrong_metrics["false_detections"]["detections"] == 1
+    same_class = output(0, track="car-in-car-region", box=[10, 10, 20, 20])
+    same_class.system_record["class_id"] = "car"
+    same_metrics, _ = calculate_metrics([ignored_car], [same_class], Thresholds())
+    assert same_metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert same_metrics["false_detections"]["detections"] == 0
+    agnostic_metrics, _ = calculate_metrics(
+        [ignored_car], [wrong_class], Thresholds(class_agnostic=True)
+    )
+    assert agnostic_metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert agnostic_metrics["false_detections"]["detections"] == 0
+
+
+def test_ignored_ground_truth_rows_are_not_in_multi_target_denominator() -> None:
+    target = gt(0, target="target", box=[0, 0, 10, 10])
+    ignored = gt(0, target="unlabeled", box=[20, 20, 40, 40])
+    ignored["ignore"] = True
+    metrics, _ = calculate_metrics(
+        [target, ignored], [output(0, track="target", box=[0, 0, 10, 10])], Thresholds()
+    )
+    assert metrics["multi_target"] == {"1": {"matched": 1, "eligible": 1, "coverage": 1.0}}
+
+
+def test_contained_small_prediction_is_neutral_inside_broad_ignore_region() -> None:
+    ignored = gt(0, target="ignore-region", box=[0, 0, 100, 100])
+    ignored["ignore"] = True
+    ignored["ignore_region"] = True
+    metrics, _ = calculate_metrics(
+        [ignored], [output(0, track="unlabeled", box=[10, 10, 20, 20])], Thresholds()
+    )
+    assert intersection_over_prediction_area([10, 10, 20, 20], [0, 0, 100, 100]) == 1
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+
+
+def test_neutral_predictions_do_not_create_identity_penalties() -> None:
+    target = gt(0, box=[10, 10, 20, 20])
+    ignored = gt(0, target="ignore-region", box=[0, 0, 100, 100])
+    ignored["ignore"] = True
+    ignored["ignore_region"] = True
+    records = [
+        output(0, track="real", box=[10, 10, 20, 20]),
+        output(0, track="neutral", box=[50, 50, 60, 60]),
+        output(100_000_000, track="real", box=[10, 10, 20, 20]),
+    ]
+    metrics, _ = calculate_metrics([target, ignored, gt(100_000_000)], records, Thresholds())
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["identity"]["duplicate_tracks"] == 0
+    assert metrics["identity"]["track_splits"] == 0
+    assert metrics["identity"]["id_switches"] == 0
+    assert metrics["long_running_stability"]["unique_track_ids"] == 1
 
 
 def test_eof_uses_median_cadence_and_half_open_intervals() -> None:

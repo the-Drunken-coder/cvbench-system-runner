@@ -60,6 +60,19 @@ def test_max_run_seconds_must_be_typed_positive_and_finite(tmp_path: Path, value
         load_benchmark(path)
 
 
+@pytest.mark.parametrize("value", [True, False, [], {}, 1.5])
+def test_evaluation_order_seed_rejects_bool_and_other_non_seed_types(tmp_path: Path, value: Any) -> None:
+    path = _benchmark_file(tmp_path, lambda data: data.__setitem__("evaluation_order_seed", value))
+    with pytest.raises(ConfigurationError, match="evaluation_order_seed"):
+        load_benchmark(path)
+
+
+@pytest.mark.parametrize("value", [None, "seed-1", 17])
+def test_evaluation_order_seed_accepts_supported_types(tmp_path: Path, value: Any) -> None:
+    path = _benchmark_file(tmp_path, lambda data: data.__setitem__("evaluation_order_seed", value))
+    assert load_benchmark(path).evaluation_order_seed == value
+
+
 @pytest.mark.parametrize(
     ("name", "value"),
     [

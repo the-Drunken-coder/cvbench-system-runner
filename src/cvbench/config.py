@@ -16,6 +16,7 @@ class Thresholds:
     visible_dropout_tolerance_ms: int = 100
     max_match_center_error_px: float = 50.0
     minimum_match_iou: float = 0.3
+    ignore_match_iou: float = 0.5
     acquisition_deadlines_ms: tuple[int, ...] = (100, 250, 500, 1000)
     latency_deadline_ms: float = 250.0
     high_confidence_threshold: float = 0.8
@@ -41,6 +42,7 @@ class BenchmarkConfig:
     max_output_records_per_second: int
     long_run_assertions: dict[str, Any]
     baseline_report: Path | None
+    evaluation_order_seed: str | int | None
 
 
 @dataclass(frozen=True)
@@ -158,6 +160,12 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
             minimum=0,
             maximum=1,
         ),
+        ignore_match_iou=_number(
+            raw_thresholds.get("ignore_match_iou", 0.5),
+            "thresholds.ignore_match_iou",
+            minimum=0,
+            maximum=1,
+        ),
         acquisition_deadlines_ms=tuple(
             _integer(value, "thresholds.acquisition_deadlines_ms[]", minimum=1) for value in raw_deadlines
         ),
@@ -189,6 +197,11 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
     reporting = _mapping(data, "reporting")
     resources = _mapping(data, "resources")
     baseline = data.get("baseline_report")
+    evaluation_order_seed = data.get("evaluation_order_seed")
+    if evaluation_order_seed is not None and (
+        not isinstance(evaluation_order_seed, (str, int)) or isinstance(evaluation_order_seed, bool)
+    ):
+        raise ConfigurationError("evaluation_order_seed must be a string or integer")
     max_output_records = _integer(data.get("max_output_records", 100_000), "max_output_records", minimum=1)
     max_output_line_bytes = _integer(
         data.get("max_output_line_bytes", 1_000_000), "max_output_line_bytes", minimum=1
@@ -223,6 +236,7 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
         max_output_records_per_second=max_output_records_per_second,
         long_run_assertions=long_run_assertions,
         baseline_report=(path.parent / baseline).resolve() if isinstance(baseline, str) else None,
+        evaluation_order_seed=evaluation_order_seed,
     )
 
 

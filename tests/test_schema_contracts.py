@@ -50,6 +50,20 @@ def test_ground_truth_bbox_requirement_matches_runtime_contract() -> None:
     validator.validate(off_screen)
 
 
+def test_ground_truth_ignore_region_conditionals_are_complete() -> None:
+    validator = _validator("ground-truth-v1.schema.json")
+    valid = {**gt(0), "ignore": True, "ignore_region": True, "ignore_region_id": "region"}
+    validator.validate(valid)
+    for invalid in (
+        {**gt(0), "ignore_region": True, "ignore": False, "ignore_region_id": "region"},
+        {**gt(0), "ignore": True, "ignore_region": True},
+        {**gt(0), "ignore": True, "ignore_region": True, "ignore_region_id": ""},
+        {**gt(0), "ignore": True, "ignore_region_id": "region"},
+    ):
+        with pytest.raises(ValidationError):
+            validator.validate(invalid)
+
+
 @pytest.mark.parametrize("field", ["sequence_id", "track_id"])
 def test_track_schema_rejects_empty_identifiers(field: str) -> None:
     validator = _validator("track-v1.schema.json")

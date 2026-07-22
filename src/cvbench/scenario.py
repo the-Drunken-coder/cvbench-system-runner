@@ -20,6 +20,21 @@ def _object_list(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
     return value
 
 
+def _scoreable_roi(data: dict[str, Any], width: int, height: int) -> tuple[float, float, float, float] | None:
+    value = data.get("scoreable_roi")
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != 4:
+        raise ConfigurationError("scenario scoreable_roi must be [x1, y1, x2, y2]")
+    try:
+        roi = tuple(float(item) for item in value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError("scenario scoreable_roi must contain numbers") from exc
+    if not (0 <= roi[0] < roi[2] <= width and 0 <= roi[1] < roi[3] <= height):
+        raise ConfigurationError("scenario scoreable_roi must be inside the frame")
+    return roi
+
+
 def load_scenario(path: str | Path) -> Scenario:
     path = Path(path).resolve()
     try:
@@ -53,6 +68,7 @@ def load_scenario(path: str | Path) -> Scenario:
         frames.append(frame)
     if not frames:
         raise ConfigurationError(f"scenario {path} has no frames")
+    scoreable_roi = _scoreable_roi(data, frames[0].width, frames[0].height)
     frame_keys = {(frame.sequence_id, frame.relative_timestamp_ns) for frame in frames}
     gt_path = root / data.get("ground_truth", "ground_truth.jsonl")
     ground_truth: list[dict[str, Any]] = []
@@ -75,4 +91,5 @@ def load_scenario(path: str | Path) -> Scenario:
         frames=frames,
         ground_truth=ground_truth,
         faults=faults,
+        scoreable_roi=scoreable_roi,
     )

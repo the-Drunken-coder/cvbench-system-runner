@@ -140,13 +140,15 @@ def main() -> int:
             matched = {identifier for identifier, _ in assignments}
             for identifier, box in assignments:
                 track = tracks[identifier]
+                created = track.hits == 1 and track.misses == 0 and not track.was_missing
+                was_missing = track.was_missing
                 new_center = _center(box)
                 track.velocity = (new_center[0] - track.center[0], new_center[1] - track.center[1])
                 track.center = new_center
                 track.box = box
                 track.hits += 1
-                state = "reacquired" if track.was_missing else ("confirmed" if track.hits >= 2 else "tentative")
-                event_name = "track_started" if track.hits <= 2 else "track_update"
+                state = "reacquired" if was_missing else ("confirmed" if track.hits >= 2 else "tentative")
+                event_name = "track_started" if created else ("track_reacquired" if was_missing else "track_update")
                 track.misses = 0
                 track.was_missing = False
                 track.ended = False

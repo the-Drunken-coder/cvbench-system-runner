@@ -75,6 +75,9 @@
       "false_track_seconds_per_camera_hour": 1174.5513866231647,
       "high_confidence_false_detections": 2,
       "longest_lived_false_track_ms": 2000.0,
+      "neutral_ignored_annotation_ids": [],
+      "neutral_ignored_by_scenario": {},
+      "neutral_ignored_predictions": 0,
       "one_frame_false_detections": 0,
       "persistent_track_births": 1,
       "track_births": 1,
@@ -278,6 +281,7 @@
       "continuity_matches": 7,
       "ground_truth_records": 16,
       "matches": 5,
+      "neutral_ignored_predictions": 0,
       "output_records": 9
     },
     "visible_dropouts": {

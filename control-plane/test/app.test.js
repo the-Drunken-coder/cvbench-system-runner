@@ -111,6 +111,32 @@ test("result callback payloads cannot exceed the advertised budget", async () =>
   assert.equal((await jsonRequest(`/api/v1/submissions/${created.id}`)).status, "running");
 });
 
+test("authenticated evidence preserves unknown Docker verification claims", async () => {
+  const created = await (await submit(validBody(), "unknown-isolation-0001")).json();
+  const leased = await (await lease()).json();
+  const report = scoredReport({
+    status: "verification_failed",
+    future_frame_isolation: null,
+    ground_truth_access: null,
+    repository_access: null,
+    media_access: null,
+    mounts: null,
+    network_mode: null,
+    image_identity_verified: null,
+    container_user_alignment_verified: null,
+  });
+  await result(created.id, { status: "succeeded", lease_token: leased.lease.token, report });
+
+  const headers = { authorization: `Bearer ${OPERATOR_READ_TOKEN}` };
+  const evidence = await (await request(`/api/v1/operator/jobs/${created.id}/evidence`, { headers })).json();
+  assert.equal(evidence.audit_evidence.resources_and_isolation.runtime_isolation.status, "verification_failed");
+  assert.equal(evidence.audit_evidence.resources_and_isolation.runtime_isolation.future_frame_isolation, null);
+  assert.equal(evidence.audit_evidence.resources_and_isolation.runtime_isolation.network_mode, null);
+  const publicResult = await (await request(`/api/v1/submissions/${created.id}`)).json();
+  assert.equal(publicResult.result.audit_evidence, undefined);
+  assert.equal(publicResult.result.runtime_isolation, undefined);
+});
+
 test("operator API is separate from public and runner credentials", async () => {
   const created = await (await submit(validBody(), "operator-job-0001")).json();
   assert.equal((await request("/api/v1/operator/jobs")).status, 401);
@@ -133,9 +159,20 @@ test("operator API is separate from public and runner credentials", async () => 
   const detail = await (await request(`/api/v1/operator/jobs/${created.id}`, { headers })).json();
   assert.equal(detail.raw_result.metrics.sample_counts.matches, 12);
   assert.equal(detail.raw_result.diagnostics.sut_stderr[0], "<script>throw new Error('untrusted')</script>");
+  assert.equal(detail.raw_result.audit_evidence.schema_version, "cvbench.audit/v1");
   assert.equal(detail.job.diagnostics.duplicate_result_fingerprint, "clear");
   const audit = await (await request(`/api/v1/operator/jobs/${created.id}/audit`, { headers })).json();
   assert.equal(audit.automatic_disqualification, false);
+  assert.equal(audit.fairness.explainable_evidence, true);
+  assert.ok(audit.flags.some((flag) => flag.id === "false_track"));
+  assert.equal(audit.score_components.sample_counts.matches, 12);
+  const evidence = await (await request(`/api/v1/operator/jobs/${created.id}/evidence`, { headers })).json();
+  assert.equal(evidence.audit_evidence.frame_samples[0].matches[0].target_id, "target-1");
+  assert.equal(evidence.audit_evidence.score_explanation.coverage_denominators.observed_coverage, 1);
+  assert.equal(evidence.audit_evidence.neutral_ignored_predictions.count, 1);
+  assert.equal(evidence.audit_evidence.score_explanation.scoreable_target_denominator, 1);
+  assert.equal(evidence.audit_evidence.false_track_segment_count, 1);
+  assert.ok(!evidence.audit_evidence.false_track_segments.some((segment) => segment.track_id === "neutral-track"));
   assert.equal((await request(`/api/v1/operator/jobs/${created.id}/notes`, {
     method: "POST",
     headers: { ...headers, "content-type": "application/json" },
@@ -163,6 +200,7 @@ test("operator API is separate from public and runner credentials", async () => 
   const publicResult = await jsonRequest(`/api/v1/submissions/${created.id}`);
   assert.equal(publicResult.result.scores.sample_counts.matches, 12);
   assert.equal(publicResult.result.diagnostics, undefined);
+  assert.equal(publicResult.result.audit_evidence, undefined);
   assert.equal((await request("/api/v1/operator/jobs?cursor=bad", { headers })).status, 400);
 });
 
@@ -447,12 +485,39 @@ function validBody() {
   };
 }
 
-function scoredReport() {
+function scoredReport(runtimeIsolation = { status: "verified", network_mode: "none" }) {
   return {
     outcome: { status: "completed" },
-    metrics: { sample_counts: { matches: 12 }, identity: { id_switches: 0 } },
-    runtime_isolation: { status: "verified", network_mode: "none" },
+    metrics: {
+      sample_counts: { matches: 12, neutral_ignored_predictions: 1 },
+      identity: { id_switches: 0 },
+      acquisition: { total_eligible_targets: 1 },
+      localization: { sample_count: 12 },
+      false_detections: { track_births: 1 },
+    },
+    runtime_isolation: runtimeIsolation,
     diagnostics: { sut_stderr: ["<script>throw new Error('untrusted')</script>"] },
+    audit_evidence: {
+      schema_version: "cvbench.audit/v1",
+      frame_samples: [
+        {
+          matches: [{ target_id: "target-1", iou: 0.91 }],
+          ground_truth: [{ count_reason: "matched_observed_and_counted" }],
+          predictions: [{ track_id: "track-1" }, { track_id: "neutral-track", neutral_ignored: true }],
+        },
+      ],
+      neutral_ignored_predictions: { count: 1, annotation_ids: ["ignore-1"] },
+      false_track_segment_count: 1,
+      score_explanation: {
+        scoreable_target_denominator: 1,
+        coverage_denominators: { observed_coverage: 1, eligible_targets: 1 },
+        component_counts: { localization: 12 },
+      },
+      flags: [{ id: "false_track", status: "flagged", review_aid_only: true }],
+      false_track_segments: [{ track_id: "false-track", duration_ms: 100 }],
+      resources_and_isolation: { runtime_isolation: runtimeIsolation },
+    },
+    provenance: { raw_evidence_available: false },
   };
 }
 

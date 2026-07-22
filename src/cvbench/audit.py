@@ -7,6 +7,7 @@ from typing import Any
 
 from .json_contract import serialized_json_bytes
 from .model import CollectedRecord, Match
+from .protocol import TRACK_OBSERVATION_EVENTS
 
 MAX_FRAME_SAMPLES = 64
 MAX_PREDICTIONS_PER_FRAME = 16
@@ -172,11 +173,26 @@ def build_audit_evidence(
     feed: dict[str, Any],
     resources: dict[str, Any],
     runtime_isolation: dict[str, Any],
+    neutral_outputs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return a small bounded evidence packet; raw JSONL is not retained by the control plane."""
 
+    scoreable_ground_truth = [row for row in ground_truth if not row.get("ignore", False)]
+    ignored_ground_truth_count = len(ground_truth) - len(scoreable_ground_truth)
+    neutral_by_identity = {
+        record["_neutral_output_identity"]: record
+        for record in (neutral_outputs or [])
+        if record.get("neutral_ignored") and record.get("_neutral_output_identity") is not None
+    }
+    neutral_annotation_ids = sorted(
+        {
+            annotation_id
+            for record in neutral_by_identity.values()
+            for annotation_id in record.get("ignore_annotation_ids", [])
+        }
+    )
     gt_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
-    for row in ground_truth:
+    for row in scoreable_ground_truth:
         gt_by_frame[(row["sequence_id"], row["source_timestamp_ns"])].append(row)
     output_by_frame: dict[tuple[str, int], list[CollectedRecord]] = defaultdict(list)
     for item in collected:
@@ -214,6 +230,12 @@ def build_audit_evidence(
                 "collector_received_timestamp_ns": item.collector_received_timestamp_ns,
                 "external_latency_ms": (item.collector_received_timestamp_ns - timestamp) / 1_000_000,
             }
+            neutral_record = neutral_by_identity.get(id(record))
+            if neutral_record is not None:
+                prediction["neutral_ignored"] = True
+                prediction["ignore_annotation_ids"] = _head_tail(
+                    neutral_record.get("ignore_annotation_ids", []), MAX_TARGETS_PER_FRAME
+                )
             predictions.append(prediction)
         predictions_omitted = max(0, len(output_by_frame.get(key, [])) - len(predictions))
         frame_matches = matches_by_frame.get(key, [])
@@ -287,12 +309,31 @@ def build_audit_evidence(
 
     false_segments = []
     by_track: dict[tuple[str, str], list[CollectedRecord]] = defaultdict(list)
+    neutral_timestamps_by_track: dict[tuple[str, str], set[int]] = defaultdict(set)
     for item in collected:
         record = item.system_record
-        if record.get("track_id") and id(record) not in matched_records:
+        if id(record) in neutral_by_identity and record.get("track_id"):
+            neutral_timestamps_by_track[(record["sequence_id"], str(record["track_id"]))].add(
+                record["source_timestamp_ns"]
+            )
+        if (
+            record.get("event") in TRACK_OBSERVATION_EVENTS
+            and record.get("support") == "observed"
+            and record.get("track_id")
+            and id(record) not in matched_records
+            and id(record) not in neutral_by_identity
+        ):
             by_track[(record["sequence_id"], str(record["track_id"]))].append(item)
+    false_track_segment_count = len(by_track)
     for (sequence_id, track_id), records in sorted(by_track.items()):
         records.sort(key=lambda item: item.system_record["source_timestamp_ns"])
+        neutral_timestamps = sorted(
+            timestamp
+            for timestamp in neutral_timestamps_by_track[(sequence_id, track_id)]
+            if records[0].system_record["source_timestamp_ns"]
+            <= timestamp
+            <= records[-1].system_record["source_timestamp_ns"]
+        )
         false_segments.append(
             {
                 "sequence_id": sequence_id,
@@ -301,6 +342,8 @@ def build_audit_evidence(
                 "end_timestamp_ns": records[-1].system_record["source_timestamp_ns"],
                 "record_count": len(records),
                 "supports": sorted({item.system_record.get("support") for item in records}),
+                "neutral_ignored_timestamps_ns": _head_tail(neutral_timestamps, MAX_TARGETS_PER_FRAME),
+                "neutral_ignored_timestamp_count": len(neutral_timestamps),
             }
         )
         if len(false_segments) == MAX_FALSE_SEGMENTS:
@@ -411,26 +454,35 @@ def build_audit_evidence(
     ]
     occlusion_events = [
         row
-        for row in ground_truth
+        for row in scoreable_ground_truth
         if row.get("occlusion") in {"partial", "full"} or row.get("reappearance_event")
     ]
+    eligible_target_keys = {
+        (row["sequence_id"], row["target_id"])
+        for row in scoreable_ground_truth
+        if row["on_screen"] and row["eligible_for_detection"]
+    }
     score_explanation = {
-        "ground_truth_records": len(ground_truth),
+        "ground_truth_records": len(scoreable_ground_truth),
+        "ignored_ground_truth_records": ignored_ground_truth_count,
+        "scoreable_target_denominator": len(eligible_target_keys),
         "matched_continuity": len(matches),
         "matched_observed": sum(match.output.get("support") == "observed" for match in matches),
-        "excluded_off_screen": sum(not row["on_screen"] for row in ground_truth),
-        "excluded_not_eligible": sum(row["on_screen"] and not row["eligible_for_detection"] for row in ground_truth),
+        "excluded_off_screen": sum(not row["on_screen"] for row in scoreable_ground_truth),
+        "excluded_not_eligible": sum(
+            row["on_screen"] and not row["eligible_for_detection"] for row in scoreable_ground_truth
+        ),
         "ineligible_rows_with_matches": sum(
             row["on_screen"]
             and not row["eligible_for_detection"]
             and (row["sequence_id"], row["source_timestamp_ns"], row["target_id"]) in match_by_target_frame
-            for row in ground_truth
+            for row in scoreable_ground_truth
         ),
         "eligible_without_gated_match": sum(
             row["on_screen"]
             and row["eligible_for_detection"]
             and (row["sequence_id"], row["source_timestamp_ns"], row["target_id"]) not in match_by_target_frame
-            for row in ground_truth
+            for row in scoreable_ground_truth
         ),
         "component_eligibility": {
             "observed_coverage": "on_screen and eligible_for_detection with an observed gated match",
@@ -439,9 +491,16 @@ def build_audit_evidence(
             "acquisition": "on_screen and eligible_for_detection with an observed confirmed or reacquired match",
         },
         "coverage_denominators": {
-            "eligible_rows": sum(row["on_screen"] and row["eligible_for_detection"] for row in ground_truth),
-            "observed_coverage": sum(row["on_screen"] and row["eligible_for_detection"] for row in ground_truth),
-            "continuity_coverage": sum(row["on_screen"] and row["eligible_for_detection"] for row in ground_truth),
+            "eligible_rows": sum(
+                row["on_screen"] and row["eligible_for_detection"] for row in scoreable_ground_truth
+            ),
+            "eligible_targets": len(eligible_target_keys),
+            "observed_coverage": sum(
+                row["on_screen"] and row["eligible_for_detection"] for row in scoreable_ground_truth
+            ),
+            "continuity_coverage": sum(
+                row["on_screen"] and row["eligible_for_detection"] for row in scoreable_ground_truth
+            ),
         },
         "positive_credit_meaning": (
             "component_counts records positive credit, while coverage_denominators records eligible rows "
@@ -461,13 +520,13 @@ def build_audit_evidence(
                     (row["sequence_id"], row["source_timestamp_ns"], row["target_id"])
                 ].output.get("support")
                 == "observed"
-                for row in ground_truth
+                for row in scoreable_ground_truth
             ),
             "continuity_coverage": sum(
                 row["on_screen"]
                 and row["eligible_for_detection"]
                 and (row["sequence_id"], row["source_timestamp_ns"], row["target_id"]) in match_by_target_frame
-                for row in ground_truth
+                for row in scoreable_ground_truth
             ),
             "localization": sum(
                 match.output.get("support") == "observed" for match in matches
@@ -488,6 +547,12 @@ def build_audit_evidence(
         "sampled_frame_count": len(frame_samples),
         "source_frame_count": len(frame_keys),
         "false_track_segments": false_segments,
+        "false_track_segment_count": false_track_segment_count,
+        "neutral_ignored_predictions": {
+            "count": len(neutral_by_identity),
+            "annotation_ids": _head_tail(neutral_annotation_ids, MAX_TARGETS_PER_FRAME),
+            "annotation_ids_omitted": max(0, len(neutral_annotation_ids) - MAX_TARGETS_PER_FRAME),
+        },
         "score_explanation": score_explanation,
         "occlusion_and_reacquisition": {
             "occlusion_rows": len(occlusion_events),

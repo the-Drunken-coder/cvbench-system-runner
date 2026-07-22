@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from cvbench.audit import AUDIT_EVIDENCE_MAX_BYTES, build_audit_evidence
 from cvbench.config import Thresholds
 from cvbench.json_contract import serialized_json_bytes
+from cvbench.matching import match_records_by_support
 from cvbench.metrics import calculate_metrics
 from tests.helpers import gt, output
 
@@ -110,6 +113,98 @@ def test_eligible_unmatched_frame_is_a_denominator_miss_not_not_counted() -> Non
     assert miss["matched"] is False
     assert miss["counted_toward_score"]["observed_coverage"] is False
     assert miss["count_reason"] == "eligible_without_gated_match"
+
+
+@pytest.mark.parametrize("ignore_region", [False, True])
+@pytest.mark.parametrize(
+    ("class_agnostic", "ignore_class"),
+    [(False, "person"), (False, "car"), (True, "person"), (True, "car")],
+)
+def test_audit_neutral_predictions_reconcile_without_false_tracks(
+    ignore_region: bool, class_agnostic: bool, ignore_class: str
+) -> None:
+    target = gt(0, sequence="neutral-audit", target="target", box=[0, 0, 10, 10])
+    ignored = gt(
+        0,
+        sequence="neutral-audit",
+        target="unlabeled-object",
+        box=[200, 200, 300, 300] if ignore_region else [200, 200, 240, 240],
+    )
+    ignored["ignore"] = True
+    ignored["ignore_region"] = ignore_region
+    ignored["class_id"] = ignore_class
+    target_output = output(0, sequence="neutral-audit", track="target", box=[0, 0, 10, 10])
+    neutral_output = output(
+        0,
+        sequence="neutral-audit",
+        track="neutral-object",
+        box=[220, 220, 240, 240] if ignore_region else [200, 200, 240, 240],
+    )
+    if class_agnostic:
+        neutral_output.system_record["class_id"] = "person"
+    metrics, matches = calculate_metrics(
+        [target, ignored], [target_output, neutral_output], Thresholds(class_agnostic=class_agnostic)
+    )
+    _, _, unmatched = match_records_by_support(
+        [target, ignored],
+        [target_output.system_record, neutral_output.system_record],
+        Thresholds(class_agnostic=class_agnostic),
+    )
+    evidence = build_audit_evidence(
+        [target, ignored],
+        [target_output, neutral_output],
+        matches,
+        metrics,
+        {"delivered_frames": 1},
+        {"sample_count": 1},
+        {"status": "verified", "network_mode": "none"},
+        neutral_outputs=[record for record in unmatched if record.get("neutral_ignored")],
+    )
+
+    neutral_count = metrics["sample_counts"]["neutral_ignored_predictions"]
+    assert evidence["neutral_ignored_predictions"]["count"] == neutral_count
+    neutral_predictions = [
+        prediction
+        for sample in evidence["frame_samples"]
+        for prediction in sample["predictions"]
+        if prediction.get("neutral_ignored")
+    ]
+    assert len(neutral_predictions) == neutral_count
+    assert neutral_count == int(class_agnostic or ignore_class == "person")
+    false_tracks = {segment["track_id"] for segment in evidence["false_track_segments"]}
+    assert ("neutral-object" not in false_tracks) if neutral_count else ("neutral-object" in false_tracks)
+    assert evidence["false_track_segment_count"] == metrics["false_detections"]["track_births"]
+
+
+def test_audit_duplicate_survives_overlapping_ignore_and_ignored_gt_is_not_a_target() -> None:
+    target = gt(0, sequence="duplicate-audit", target="target", box=[0, 0, 10, 10])
+    ignored = gt(0, sequence="duplicate-audit", target="unlabeled-object", box=[0, 0, 10, 10])
+    ignored["ignore"] = True
+    target_output = output(0, sequence="duplicate-audit", track="a-target", box=[0, 0, 10, 10])
+    duplicate = output(0, sequence="duplicate-audit", track="z-duplicate", box=[0, 0, 10, 10])
+    metrics, matches = calculate_metrics([target, ignored], [target_output, duplicate], Thresholds())
+    _, _, unmatched = match_records_by_support(
+        [target, ignored], [target_output.system_record, duplicate.system_record], Thresholds()
+    )
+    evidence = build_audit_evidence(
+        [target, ignored],
+        [target_output, duplicate],
+        matches,
+        metrics,
+        {"delivered_frames": 1},
+        {"sample_count": 1},
+        {"status": "verified", "network_mode": "none"},
+        neutral_outputs=[record for record in unmatched if record.get("neutral_ignored")],
+    )
+
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 0
+    assert evidence["neutral_ignored_predictions"]["count"] == 0
+    assert evidence["false_track_segment_count"] == 1
+    assert evidence["false_track_segments"][0]["track_id"] == "z-duplicate"
+    assert evidence["score_explanation"]["ground_truth_records"] == 1
+    assert evidence["score_explanation"]["ignored_ground_truth_records"] == 1
+    assert evidence["score_explanation"]["scoreable_target_denominator"] == 1
+    assert evidence["score_explanation"]["coverage_denominators"]["eligible_targets"] == 1
 
 
 def test_audit_evidence_hard_budget_truncates_near_limit_model_strings() -> None:

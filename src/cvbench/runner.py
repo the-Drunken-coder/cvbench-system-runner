@@ -23,6 +23,7 @@ from .config import BenchmarkConfig, load_benchmark, load_system
 from .diagnostics import generate_findings
 from .errors import RuntimeFailure
 from .evidence import generate_evidence_packets
+from .matching import match_records_by_support
 from .metrics import calculate_metrics
 from .model import CollectedRecord, RunArtifacts, RuntimeOutcome, Scenario
 from .protocol import send_message
@@ -31,6 +32,8 @@ from .resources import ResourceMonitor
 from .runtime import StartedRuntime, cleanup_runtime, start_runtime, stop_runtime, verify_docker_isolation
 from .scenario import load_scenario
 from .stability import evaluate_long_run_assertions
+
+EVALUATION_ORDER_ALGORITHM = "sha256-sort/v1"
 
 
 def _sha256(path: Path) -> str:
@@ -41,22 +44,51 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _portable_path(path: Path) -> str:
+    """Render repository paths without publishing host usernames or worktree roots."""
+    parts = path.resolve().parts
+    for anchor in ("benchmarks", "systems", "scenarios", "data"):
+        if anchor in parts:
+            return Path(*parts[parts.index(anchor) :]).as_posix()
+    return path.name or "<path>"
+
+
 def _comparison_fingerprint(benchmark: BenchmarkConfig, scenarios: list[Scenario]) -> tuple[str, dict[str, Any]]:
+    scenario_inputs = []
+    for scenario in scenarios:
+        manifest = next(path for path in benchmark.scenarios if path.parent == scenario.root)
+        frames = sorted(
+            scenario.frames,
+            key=lambda frame: (frame.frame_index, frame.relative_timestamp_ns, frame.path.name),
+        )
+        scenario_inputs.append(
+            {
+                "id": scenario.id,
+                "manifest_sha256": _sha256(manifest),
+                "ground_truth_sha256": _sha256(scenario.root / "ground_truth.jsonl"),
+                "frame_sha256": [
+                    {
+                        "frame_index": frame.frame_index,
+                        "source_timestamp_ns": frame.relative_timestamp_ns,
+                        "sha256": _sha256(frame.path),
+                    }
+                    for frame in frames
+                ],
+            }
+        )
+    scenario_inputs.sort(key=lambda item: (item["id"], item["manifest_sha256"], item["ground_truth_sha256"]))
     inputs = {
         "benchmark_id": benchmark.id,
         "benchmark_version": benchmark.version,
         "input_mode": benchmark.input_mode,
         "playback_rate": benchmark.playback_rate,
         "thresholds": asdict(benchmark.thresholds),
-        "scenarios": [
-            {
-                "id": scenario.id,
-                "manifest_sha256": _sha256(next(path for path in benchmark.scenarios if path.parent == scenario.root)),
-                "ground_truth_sha256": _sha256(scenario.root / "ground_truth.jsonl"),
-                "frame_sha256": [_sha256(frame.path) for frame in scenario.frames],
-            }
-            for scenario in scenarios
-        ],
+        "evaluation_order": {
+            "algorithm": EVALUATION_ORDER_ALGORITHM,
+            "mode": "configured_seed" if benchmark.evaluation_order_seed is not None else "private_per_run_fallback",
+            "seed": benchmark.evaluation_order_seed,
+        },
+        "scenarios": scenario_inputs,
     }
     encoded = json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest(), inputs
@@ -189,7 +221,6 @@ def _deliver_scenarios(
                 "sequence_id": frame.sequence_id,
                 "frame_index": frame.frame_index,
                 "source_timestamp_ns": timestamp,
-                "scenario_source_timestamp_ns": frame.relative_timestamp_ns,
                 "width": frame.width,
                 "height": frame.height,
                 "pixel_format": "rgb24",
@@ -237,11 +268,33 @@ def _wait_for_readiness(collector: OutputCollector, runtime: StartedRuntime, tim
     return collector.ready.is_set()
 
 
-def _load_unique_scenarios(paths: tuple[Path, ...]) -> list[Scenario]:
+def _load_unique_scenarios(
+    paths: tuple[Path, ...], run_id: str, evaluation_order_seed: str | int | None = None
+) -> list[Scenario]:
     scenarios: list[Scenario] = []
     seen: dict[str, int] = {}
-    for path in paths:
-        scenario = load_scenario(path)
+    if evaluation_order_seed is None:
+        order_material: dict[str, Any] = {"mode": "private_per_run_fallback", "run_id": run_id}
+    else:
+        order_material = {
+            "mode": "configured_seed",
+            "seed": evaluation_order_seed,
+            "seed_type": type(evaluation_order_seed).__name__,
+        }
+    loaded = [(path, load_scenario(path)) for path in paths]
+
+    def order_key(item: tuple[Path, Scenario]) -> tuple[str, str, str]:
+        path, scenario = item
+        material = {
+            "algorithm": EVALUATION_ORDER_ALGORITHM,
+            "order_material": order_material,
+            "scenario_id": scenario.id,
+            "manifest_sha256": _sha256(path),
+        }
+        encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest(), scenario.id, _sha256(path)
+
+    for _path, scenario in sorted(loaded, key=order_key):
         sequence = scenario.frames[0].sequence_id
         seen[sequence] = seen.get(sequence, 0) + 1
         if seen[sequence] > 1:
@@ -253,16 +306,46 @@ def _load_unique_scenarios(paths: tuple[Path, ...]) -> list[Scenario]:
                 frames=[replace(frame, sequence_id=unique_sequence) for frame in scenario.frames],
                 ground_truth=[{**row, "sequence_id": unique_sequence} for row in scenario.ground_truth],
                 faults=scenario.faults,
+                scoreable_roi=scenario.scoreable_roi,
             )
+        run_sequence = f"run-{run_id[-8:]}-seq-{len(scenarios):02d}"
+        scenario = Scenario(
+            id=scenario.id,
+            family=scenario.family,
+            root=scenario.root,
+            frames=[replace(frame, sequence_id=run_sequence) for frame in scenario.frames],
+            ground_truth=[{**row, "sequence_id": run_sequence} for row in scenario.ground_truth],
+            faults=scenario.faults,
+            scoreable_roi=scenario.scoreable_roi,
+        )
         scenarios.append(scenario)
     return scenarios
+
+
+def _box_intersects_roi(box: list[float], roi: tuple[float, float, float, float]) -> bool:
+    return min(box[2], roi[2]) > max(box[0], roi[0]) and min(box[3], roi[3]) > max(box[1], roi[1])
+
+
+def _filter_outputs_to_scoreable_rois(
+    collected: list[CollectedRecord], scenarios: list[Scenario]
+) -> list[CollectedRecord]:
+    rois = {scenario.frames[0].sequence_id: scenario.scoreable_roi for scenario in scenarios}
+    filtered: list[CollectedRecord] = []
+    for item in collected:
+        roi = rois.get(item.system_record.get("sequence_id"))
+        geometry = item.system_record.get("geometry", {})
+        box = geometry.get("value") if isinstance(geometry, dict) else None
+        if roi is None or not box or _box_intersects_roi(box, roi):
+            filtered.append(item)
+    return filtered
 
 
 def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_root: str | Path) -> RunArtifacts:
     benchmark = load_benchmark(benchmark_path)
     system = load_system(system_path)
-    scenarios = _load_unique_scenarios(benchmark.scenarios)
-    run_dir = Path(output_root).resolve() / _run_id()
+    run_id = _run_id()
+    scenarios = _load_unique_scenarios(benchmark.scenarios, run_id, benchmark.evaluation_order_seed)
+    run_dir = Path(output_root).resolve() / run_id
     run_dir.mkdir(parents=True)
     socket_dir = Path(tempfile.mkdtemp(prefix="cvb-", dir="/tmp"))
     socket_path = socket_dir / "input.sock"
@@ -369,6 +452,12 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             cleanup_runtime(runtime)
         shutil.rmtree(socket_dir, ignore_errors=True)
 
+    if runtime is not None and system.runtime_type == "docker" and runtime.isolation.get("status") != "verified":
+        outcome.status = "failed"
+        verification_error = runtime.isolation.get("error", "Docker isolation verification failed")
+        if verification_error not in outcome.errors:
+            outcome.errors.append(str(verification_error))
+
     runtime_seconds = (time.monotonic_ns() - started_ns) / 1_000_000_000
     if not ground_truth:
         # Preserve scoreable ground truth even for startup/crash failures.
@@ -377,9 +466,10 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             ground_truth.extend(_shift_ground_truth(scenario, cursor, benchmark.playback_rate))
             cursor += int((scenario.frames[-1].relative_timestamp_ns + 100_000_000) / benchmark.playback_rate)
     scenario_families = {scenario.frames[0].sequence_id: scenario.family for scenario in scenarios}
+    scored_collected = _filter_outputs_to_scoreable_rois(collected, scenarios)
     metrics, matches = calculate_metrics(
         ground_truth,
-        collected,
+        scored_collected,
         benchmark.thresholds,
         sequence_timestamps=sequence_timestamps or None,
         scenario_families=scenario_families,
@@ -438,44 +528,76 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         outcome.errors.append(f"SUT emitted {system_error_count} system_error record(s)")
     findings = generate_findings(metrics, asdict(outcome), resource_data, collector_errors)
     comparison_fingerprint, comparison_inputs = _comparison_fingerprint(benchmark, scenarios)
-    command = f"cvbench run --benchmark {benchmark.path} --system {system.path} --output {Path(output_root).resolve()}"
+    benchmark_display_path = _portable_path(benchmark.path)
+    system_display_path = _portable_path(system.path)
+    command = f"cvbench run --benchmark {benchmark_display_path} --system {system_display_path} --output <run-output>"
     report: dict[str, Any] = {
         "schema_version": "cvbench.report/v1",
         "run_id": run_dir.name,
         "started_at": started_wall,
         "mode": benchmark.input_mode,
         "benchmark": {"id": benchmark.id, "version": benchmark.version},
-        "system": {"id": system.id, "revision": system.revision, "runtime": system.runtime_type},
+        "system": {
+            "id": system.id,
+            "revision": system.revision,
+            "runtime": system.runtime_type,
+            "command": list(system.command),
+        },
         "outcome": asdict(outcome),
         "feed": feed_counters,
         "metrics": metrics,
         "resources": resource_data,
         "runtime_isolation": runtime.isolation
         if runtime
-        else {"runtime": system.runtime_type, "status": "not_started", "future_frame_isolation": False},
+        else {
+            "runtime": system.runtime_type,
+            "status": "not_started",
+            "future_frame_isolation": None,
+            "ground_truth_access": None,
+            "repository_access": None,
+            "media_access": None,
+        },
         "findings": findings,
         "comparison": [],
         "provenance": {
-            "benchmark_path": str(benchmark.path),
+            "benchmark_path": benchmark_display_path,
             "benchmark_sha256": _sha256(benchmark.path),
-            "system_path": str(system.path),
+            "system_path": system_display_path,
             "system_sha256": _sha256(system.path),
-            "scenario_manifests": [str(path) for path in benchmark.scenarios],
+            "scenario_manifests": [_portable_path(path) for path in benchmark.scenarios],
             "resolved_container_image": outcome.resolved_image,
             "resolved_container_image_id": runtime.resolved_image_id if runtime else None,
             "executed_container_image_id": (
                 runtime.isolation.get("image_identity", {}).get("executed_image_id") if runtime else None
             ),
             "command": command,
+            "system_command": list(system.command),
             "matching": {
                 "algorithm": "deterministic Hungarian assignment",
                 "minimum_iou": benchmark.thresholds.minimum_match_iou,
                 "maximum_center_error_px": benchmark.thresholds.max_match_center_error_px,
                 "class_agnostic": benchmark.thresholds.class_agnostic,
+                "ignore_match_iou": benchmark.thresholds.ignore_match_iou,
             },
             "external_clock": "time.monotonic_ns",
             "comparison_fingerprint": comparison_fingerprint,
             "comparison_inputs": comparison_inputs,
+            "evaluation_order": {
+                "scenario_ids": [scenario.id for scenario in scenarios],
+                "mode": (
+                    "configured_seed"
+                    if benchmark.evaluation_order_seed is not None
+                    else "private_per_run_fallback"
+                ),
+                "algorithm": EVALUATION_ORDER_ALGORITHM,
+                "seed": benchmark.evaluation_order_seed,
+                "private_per_run": benchmark.evaluation_order_seed is None,
+                "run_scoped_sequence_ids": True,
+                "public_calibration_note": (
+                    "Scenario manifests and calibration clips are public and recognizable; this ordering and "
+                    "the run-scoped sequence IDs do not provide secrecy."
+                ),
+            },
             "platform": {"os": os.name},
         },
         "diagnostics": {
@@ -489,14 +611,20 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             "Statistical comparison confidence is sample-count based; confidence intervals are not inferred.",
         ],
     }
+    _, _, audit_unmatched = match_records_by_support(
+        ground_truth,
+        [item.system_record for item in scored_collected],
+        benchmark.thresholds,
+    )
     report["audit_evidence"] = build_audit_evidence(
         ground_truth,
-        collected,
+        scored_collected,
         matches,
         metrics,
         feed_counters,
         resource_data,
         report["runtime_isolation"],
+        neutral_outputs=[record for record in audit_unmatched if record.get("neutral_ignored")],
     )
     report["provenance"]["raw_evidence_available"] = False
     report["provenance"]["bounded_audit_evidence_sha256"] = None
