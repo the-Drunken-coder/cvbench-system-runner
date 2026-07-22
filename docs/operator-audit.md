@@ -35,4 +35,4 @@ cvbench run --benchmark benchmarks/persistent-target-tracking.yaml \
   --system systems/example-good-local.yaml --output /tmp/cvbench-operator-baseline
 ```
 
-Its `report.json` contains bounded `audit_evidence`, a SHA-256 integrity hash for that packet, and `raw_evidence_available: false`. Raw ground-truth/model-output files remain outside the control-plane result and are not uploaded by the public workflow.
+Its `report.json` contains bounded `audit_evidence` and declares the Worker-authoritative `sha256(cvbench.canonical-json/v1)` hash contract; after callback, D1/API persist and return the computed hash plus `raw_evidence_available: false`. Raw ground-truth/model-output files remain outside the control-plane result and are not uploaded by the public workflow.

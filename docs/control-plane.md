@@ -164,7 +164,7 @@ CVBENCH_POLL_MS=5000 node scripts/cvbench-operator.mjs watch "$JOB_ID"
 node scripts/cvbench-operator.mjs audit "$JOB_ID"
 ```
 
-The operator job shape includes queue timestamps, lease expiry, attempts/retries, exact OCI digest, benchmark/scenario and comparison fingerprints, runner commit and workflow link, score components, failure reasons, and audit-flag counts. `/audit` explains denominator eligibility and positive credit and marks every anomaly as `review_aid_only`; `/evidence` returns bounded frame samples, matching decisions, observed/predicted/coasting counts, occlusion/reacquisition events, false-track segments, resource/isolation evidence, and reproducibility inputs. Raw JSONL/video artifacts are not uploaded or exposed by this public repository; evidence reports carry bounded-audit integrity hashes and `raw_evidence_available=false`.
+The operator job shape includes queue timestamps, lease expiry, attempts/retries, exact OCI digest, benchmark/scenario and comparison fingerprints, runner commit and workflow link, score components, failure reasons, and audit-flag counts. `/audit` explains denominator eligibility and positive credit and marks every anomaly as `review_aid_only`; `/evidence` returns bounded frame samples, matching decisions, observed/predicted/coasting counts, occlusion/reacquisition events, false-track segments, resource/isolation evidence, and reproducibility inputs. Raw JSONL/video artifacts are not uploaded or exposed by this public repository; evidence reports carry `sha256(cvbench.canonical-json/v1)` hashes computed authoritatively after Worker JSON parsing and `raw_evidence_available=false`.
 
 Leave a fairness/adjudication trail without changing the score:
 

@@ -41,11 +41,6 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _json_sha256(value: Any) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def _comparison_fingerprint(benchmark: BenchmarkConfig, scenarios: list[Scenario]) -> tuple[str, dict[str, Any]]:
     inputs = {
         "benchmark_id": benchmark.id,
@@ -504,7 +499,10 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         report["runtime_isolation"],
     )
     report["provenance"]["raw_evidence_available"] = False
-    report["provenance"]["bounded_audit_evidence_sha256"] = _json_sha256(report["audit_evidence"])
+    report["provenance"]["bounded_audit_evidence_sha256"] = None
+    report["provenance"]["bounded_audit_evidence_hash_algorithm"] = (
+        "sha256(cvbench.canonical-json/v1); authoritative after Worker JSON parsing"
+    )
     if benchmark.baseline_report:
         baseline = json.loads(benchmark.baseline_report.read_text())
         report["comparison"] = compare_reports(baseline, report)

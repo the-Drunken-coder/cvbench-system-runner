@@ -120,12 +120,13 @@ async function route(request, config) {
     if (parsed.error) return parsed.error;
     const validation = validateResult(parsed.value);
     if (validation.error) return problem(422, "invalid_result", validation.error);
+    const report = validation.value.report ? await authoritativeReport(validation.value.report) : null;
     const completed = await config.store.completeJob({
       id: resultMatch[1],
       leaseTokenHash: await sha256(validation.value.leaseToken),
       status: validation.value.status,
-      report: validation.value.report,
-      resultSha256: validation.value.report ? await sha256(stableJson(validation.value.report)) : null,
+      report,
+      resultSha256: report ? await sha256(canonicalJson(report)) : null,
       error: validation.value.error,
       now: unixTime(),
     });
@@ -258,6 +259,19 @@ function validateResult(value) {
   };
 }
 
+async function authoritativeReport(report) {
+  const auditEvidence = isObject(report.audit_evidence) ? report.audit_evidence : null;
+  return {
+    ...report,
+    provenance: {
+      ...(isObject(report.provenance) ? report.provenance : {}),
+      raw_evidence_available: false,
+      bounded_audit_evidence_sha256: auditEvidence ? await sha256(canonicalJson(auditEvidence)) : null,
+      bounded_audit_evidence_hash_algorithm: "sha256(cvbench.canonical-json/v1)",
+    },
+  };
+}
+
 function publicSubmission(value) {
   return {
     id: value.id,
@@ -370,6 +384,7 @@ function operatorEvidence(value) {
     artifacts: [],
     raw_evidence_available: report.provenance?.raw_evidence_available === true,
     bounded_audit_evidence_sha256: report.provenance?.bounded_audit_evidence_sha256 || null,
+    bounded_audit_evidence_hash_algorithm: report.provenance?.bounded_audit_evidence_hash_algorithm || "sha256(cvbench.canonical-json/v1)",
     raw_artifact_policy: "Raw ground-truth and model-output artifacts are not uploaded or exposed by this public repository; only bounded authenticated audit evidence and integrity hashes are retained.",
   };
 }
@@ -426,20 +441,32 @@ function parseAdjudicatorCredentials(value) {
   let parsed = value;
   if (typeof value === "string") {
     try {
+      if (hasDuplicateJsonKeys(value)) return [];
       parsed = JSON.parse(value);
     } catch {
       return [];
     }
   }
-  const entries = Array.isArray(parsed)
-    ? parsed.map((item) => [item?.actorId, item?.token])
-    : isObject(parsed)
-      ? Object.entries(parsed)
-      : [];
-  return entries.flatMap(([actorId, token]) => {
+  if (!isObject(parsed) || Array.isArray(parsed)) return [];
+  const seenTokens = new Set();
+  const credentials = [];
+  for (const [actorId, token] of Object.entries(parsed)) {
     const cleanActor = cleanActorId(actorId);
-    return cleanActor && typeof token === "string" && token.length > 0 ? [{ actorId: cleanActor, token }] : [];
-  });
+    if (!cleanActor || typeof token !== "string" || token.length === 0 || seenTokens.has(token)) return [];
+    seenTokens.add(token);
+    credentials.push({ actorId: cleanActor, token });
+  }
+  return credentials;
+}
+
+function hasDuplicateJsonKeys(value) {
+  const seen = new Set();
+  for (const match of value.matchAll(/"((?:\\.|[^"\\])*)"\s*:/g)) {
+    const key = JSON.parse(`"${match[1]}"`);
+    if (seen.has(key)) return true;
+    seen.add(key);
+  }
+  return false;
 }
 
 function parseCursor(value) {
@@ -491,11 +518,15 @@ async function actorForCredential(candidate, credentials) {
   if (!candidate || credentials.length === 0) return null;
   const candidateDigest = await digest(candidate);
   let actorId = null;
+  let matches = 0;
   for (const credential of credentials) {
     const expectedDigest = await digest(credential.token || "invalid-placeholder");
-    if (constantTimeEqual(candidateDigest, expectedDigest)) actorId = credential.actorId;
+    if (constantTimeEqual(candidateDigest, expectedDigest)) {
+      matches += 1;
+      actorId = credential.actorId;
+    }
   }
-  return actorId;
+  return matches === 1 ? actorId : null;
 }
 
 function constantTimeEqual(left, right) {
@@ -532,10 +563,14 @@ function optionalText(value, name, maximum) {
   return cleanText(value, name, 1, maximum);
 }
 
-function stableJson(value) {
+export function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (isObject(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
   return JSON.stringify(value);
+}
+
+function stableJson(value) {
+  return canonicalJson(value);
 }
 
 function splitKeys(value) {
