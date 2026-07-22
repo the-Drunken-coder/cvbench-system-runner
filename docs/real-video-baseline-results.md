@@ -12,11 +12,11 @@ The same `classical-motion-baseline` revision and system configuration were run 
 | Overall continuity | 0.8065 | 0.0000 |
 | Mean IoU | 0.2820 | n/a |
 | ID switches | 13 | 0 |
-| False detections | 329 | 105 |
-| Neutral ignored predictions | 96 | 0 |
-| Latency p99 | 43.00 ms | 100.20 ms |
+| False detections | 328 | 105 |
+| Neutral ignored predictions | 97 | 0 |
+| Latency p99 | 22.15 ms | 90.55 ms |
 
-The benchmark fingerprints differ (`c1bc8bf02139dfae092c1c6669c7b13e2070e8a539e7dde6b0d74db2eca1c157` real versus `08205802398fa9dffa29f10fab3ce24bc8976e2eadea7975d09626f7c6a58587` synthetic), so this is deliberately marked non-comparable; the runner's comparison gate returns inconclusive rather than inventing score deltas. The behavior contrast is still useful: real footage exposes identity switches, incomplete coverage, and background hallucinations inside genuine negative-background space, while this deliberately simple motion detector fails to acquire the synthetic contract. Duplicate target predictions remain identity penalties; legitimate non-target objects are neutral only inside the fixed reviewed ROI and its narrow ignore boxes.
+The real run was `20260722T064009Z-a223e33f` with report SHA-256 `5829d72c94043fc6dcf9d27b77d871d5053da487ef44e8b7af33735297d96f40`; the synthetic run was `20260722T064018Z-4b7a61c2` with report SHA-256 `0f0e648f62541fcdb13552656584f53fc2f8c10148f529cdbaf142bb64030470`. The benchmark fingerprints differ (`f36540e5a0038dfe873462a86cb540e28f52ca80b3db8a74884b776be9e06b5d` real versus `08205802398fa9dffa29f10fab3ce24bc8976e2eadea7975d09626f7c6a58587` synthetic), so this is deliberately marked non-comparable; the runner's comparison gate returns inconclusive rather than inventing score deltas. The behavior contrast is still useful: real footage exposes identity switches, incomplete coverage, and background hallucinations inside genuine negative-background space, while this deliberately simple motion detector fails to acquire the synthetic contract. Duplicate target predictions remain identity penalties; legitimate non-target objects are neutral only inside the fixed reviewed ROI and its narrow per-frame ignore boxes, including the trailing Prius in moving-camera frames 20–30.
 
 Preparation and verification:
 

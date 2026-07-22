@@ -68,8 +68,12 @@ show the ROI and ignore annotations for all selected frames.
 The boxes are human-reviewed keyframes with deterministic linear interpolation
 between anchors. Each clip's fixed scoreable ROI leaves visible negative
 background for hallucination tests. Within that ROI, non-target people/cars are
-covered by reviewed narrow ignore boxes that never intersect the target;
-objects outside the ROI are deliberately out of scope rather than treated as
+covered by reviewed narrow ignore boxes that are visually disjoint from the
+target. In the moving-camera clip, the conservative interpolated target
+scoring rectangle overlaps the trailing Prius rectangle in frames 26–30 even
+though the two visible cars are separate; those five explicit annotations are
+allowed only for this reviewed pair and are shown in the contact sheet.
+Objects outside the ROI are deliberately out of scope rather than treated as
 negative evidence. Background hallucinations inside the ROI remain false, and
 duplicate target predictions remain duplicate/split penalties.
 Crowd output frames 16–20 were manually reannotated after visual inspection.

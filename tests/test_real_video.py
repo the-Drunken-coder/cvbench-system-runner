@@ -214,6 +214,83 @@ def test_static_roi_object_coverage_and_fairness_regressions() -> None:
     assert metrics["identity"]["track_splits"] == 1
 
 
+def test_motion_trailing_prius_is_neutralized_per_frame_without_hiding_hallucinations() -> None:
+    manifest = ROOT / "scenarios/real-video-v1/rv1-c3d1/scenario.yaml"
+    manifest_data = yaml.safe_load(manifest.read_text())
+    roi = manifest_data["scoreable_roi"]
+    rows = [
+        json.loads(line)
+        for line in manifest.parent.joinpath("ground_truth.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    for frame_index in range(20, 31):
+        target = next(
+            row
+            for row in rows
+            if not row.get("ignore")
+            and row["source_timestamp_ns"] == frame_index * 2 * FPS_NS
+        )
+        ignore = next(
+            row
+            for row in rows
+            if row.get("ignore_region_id") == f"trailing-prius-{frame_index}"
+        )
+        left, top, right, bottom = ignore["bbox_xyxy"]
+        assert left < roi[2] and right > roi[0]
+        assert top < roi[3] and bottom > roi[1]
+        assert right - left < 400 and bottom - top < 300
+        assert ignore["source_timestamp_ns"] == target["source_timestamp_ns"]
+
+    target = next(
+        row
+        for row in rows
+        if not row.get("ignore") and row["source_timestamp_ns"] == 20 * 2 * FPS_NS
+    )
+    ignore = next(row for row in rows if row.get("ignore_region_id") == "trailing-prius-20")
+    target_output = output(
+        target["source_timestamp_ns"],
+        sequence=target["sequence_id"],
+        box=target["bbox_xyxy"],
+    )
+    target_output.system_record["class_id"] = target["class_id"]
+    prius_box = [ignore["bbox_xyxy"][0] + 5, ignore["bbox_xyxy"][1] + 5, 1800, 640]
+    prius_output = output(
+        target["source_timestamp_ns"],
+        sequence=target["sequence_id"],
+        track="trailing-prius",
+        box=prius_box,
+    )
+    prius_output.system_record["class_id"] = target["class_id"]
+    thresholds = load_benchmark(ROOT / "benchmarks/real-video-v1.yaml").thresholds
+    metrics, _ = calculate_metrics([target, ignore], [target_output, prius_output], thresholds)
+    assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+
+    hallucination = output(
+        target["source_timestamp_ns"],
+        sequence=target["sequence_id"],
+        track="background-hallucination",
+        box=[1500, 750, 1600, 850],
+    )
+    hallucination.system_record["class_id"] = target["class_id"]
+    duplicate = output(
+        target["source_timestamp_ns"],
+        sequence=target["sequence_id"],
+        track="duplicate-target",
+        box=target["bbox_xyxy"],
+    )
+    duplicate.system_record["class_id"] = target["class_id"]
+    metrics, _ = calculate_metrics(
+        [target, ignore],
+        [target_output, prius_output, hallucination, duplicate],
+        thresholds,
+    )
+    assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 2
+    assert metrics["identity"]["duplicate_tracks"] == 1
+    assert metrics["identity"]["track_splits"] == 1
+
+
 def test_static_scoreable_roi_filters_out_of_scope_predictions() -> None:
     sequence = "run-fixture-seq-00"
     scenarios = [

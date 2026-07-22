@@ -192,7 +192,75 @@ CLIPS: tuple[dict[str, Any], ...] = (
         "occlusion_frames": [],
         "ignore_regions": [
             {"id": "right-background-car", "bbox": [1560, 450, 1710, 600], "frames": list(range(0, 20))},
-            {"id": "late-right-background-car", "bbox": [1750, 390, 1920, 620], "frames": list(range(20, 31))},
+            {
+                "id": "trailing-prius-20",
+                "bbox": [1545, 480, 1845, 665],
+                "frames": [20],
+                "allow_target_bbox_overlap": False,
+            },
+            {
+                "id": "trailing-prius-21",
+                "bbox": [1555, 475, 1850, 660],
+                "frames": [21],
+                "allow_target_bbox_overlap": False,
+            },
+            {
+                "id": "trailing-prius-22",
+                "bbox": [1565, 470, 1860, 655],
+                "frames": [22],
+                "allow_target_bbox_overlap": False,
+            },
+            {
+                "id": "trailing-prius-23",
+                "bbox": [1575, 465, 1870, 650],
+                "frames": [23],
+                "allow_target_bbox_overlap": False,
+            },
+            {
+                "id": "trailing-prius-24",
+                "bbox": [1585, 455, 1880, 645],
+                "frames": [24],
+                "allow_target_bbox_overlap": False,
+            },
+            {
+                "id": "trailing-prius-25",
+                "bbox": [1595, 445, 1890, 640],
+                "frames": [25],
+                "allow_target_bbox_overlap": False,
+            },
+            {
+                "id": "trailing-prius-26",
+                "bbox": [1605, 435, 1900, 635],
+                "frames": [26],
+                # The scored target box is intentionally conservative and overlaps
+                # this separately visible car; the contact sheet is the reviewable
+                # evidence that these are distinct objects.
+                "allow_target_bbox_overlap": True,
+            },
+            {
+                "id": "trailing-prius-27",
+                "bbox": [1615, 425, 1910, 630],
+                "frames": [27],
+                "allow_target_bbox_overlap": True,
+            },
+            {
+                "id": "trailing-prius-28",
+                "bbox": [1625, 415, 1920, 625],
+                "frames": [28],
+                "allow_target_bbox_overlap": True,
+            },
+            {
+                "id": "trailing-prius-29",
+                "bbox": [1645, 405, 1920, 615],
+                "frames": [29],
+                "allow_target_bbox_overlap": True,
+            },
+            {
+                "id": "trailing-prius-30",
+                "bbox": [1670, 390, 1920, 610],
+                "frames": [30],
+                "allow_target_bbox_overlap": True,
+            },
         ],
         "keyframes": [
             {"source_frame": 300, "bbox": [900, 430, 1550, 830]},
@@ -390,7 +458,11 @@ def _decode_clip(source_path: Path, clip: dict[str, Any], output: Path) -> tuple
                 region_area = (region_box[2] - region_box[0]) * (region_box[3] - region_box[1])
                 if region_area / frame_area > 0.25:
                     raise RuntimeError(f"ignore region is not narrow in {clip['id']} frame {frame_index}")
-                if annotation.get("bbox_xyxy") and _boxes_overlap(annotation["bbox_xyxy"], region_box):
+                if (
+                    annotation.get("bbox_xyxy")
+                    and _boxes_overlap(annotation["bbox_xyxy"], region_box)
+                    and not region.get("allow_target_bbox_overlap", False)
+                ):
                     raise RuntimeError(f"ignore region overlaps target in {clip['id']} frame {frame_index}")
                 selected.append(
                     {

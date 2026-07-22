@@ -14,6 +14,9 @@ do not intersect that ROI are out of scope; predictions inside it are scored,
 and every visible same-class non-target inside the ROI is covered by a narrow
 reviewed ignore box. The ROI is fixed for the clip, never target-centered, and
 never the full frame. Deterministic review contact sheets for all clips live
-under each clip's `review/` directory. Scoreable target matches are resolved
-first, and only then are unmatched predictions neutralized using
-intersection-over-prediction-area.
+under each clip's `review/` directory. The moving-camera clip uses tight
+per-frame `trailing-prius-20` through `trailing-prius-30` ignore boxes; frames
+26–30 overlap the conservative target scoring rectangle only because the
+visible cars are separate while that rectangle is intentionally loose.
+Scoreable target matches are resolved first, and only then are unmatched
+predictions neutralized using intersection-over-prediction-area.
