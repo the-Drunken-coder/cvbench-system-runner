@@ -41,6 +41,8 @@ function build(output) {
 }
 
 test("two clean catalog builds are byte-identical and within budgets", async (context) => {
+  const packageJson = JSON.parse(await readFile(path.join(CONTROL_PLANE, "package.json"), "utf8"));
+  assert.equal(packageJson.scripts.postinstall, "npm run build");
   const first = path.join(CONTROL_PLANE, "dist-test-a");
   const second = path.join(CONTROL_PLANE, "dist-test-b");
   context.after(async () => Promise.all([rm(first, { recursive: true, force: true }), rm(second, { recursive: true, force: true })]));

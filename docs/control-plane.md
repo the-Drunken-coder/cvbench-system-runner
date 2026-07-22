@@ -64,6 +64,8 @@ curl -sS http://localhost:8787/api/v1/openapi.json
 
 `npm run build` deterministically creates the allowlisted Static Assets tree in `control-plane/dist`, including the complete public scenario catalog. `npm test` exercises the catalog build plus a complete in-memory HTTP lifecycle: authenticated creation, idempotent replay, public read, lease, scored result callback, terminal-state rejection, failure callback, rate limit, payload limit, and lease expiry. It uses a safe baseline system-image reference and a representative scored CVBench report; it does not execute Docker.
 
+`npm ci` also invokes this build through the package's `postinstall` hook. That keeps the connected Worker's existing `npm ci` build setting valid; an explicit `npm run build` remains useful for local regeneration and as a readable build step in new environments.
+
 With `wrangler dev` running and a real scored baseline `report.json`, the same lifecycle can be checked against local D1:
 
 ```bash
