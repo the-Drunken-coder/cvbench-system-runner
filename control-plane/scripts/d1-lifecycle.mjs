@@ -69,16 +69,23 @@ assert(publicResponse.status === 200, `public read returned ${publicResponse.sta
 const completed = await publicResponse.json();
 assert(completed.status === "succeeded", "submission did not reach succeeded");
 assert(completed.result.scores.sample_counts.matches > 0, "public result lost scored matches");
+assert(completed.result.audit_evidence === undefined, "public submission exposed detailed audit evidence");
+assert(completed.result.diagnostics === undefined, "public submission exposed diagnostics");
 
 const operatorHeaders = { authorization: `Bearer ${operatorReadToken}` };
 const operatorResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/audit`, { headers: operatorHeaders });
 await assertStatus(operatorResponse, 200, "operator audit");
 const audit = await operatorResponse.json();
 assert(audit.automatic_disqualification === false, "audit flags must not disqualify automatically");
+assert(audit.fairness.explainable_evidence === true, "completed audit lost explainable evidence");
 const evidenceResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/evidence`, { headers: operatorHeaders });
 await assertStatus(evidenceResponse, 200, "operator evidence");
 const evidence = await evidenceResponse.json();
 assert(evidence.audit_evidence?.schema_version === "cvbench.audit/v1", "audit evidence was not retrieved");
+assert(evidence.audit_evidence.frame_samples?.length > 0, "operator evidence lost frame samples");
+assert(evidence.audit_evidence.score_explanation?.coverage_denominators, "operator evidence lost denominator explanations");
+assert(evidence.audit_evidence.flags?.length > 0, "operator evidence lost audit flags");
+assert(evidence.audit_evidence.false_track_segments, "operator evidence lost false-track evidence");
 const noteResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/notes`, {
   method: "POST",
   headers: { authorization: `Bearer ${operatorWriteToken}`, "content-type": "application/json" },

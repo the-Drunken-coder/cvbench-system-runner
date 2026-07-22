@@ -6,7 +6,7 @@ from subprocess import Popen
 from unittest.mock import MagicMock, patch
 
 from cvbench.config import load_system
-from cvbench.runner import _redact_docker_audit_evidence, _restrict_socket_access
+from cvbench.runner import _restrict_socket_access
 from cvbench.runtime import ResolvedImage, StartedRuntime, start_runtime, verify_docker_isolation
 
 ROOT = Path(__file__).parents[1]
@@ -182,13 +182,3 @@ def test_real_video_image_has_no_scenario_or_media_mount_contract() -> None:
     assert "scenarios" not in dockerfile
     assert "data/" not in dockerfile
     assert "real_video_baseline" in dockerfile
-
-
-def test_docker_report_redacts_annotation_geometry_for_safe_upload() -> None:
-    report = {"audit_evidence": {"frame_samples": [{"ground_truth": [{"bbox_xyxy": [1, 2, 3, 4]}]}]}}
-    _redact_docker_audit_evidence(report)
-    assert report["audit_evidence"] == {
-        "schema_version": "cvbench.audit/v1-redacted",
-        "redacted": True,
-        "reason": "annotation and prediction geometry is restricted to the runner",
-    }

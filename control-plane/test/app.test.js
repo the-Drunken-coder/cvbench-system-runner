@@ -133,9 +133,16 @@ test("operator API is separate from public and runner credentials", async () => 
   const detail = await (await request(`/api/v1/operator/jobs/${created.id}`, { headers })).json();
   assert.equal(detail.raw_result.metrics.sample_counts.matches, 12);
   assert.equal(detail.raw_result.diagnostics.sut_stderr[0], "<script>throw new Error('untrusted')</script>");
+  assert.equal(detail.raw_result.audit_evidence.schema_version, "cvbench.audit/v1");
   assert.equal(detail.job.diagnostics.duplicate_result_fingerprint, "clear");
   const audit = await (await request(`/api/v1/operator/jobs/${created.id}/audit`, { headers })).json();
   assert.equal(audit.automatic_disqualification, false);
+  assert.equal(audit.fairness.explainable_evidence, true);
+  assert.ok(audit.flags.some((flag) => flag.id === "false_track"));
+  assert.equal(audit.score_components.sample_counts.matches, 12);
+  const evidence = await (await request(`/api/v1/operator/jobs/${created.id}/evidence`, { headers })).json();
+  assert.equal(evidence.audit_evidence.frame_samples[0].matches[0].target_id, "target-1");
+  assert.equal(evidence.audit_evidence.score_explanation.coverage_denominators.observed_coverage, 1);
   assert.equal((await request(`/api/v1/operator/jobs/${created.id}/notes`, {
     method: "POST",
     headers: { ...headers, "content-type": "application/json" },
@@ -163,6 +170,7 @@ test("operator API is separate from public and runner credentials", async () => 
   const publicResult = await jsonRequest(`/api/v1/submissions/${created.id}`);
   assert.equal(publicResult.result.scores.sample_counts.matches, 12);
   assert.equal(publicResult.result.diagnostics, undefined);
+  assert.equal(publicResult.result.audit_evidence, undefined);
   assert.equal((await request("/api/v1/operator/jobs?cursor=bad", { headers })).status, 400);
 });
 
@@ -453,6 +461,20 @@ function scoredReport() {
     metrics: { sample_counts: { matches: 12 }, identity: { id_switches: 0 } },
     runtime_isolation: { status: "verified", network_mode: "none" },
     diagnostics: { sut_stderr: ["<script>throw new Error('untrusted')</script>"] },
+    audit_evidence: {
+      schema_version: "cvbench.audit/v1",
+      frame_samples: [
+        {
+          matches: [{ target_id: "target-1", iou: 0.91 }],
+          ground_truth: [{ count_reason: "matched_observed_and_counted" }],
+          predictions: [{ track_id: "track-1" }],
+        },
+      ],
+      score_explanation: { coverage_denominators: { observed_coverage: 1 } },
+      flags: [{ id: "false_track", status: "flagged", review_aid_only: true }],
+      false_track_segments: [{ track_id: "false-track", duration_ms: 100 }],
+    },
+    provenance: { raw_evidence_available: false },
   };
 }
 

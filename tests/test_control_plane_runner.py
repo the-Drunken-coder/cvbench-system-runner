@@ -279,3 +279,26 @@ def test_callback_boundary_rejects_unbounded_audit_evidence() -> None:
             "b" * 64,
             MAX_CALLBACK_BYTES,
         )
+
+
+def test_private_docker_callback_preserves_complete_bounded_audit_evidence() -> None:
+    evidence = {
+        "schema_version": "cvbench.audit/v1",
+        "frame_samples": [
+            {
+                "ground_truth": [{"count_reason": "matched_observed_and_counted", "bbox_xyxy": [1, 2, 3, 4]}],
+                "predictions": [{"track_id": "track-1", "bbox_xyxy": [1, 2, 3, 4]}],
+                "matches": [{"iou": 1.0, "target_id": "target-1"}],
+            }
+        ],
+        "score_explanation": {"coverage_denominators": {"observed_coverage": 1}},
+        "flags": [{"id": "false_track", "status": "flagged", "review_aid_only": True}],
+        "false_track_segments": [{"track_id": "false-track", "duration_ms": 100}],
+    }
+    report = {
+        "system": {"runtime": "docker"},
+        "audit_evidence": evidence,
+        "metrics": {"sample_counts": {"matches": 1}},
+    }
+    callback = build_success_callback(report, "b" * 64, MAX_CALLBACK_BYTES)
+    assert callback["report"]["audit_evidence"] == evidence

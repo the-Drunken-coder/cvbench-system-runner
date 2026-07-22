@@ -1,5 +1,16 @@
 # Baseline evidence
 
+# Reporting boundary
+
+The authoritative Docker report and the private runner-to-Worker callback retain
+the bounded `cvbench.audit/v1` evidence needed for authenticated operator review.
+The public submission summary deliberately omits that evidence. Before GitHub CI
+upload, `scripts/sanitize_ci_report.py` writes a separate safe report copy with
+aggregate scores, provenance, hashes, resource, and isolation evidence intact;
+only that copy, its resources CSV, and the checksum manifest are public. The safe
+copy records `cvbench.audit/v1-redacted` and contains no bounding boxes, raw JSONL,
+local paths, secrets, media, or ground-truth payload.
+
 The same `classical-motion-baseline` revision and system configuration were run through the online socket runner on the real tranche and the existing synthetic benchmark. Full JSON/HTML reports are checked in under [real-video-evidence](real-video-evidence/). The system config SHA-256 is `98baa39d445e5a96b062adad1e8031f155e22b634c325522ac12f1ce1a5ece16`.
 
 | Metric | Real video | Synthetic, same SUT |
