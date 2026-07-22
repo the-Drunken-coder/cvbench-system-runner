@@ -26,7 +26,8 @@ document.querySelector("#status-form")?.addEventListener("submit", async (event)
   event.preventDefault();
   const id = new FormData(event.currentTarget).get("id").trim();
   const output = document.querySelector("#status-output");
-  output.innerHTML = "<p>Loading public record…</p>";
+  output.replaceChildren(document.createElement("p"));
+  output.firstChild.textContent = "Loading public record…";
   try {
     const response = await fetch(`/api/v1/submissions/${encodeURIComponent(id)}`);
     const body = await response.json();
@@ -35,7 +36,7 @@ document.querySelector("#status-form")?.addEventListener("submit", async (event)
     const pill = document.createElement("span");
     pill.className = "status-pill";
     pill.textContent = body.status;
-    heading.append(pill, `  ${body.model.name} · ${body.model.version}`);
+    heading.append(pill, `  ${body.model.name} · system version ${body.model.version}`);
     const pre = document.createElement("pre");
     pre.textContent = JSON.stringify(body, null, 2);
     output.replaceChildren(heading, pre);

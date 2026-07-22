@@ -1,6 +1,6 @@
 # Public control plane
 
-CVBench's public control plane is one Cloudflare Worker with Static Assets and D1. It validates and queues immutable model submissions; it never runs submitted code. A scheduled or manually dispatched GitHub-hosted Actions runner leases one job at a time and invokes the existing Docker-isolated CVBench engine.
+CVBench's public control plane is one Cloudflare Worker with Static Assets and D1. It validates and queues immutable submitted system images; it never runs submitted code. A scheduled or manually dispatched GitHub-hosted Actions runner leases one job at a time and invokes the existing Docker-isolated CVBench engine.
 
 ```text
 human or agent -> Worker API -> D1 queue
@@ -18,15 +18,17 @@ The Worker source, site, migrations, and JavaScript tests live in `control-plane
 - Source repositories, build steps, shell strings, environment variables, Docker socket access, and mutable image tags are rejected.
 - Submission keys are compared through fixed-length SHA-256 digests with a constant-time byte comparison. D1 stores only the submitter-key digest.
 - `Idempotency-Key` is unique per submitter-key digest. Repeating the same body returns the existing job; changing the body returns `409`.
-- Public reads omit contact, notes, authentication data, lease data, raw model output, stderr, and raw evidence artifacts. They return score summaries and finding statements only.
+- Public reads omit contact, notes, authentication data, lease data, raw submitted-system output, stderr, and raw evidence artifacts. They return score summaries and finding statements only.
 - Operator reads use `OPERATOR_READ_API_KEYS`; adjudication writes use the secret JSON mapping `OPERATOR_ADJUDICATOR_CREDENTIALS={"actor/id":"token"}`. Each credential maps to exactly one stable actor identity; invalid, generic, duplicate, or cross-scope-overlapping credentials fail closed. Submission, runner, and read-only tokens cannot write notes. All bearer verification uses the same SHA-256 digest plus constant-time comparison path; only credential digests and the mapped actor ID are stored, never bearer values.
-- Operator flags are deterministic review aids. They never automatically disqualify a model; adjudication is an explicit note/verdict trail.
+- Operator flags are deterministic review aids. They never automatically disqualify a submitted system; adjudication is an explicit note/verdict trail.
 - A trusted runner bearer token protects leases and callbacks. Each lease also gets an independent random token, stored only as a digest, and state updates require `running -> succeeded|failed`. The 3000-second lease exceeds the 40-minute workflow timeout with callback margin.
 - Each lease advertises the Worker's one-MiB result-body budget. The trusted runner preserves the complete scored report and deterministically retains head-and-tail stderr diagnostics that fit, recording original, retained, and omitted counts in the public result.
 - Expired leases return to `queued` and can be attempted again. Old callback tokens stop working.
 - The GitHub-hosted runner is ephemeral, has read-only repository permission, runs one job, and has no broad GitHub PAT in Cloudflare.
-- Before invoking CVBench, the runner removes callback, Cloudflare, and GitHub secrets from the benchmark subprocess environment. The Docker adapter passes only `CVBENCH_INPUT_SOCKET` and explicitly submitted system configuration into the tested container.
-- The existing Docker adapter enforces no network, no Docker socket, one socket-directory mount, a host-aligned unprivileged UID/GID, 4 CPUs, 2048 MB memory, and exact image identity verification. Every submitted container also gets a unique job label; both the runner and an `if: always()` workflow step force-remove and assert against survivors.
+- Before invoking CVBench, the runner removes callback, Cloudflare, and GitHub secrets from the benchmark subprocess environment. The Docker adapter passes only `CVBENCH_INPUT_SOCKET` and explicitly submitted system configuration into the system-under-test image.
+- The current execution envelope is one `linux/amd64` OCI image, network disabled, 4 CPUs, 2048 MB, one progressive socket-directory mount, no extra mounts, and no Docker socket. The adapter also enforces a host-aligned unprivileged UID/GID and exact image identity verification. Every submitted image gets a unique job label; both the runner and an `if: always()` workflow step force-remove and assert against survivors.
+
+The one-image rule is a packaging, reproducibility, and security boundary. It is not a one-learned-model or one-process assumption. A system under test may combine a detector, tracker, temporal memory, association, filtering, and post-processing pipeline, including multiple cooperating processes, provided it connects to the progressive socket, emits `CVBENCH_READY`, and speaks `cvbench.track/v1`.
 
 Public registry images are the zero-credential default. A manually operated runner may pre-authenticate Docker to a private registry, but registry credentials must never be added to submission metadata.
 
@@ -59,7 +61,9 @@ curl -sS http://localhost:8787/api/v1/contract
 curl -sS http://localhost:8787/api/v1/openapi.json
 ```
 
-`npm test` exercises a complete in-memory HTTP lifecycle: authenticated creation, idempotent replay, public read, lease, scored result callback, terminal-state rejection, failure callback, rate limit, payload limit, and lease expiry. It uses a safe baseline container reference and a representative scored CVBench report; it does not execute Docker.
+`npm run build` deterministically creates the allowlisted Static Assets tree in `control-plane/dist`, including the complete public scenario catalog. `npm test` exercises the catalog build plus a complete in-memory HTTP lifecycle: authenticated creation, idempotent replay, public read, lease, scored result callback, terminal-state rejection, failure callback, rate limit, payload limit, and lease expiry. It uses a safe baseline system-image reference and a representative scored CVBench report; it does not execute Docker.
+
+`npm ci` also invokes this build through the package's `postinstall` hook, and the build-time YAML parser is a production dependency so `npm ci --omit=dev` follows the same contract. An explicit `npm run build` remains useful only for local regeneration after source edits.
 
 With `wrangler dev` running and a real scored baseline `report.json`, the same lifecycle can be checked against local D1:
 
@@ -89,7 +93,7 @@ In the Cloudflare dashboard:
 
 1. Create or connect a Worker to `the-Drunken-coder/cvbench-system-runner`.
 2. Set the root directory to `/control-plane`.
-3. Set the build command to `npm ci`.
+3. Set the build command to `npm ci`; `postinstall` performs the one deterministic catalog build.
 4. Set the deploy command to `npx wrangler deploy`.
 5. Set the production branch to `main`. Leave branch builds enabled so pull-request branches receive preview versions.
 6. Allow Wrangler to provision the D1 binding named `DB` from `wrangler.jsonc`; the narrowly scoped database name is `cvbench-control-plane`.
@@ -117,7 +121,7 @@ Cloudflare account identifiers and API credentials remain dashboard/runtime conf
 
 ## API lifecycle
 
-Get the live contract before constructing a model:
+Get the live contract before packaging a system:
 
 ```bash
 curl -sS "$CVBENCH_API_BASE_URL/api/v1/contract"
@@ -176,6 +180,10 @@ curl -sS -X POST "$CVBENCH_API_BASE_URL/api/v1/operator/jobs/$JOB_ID/notes" \
   --data '{"verdict":"accepted","note":"Reviewed sampled overlays and latency evidence; legitimate result."}'
 ```
 
-Model output is untrusted data. The dashboard renders it with DOM text nodes, never `innerHTML`; the API returns JSON and does not turn model text into shell, HTML, or prompts. The operator threat model covers credential separation, hidden annotations and source paths, runner tokens, artifact-link expiry, prompt-injection-like output, duplicate fingerprints, exact-ground-truth replay, impossible timestamps, unread input, and isolation violations. A flag is evidence for a human review, not guilt.
+Submitted-system output is untrusted data. The dashboard renders it with DOM text nodes, never `innerHTML`; the API returns JSON and does not turn system output into shell, HTML, or prompts. The operator threat analysis covers credential separation, hidden annotations and source paths, runner tokens, artifact-link expiry, prompt-injection-like output, duplicate fingerprints, exact-ground-truth replay, impossible timestamps, unread input, and isolation violations. A flag is evidence for a human review, not guilt.
 
-The protected runner endpoints are deliberately omitted from the public OpenAPI operations. Their implementation and workflow are public, but their bearer and lease tokens are not part of the model-submission interface.
+The protected runner endpoints are deliberately omitted from the public OpenAPI operations. Their implementation and workflow are public, but their bearer and lease tokens are not part of the system-submission interface.
+
+### Version 1 compatibility names
+
+The Version 1 wire field `model_version`, response object `model`, internal property `modelVersion`, D1 column `model_version`, and operator query parameter `model` remain unchanged. They are compatibility names for the submitted system and its system version; they do not narrow the SUT to one learned component. This change deliberately does not rename the schema or design a Version 2 API.

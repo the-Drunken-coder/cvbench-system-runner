@@ -221,6 +221,15 @@ def test_ignore_annotations_neutralize_unmatched_predictions_after_target_matchi
     assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
 
 
+def test_ordinary_ignore_accepts_the_exact_iou_boundary() -> None:
+    ignored = gt(0, target="ignore-1", box=[0, 0, 20, 10])
+    ignored["ignore"] = True
+    prediction = output(0, track="boundary", box=[0, 0, 10, 10])
+    metrics, _ = calculate_metrics([ignored], [prediction], Thresholds(ignore_match_iou=0.5))
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+
+
 @pytest.mark.parametrize(
     ("ignore_region", "class_agnostic"),
     [(False, False), (False, True), (True, False), (True, True)],

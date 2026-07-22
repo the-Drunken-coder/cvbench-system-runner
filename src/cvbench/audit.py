@@ -424,7 +424,7 @@ def build_audit_evidence(
         _flag(
             "unread_input",
             "flagged" if unread_input_flagged else "clear",
-            "Frames were delivered but no valid model output was collected."
+            "Frames were delivered but no valid submitted-system output was collected."
             if unread_input_flagged
             else "The run produced output or no frames were delivered.",
             severity="medium",
@@ -432,7 +432,7 @@ def build_audit_evidence(
         _flag(
             "annotation_source_path_access",
             "not_observed",
-            "The runner does not expose annotation paths to the model.",
+            "The runner does not expose annotation paths to the submitted system under test (SUT).",
         ),
         _flag(
             "network_isolation",

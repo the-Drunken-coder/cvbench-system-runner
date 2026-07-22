@@ -9,7 +9,7 @@ CVBench has one control plane: the Cloudflare Worker, Static Assets, and D1. Sub
 - `RUNNER_TOKEN` can lease and callback but cannot read operator routes. Lease tokens are one-use, expiring, and stored only as digests.
 - The runner strips control-plane/GitHub secrets from the benchmark subprocess. Docker has no network, no Docker socket, and only the progressive input socket mount.
 - Raw JSONL, stderr, overlay videos, and other large evidence are not uploaded by the public repository. D1 receives bounded report JSON and the operator API returns bounded samples, integrity hashes, and explicit `raw_evidence_available: false`.
-- Model output is untrusted text. It is JSON data in the API and is inserted with `textContent` in the console; it is never evaluated as JavaScript, HTML, shell, or an agent instruction.
+- Submitted-system output is untrusted text. It is JSON data in the API and is inserted with `textContent` in the console; it is never evaluated as JavaScript, HTML, shell, or an agent instruction.
 
 ## Stable operator routes
 
@@ -35,4 +35,4 @@ cvbench run --benchmark benchmarks/persistent-target-tracking.yaml \
   --system systems/example-good-local.yaml --output /tmp/cvbench-operator-baseline
 ```
 
-Its `report.json` contains bounded `audit_evidence` and declares the Worker-authoritative `sha256(cvbench.canonical-json/v1)` hash contract; after callback, D1/API persist and return the computed hash plus `raw_evidence_available: false`. Raw ground-truth/model-output files remain outside the control-plane result and are not uploaded by the public workflow.
+Its `report.json` contains bounded `audit_evidence` and declares the Worker-authoritative `sha256(cvbench.canonical-json/v1)` hash contract; after callback, D1/API persist and return the computed hash plus `raw_evidence_available: false`. Raw ground-truth/submitted-system-output files remain outside the control-plane result and are not uploaded by the public workflow.

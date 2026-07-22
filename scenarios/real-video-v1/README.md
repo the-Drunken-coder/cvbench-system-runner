@@ -6,7 +6,7 @@ prepared assets under `data/real-video-v1/`. Run
 `scripts/prepare_real_video_container.sh --output data/real-video-v1` before
 validation or scoring. The importer regenerates these manifests
 deterministically and verifies `data/real-video-v1/artifacts.sha256`. Raw
-media, prepared frames, and annotations remain ignored. The model container
+media, prepared frames, and annotations remain ignored. The submitted system
 receives only the owner-only frame socket; repository paths, media, and
 ground truth are not mounted. Each clip has a static, human-reviewed
 `scoreable_roi` with genuine negative-background space. Predictions whose boxes

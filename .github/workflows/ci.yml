@@ -25,6 +25,8 @@ jobs:
           cache-dependency-path: control-plane/package-lock.json
       - run: npm ci
       - run: npm test
+      - run: npm run test:preview
+      - run: npm run test:production-install
 
   test:
     runs-on: ubuntu-latest

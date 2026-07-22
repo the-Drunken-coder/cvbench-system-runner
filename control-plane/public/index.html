@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="CVBench measures complete online computer-vision tracking systems under repeatable faults, latency, and resource constraints.">
-    <title>CVBench — The system is the model</title>
+    <title>CVBench — Benchmark the whole vision system</title>
     <link rel="stylesheet" href="/styles.css">
     <script src="/app.js" defer></script>
   </head>
@@ -14,6 +14,7 @@
       <a class="brand" href="#top" aria-label="CVBench home"><span class="brand-mark">CV</span>Bench</a>
       <nav aria-label="Primary navigation">
         <a href="#measure">Measure</a>
+        <a href="/scenarios/">Scenarios</a>
         <a href="#contract">Contract</a>
         <a href="#submit">Submit</a>
         <a href="#results">Results</a>
@@ -26,11 +27,12 @@
     <main id="main">
       <section class="hero" id="top">
         <div class="eyebrow">Open benchmark · Reproducible systems · Honest clocks</div>
-        <h1>The system<br>is the model.</h1>
-        <p class="hero-copy">CVBench tests complete online vision trackers—not isolated tensors. Submit an immutable container. We replay progressive video, inject real-world faults, and publish the evidence.</p>
+        <h1>Benchmark the whole<br>vision system.</h1>
+        <p class="hero-copy">CVBench tests complete online vision systems—not isolated components. Submit one immutable <code>linux/amd64</code> OCI image. Detector, tracker, temporal memory, association, filtering, and post-processing pipelines may use one or many processes inside that image.</p>
         <div class="hero-actions">
-          <a class="button primary" href="#submit">Submit a model <span>↗</span></a>
+          <a class="button primary" href="#submit">Submit a system image. <span>↗</span></a>
           <a class="button secondary" href="#contract">Read the contract</a>
+          <a class="button secondary" href="/scenarios/">Inspect all scenarios</a>
         </div>
         <div class="hero-metrics" aria-label="Benchmark properties">
           <div><strong>5</strong><span>metric families</span></div>
@@ -48,7 +50,7 @@
         <div class="metric-grid">
           <article><span class="metric-index">A</span><h3>Accuracy</h3><p>Detection, localization, classification, and confidence calibration against frame-level ground truth.</p></article>
           <article><span class="metric-index">R</span><h3>Robustness</h3><p>Acquisition, visible retention, identity continuity, occlusion recovery, and fault response.</p></article>
-          <article><span class="metric-index">L</span><h3>Latency</h3><p>Receive time minus source-frame time, recorded by the harness—not self-reported by the model.</p></article>
+          <article><span class="metric-index">L</span><h3>Latency</h3><p>Receive time minus source-frame time, recorded by the harness—not self-reported by the submitted system.</p></article>
           <article><span class="metric-index">Ω</span><h3>Resources</h3><p>CPU, memory, process count, and optional GPU telemetry sampled outside the submitted container.</p></article>
           <article><span class="metric-index">!</span><h3>Diagnostics</h3><p>Structured findings and portable evidence packets for the largest observed failures.</p></article>
         </div>
@@ -58,14 +60,14 @@
         <div class="section-intro">
           <span class="section-number">02</span>
           <div><p class="kicker">The exact container contract</p><h2>Bring one immutable Linux image.</h2></div>
-          <p>CVBench runs submitted code only on ephemeral GitHub-hosted Linux runners. Cloudflare stores and serves control-plane data; it never executes your model.</p>
+          <p>The image is a packaging, reproducibility, and security boundary—not a one-model or one-process assumption. Submitted code runs only on ephemeral GitHub-hosted Linux runners; Cloudflare never executes it.</p>
         </div>
         <div class="layout-grid">
           <div class="steps">
             <article><span>1</span><div><h3>Ship a digest</h3><p>Use a public or runner-accessible <code>linux/amd64</code> OCI image pinned as <code>registry/repo@sha256:…</code>. Tags are rejected.</p></div></article>
-            <article><span>2</span><div><h3>Connect and become ready</h3><p>Read <code>CVBENCH_INPUT_SOCKET</code>, connect to <code>/run/cvbench/input.sock</code>, then print exactly <code>CVBENCH_READY</code> as one stdout line.</p></div></article>
-            <article><span>3</span><div><h3>Consume ordered frames</h3><p>The same Unix stream stays open for the sequence. Keep temporal or multi-frame state in memory. Messages contain lengths, JSON metadata, then JPEG bytes.</p></div></article>
-            <article><span>4</span><div><h3>Emit tracks</h3><p>Print one <code>cvbench.track/v1</code> JSON object per stdout line. Put logs on stderr. The harness timestamps receipt externally.</p></div></article>
+            <article><span>2</span><div><h3>Connect and become ready</h3><p>Your single- or multi-process system reads <code>CVBENCH_INPUT_SOCKET</code>, connects to the progressive socket, then prints exactly <code>CVBENCH_READY</code> as one stdout line.</p></div></article>
+            <article><span>3</span><div><h3>Consume ordered frames</h3><p>The same Unix stream stays open for the sequence. Detector + tracker pipelines may retain temporal memory, association state, filtering, and post-processing. Messages contain lengths, JSON metadata, then JPEG bytes.</p></div></article>
+            <article><span>4</span><div><h3>Emit tracks</h3><p>Print one <code>cvbench.track/v1</code> JSON object per stdout line. Put logs on stderr. The envelope is one <code>linux/amd64</code> image, network disabled, 4 CPUs, 2048 MB, one socket-directory mount, no extra mounts, and no Docker socket.</p></div></article>
           </div>
           <aside class="standard-card">
             <p class="card-label">STANDARD LAYOUT / V1</p>
@@ -103,7 +105,7 @@ CPU / memory           # 4 / 2048 MB</code></pre>
           <div class="code-toolbar"><span>POST /api/v1/submissions</span><button class="copy" data-copy-target="curl-example">Copy</button></div>
           <pre id="curl-example" class="code-panel active" data-panel="curl"><code>curl -sS "$CVBENCH_API_BASE_URL/api/v1/submissions" \
   -H "Authorization: Bearer $CVBENCH_API_KEY" \
-  -H "Idempotency-Key: my-model-v7-001" \
+  -H "Idempotency-Key: my-system-v7-001" \
   -H "Content-Type: application/json" \
   --data '{
     "image": "ghcr.io/acme/tracker@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
@@ -133,7 +135,7 @@ print(response.json()["id"])</code></pre>
 
 1. GET /api/v1/contract and /api/v1/openapi.json.
 2. Build and publish a Linux/amd64 OCI image.
-3. Resolve its registry digest. Never submit a mutable tag.
+3. Resolve its registry digest. Never submit a mutable tag. The image may contain a multi-process detector, tracker, temporal memory, association, filtering, and post-processing system.
 4. POST image + argv + metadata with bearer auth and a unique
    Idempotency-Key. Do not send source, build steps, shell, or env.
 5. Poll the returned Location until status is succeeded or failed.
@@ -174,7 +176,7 @@ print(response.json()["id"])</code></pre>
     <footer>
       <a class="brand" href="#top"><span class="brand-mark">CV</span>Bench</a>
       <p>Open evidence for complete computer-vision systems.</p>
-      <div><a href="https://github.com/the-Drunken-coder/cvbench-system-runner">GitHub</a><a href="/api/v1/contract">Contract</a><a href="/api/v1/openapi.json">API</a></div>
+      <div><a href="/scenarios/">Scenarios</a><a href="https://github.com/the-Drunken-coder/cvbench-system-runner">GitHub</a><a href="/api/v1/contract">Contract</a><a href="/api/v1/openapi.json">API</a></div>
     </footer>
   </body>
 </html>
