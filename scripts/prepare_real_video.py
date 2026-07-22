@@ -15,6 +15,8 @@ import json
 import os
 import shutil
 import sys
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -212,10 +214,22 @@ def _download(source: dict[str, Any], destination: Path) -> None:
             return
         except RuntimeError:
             pass
-    request = urllib.request.Request(source["url"], headers={"User-Agent": "CVBench-real-video-prep/1.0"})
-    with urllib.request.urlopen(request) as response, destination.open("wb") as output:
-        shutil.copyfileobj(response, output, length=1024 * 1024)
-    _verify_source_checksum(destination, source)
+    for attempt in range(5):
+        request = urllib.request.Request(
+            source["url"],
+            headers={"User-Agent": "CVBench-real-video-prep/1.0", "Accept-Encoding": "identity"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as output:
+                shutil.copyfileobj(response, output, length=1024 * 1024)
+            _verify_source_checksum(destination, source)
+            return
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 or attempt == 4:
+                raise
+            retry_after = exc.headers.get("Retry-After")
+            delay = int(retry_after) if retry_after and retry_after.isdigit() else 2**attempt
+            time.sleep(min(60, max(1, delay)))
 
 
 def _interpolate_box(keyframes: list[dict[str, Any]], source_frame: int) -> list[float]:

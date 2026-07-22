@@ -88,10 +88,37 @@ def test_real_baseline_lifecycle_events_are_reachable() -> None:
     assert _lifecycle_event(created=False, was_missing=False) == "track_update"
 
 
-def test_execution_sequence_ids_are_run_scoped_and_order_is_private() -> None:
-    benchmark = load_benchmark(ROOT / "benchmarks/real-video-v1.yaml")
-    first = _load_unique_scenarios(benchmark.scenarios, "20260722T010416Z-aaaa1111")
-    second = _load_unique_scenarios(benchmark.scenarios, "20260722T010416Z-bbbb2222")
+def test_execution_sequence_ids_are_run_scoped_and_order_is_private(tmp_path: Path) -> None:
+    source_frame = ROOT / "scenarios/synthetic-v1/acquisition/frames/0000.jpg"
+    paths = []
+    for index, scenario_id in enumerate(("rv1-a7f3", "rv1-b2c8", "rv1-c3d1")):
+        scenario_root = tmp_path / f"sequence-scenario-{index}"
+        scenario_root.mkdir()
+        manifest = scenario_root / "scenario.yaml"
+        manifest.write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": "cvbench.scenario/v1",
+                    "id": scenario_id,
+                    "family": "fixture_family",
+                    "sequence_id": f"public-{index}",
+                    "ground_truth": "ground_truth.jsonl",
+                    "frames": [
+                        {
+                            "frame_index": 0,
+                            "source_timestamp_ns": 0,
+                            "width": 160,
+                            "height": 120,
+                            "path": str(source_frame),
+                        }
+                    ],
+                }
+            )
+        )
+        (scenario_root / "ground_truth.jsonl").write_text(json.dumps(gt(0, sequence=f"public-{index}")) + "\n")
+        paths.append(manifest)
+    first = _load_unique_scenarios(tuple(paths), "20260722T010416Z-aaaa1111")
+    second = _load_unique_scenarios(tuple(paths), "20260722T010416Z-bbbb2222")
     assert all(scenario.frames[0].sequence_id.startswith("run-aaaa1111-seq-") for scenario in first)
     assert all(scenario.frames[0].sequence_id.startswith("run-bbbb2222-seq-") for scenario in second)
     assert {scenario.id for scenario in first} == {scenario.id for scenario in second}
