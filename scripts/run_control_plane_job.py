@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,6 +34,7 @@ SECRET_ENVIRONMENT_KEYS = {
     "GITHUB_TOKEN",
 }
 MAX_CALLBACK_BYTES = 1024 * 1024
+ARTIFACT_RETENTION_DAYS = 7
 
 
 def callback_payload_bytes(body: dict[str, Any]) -> bytes:
@@ -171,6 +174,76 @@ def write_system_config(path: Path, submission: dict[str, Any]) -> None:
     path.write_text(json.dumps(config, indent=2) + "\n")
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def stage_evidence_artifacts(run_dir: Path, job_id: str, report: dict[str, Any]) -> dict[str, Any]:
+    """Persist raw evidence for the workflow artifact step, with an integrity manifest."""
+    if not JOB_ID_PATTERN.fullmatch(job_id):
+        raise ValueError("submission ID is invalid")
+    root = Path(os.environ.get("CVBENCH_ARTIFACT_ROOT", Path(tempfile.gettempdir()) / "cvbench-artifacts"))
+    destination = root / job_id
+    destination.mkdir(parents=True, exist_ok=True)
+    copied: list[Path] = []
+    evidence_names = (
+        "report.html",
+        "system-output.jsonl",
+        "ground-truth.jsonl",
+        "matching-decisions.jsonl",
+        "resources.csv",
+    )
+    for name in evidence_names:
+        source = run_dir / name
+        if source.exists():
+            target = destination / name
+            shutil.copy2(source, target)
+            copied.append(target)
+    failures = run_dir / "failures"
+    if failures.exists():
+        target = destination / "failures"
+        shutil.copytree(failures, target, dirs_exist_ok=True)
+        copied.extend(path for path in target.rglob("*") if path.is_file())
+
+    run_id = os.environ.get("GITHUB_RUN_ID") or f"local-{job_id}"
+    artifact_name = f"cvbench-evidence-{run_id}"
+    manifest = {
+        "schema_version": "cvbench.artifact-manifest/v1",
+        "job_id": job_id,
+        "artifact_name": artifact_name,
+        "retention_days": ARTIFACT_RETENTION_DAYS,
+        "access": "GitHub Actions artifact; authenticated operator access; expires with artifact retention",
+        "files": [
+            {
+                "path": str(path.relative_to(destination)),
+                "bytes": path.stat().st_size,
+                "sha256": _file_sha256(path),
+            }
+            for path in sorted(copied)
+        ],
+    }
+    manifest_path = destination / "evidence-manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    report = dict(report)
+    provenance = dict(report.get("provenance", {}))
+    provenance["evidence_artifacts"] = [
+        {
+            "name": artifact_name,
+            "manifest_sha256": _file_sha256(manifest_path),
+            "retention_days": ARTIFACT_RETENTION_DAYS,
+            "workflow_run_url": _workflow_run_url(),
+            "access": "authenticated GitHub Actions artifact; expires after retention period",
+        }
+    ]
+    report["provenance"] = provenance
+    (destination / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    return report
+
+
 def _containers_for_job(job_id: str, environment: dict[str, str]) -> list[str]:
     if not JOB_ID_PATTERN.fullmatch(job_id):
         raise ValueError("submission ID is invalid")
@@ -252,6 +325,7 @@ def execute_submission(repository: Path, submission: dict[str, Any], work: Path)
             "workflow_run_url": _workflow_run_url(),
             "workflow_name": os.environ.get("GITHUB_WORKFLOW"),
         }
+        report = stage_evidence_artifacts(reports[0].parent, job_id, report)
         return report
     finally:
         cleanup_benchmark_containers(job_id, environment)

@@ -88,18 +88,33 @@ export class D1Store {
     return { rows: page, nextCursor: hasMore && last ? { createdAt: last.createdAt, id: last.id } : null };
   }
 
-  async addOperatorNote({ id, submissionId, verdict, note, createdAt, operatorKeyHash }) {
+  async operatorComparisons() {
+    const images = await this.db
+      .prepare("SELECT image FROM submissions GROUP BY image HAVING COUNT(*) > 1 LIMIT 10001")
+      .all();
+    const results = await this.db
+      .prepare("SELECT result_sha256 FROM submissions WHERE result_sha256 IS NOT NULL GROUP BY result_sha256 HAVING COUNT(*) > 1 LIMIT 10001")
+      .all();
+    return {
+      scope: "store_wide",
+      truncated: (images.results || []).length > 10000 || (results.results || []).length > 10000,
+      duplicateImages: new Set((images.results || []).map((row) => row.image)),
+      duplicateResults: new Set((results.results || []).map((row) => row.result_sha256)),
+    };
+  }
+
+  async addOperatorNote({ id, submissionId, verdict, note, createdAt, operatorKeyHash, actorId }) {
     await this.db
-      .prepare(`INSERT INTO operator_notes (id, submission_id, verdict, note, created_at, operator_key_sha256)
-        VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(id, submissionId, verdict, note, createdAt, operatorKeyHash)
+      .prepare(`INSERT INTO operator_notes (id, submission_id, verdict, note, created_at, operator_key_sha256, actor_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id, submissionId, verdict, note, createdAt, operatorKeyHash, actorId)
       .run();
-    return { id, submissionId, verdict, note, createdAt };
+    return { id, submissionId, verdict, note, createdAt, actorId };
   }
 
   async listOperatorNotes(submissionId) {
     const result = await this.db
-      .prepare("SELECT id, submission_id, verdict, note, created_at FROM operator_notes WHERE submission_id = ? ORDER BY created_at ASC, id ASC")
+      .prepare("SELECT id, submission_id, verdict, note, created_at, actor_id FROM operator_notes WHERE submission_id = ? ORDER BY created_at ASC, id ASC")
       .bind(submissionId)
       .all();
     return (result.results || []).map((row) => ({
@@ -108,6 +123,7 @@ export class D1Store {
       verdict: row.verdict,
       note: row.note,
       createdAt: row.created_at,
+      actorId: row.actor_id,
     }));
   }
 
@@ -140,12 +156,12 @@ export class D1Store {
     return Number(changed.meta?.changes || 0);
   }
 
-  async completeJob({ id, leaseTokenHash, status, report, error, now }) {
+  async completeJob({ id, leaseTokenHash, status, report, resultSha256, error, now }) {
     const changed = await this.db
-      .prepare(`UPDATE submissions SET status = ?, result_json = ?, error = ?, completed_at = ?,
+      .prepare(`UPDATE submissions SET status = ?, result_json = ?, result_sha256 = ?, error = ?, completed_at = ?,
         updated_at = ?, lease_token_sha256 = NULL, lease_expires_at = NULL
         WHERE id = ? AND status = 'running' AND lease_token_sha256 = ? AND lease_expires_at >= ?`)
-      .bind(status, report === null ? null : JSON.stringify(report), error, now, now, id, leaseTokenHash, now)
+      .bind(status, report === null ? null : JSON.stringify(report), resultSha256, error, now, now, id, leaseTokenHash, now)
       .run();
     return Number(changed.meta?.changes || 0) === 1 ? this.getSubmission(id) : null;
   }
@@ -163,6 +179,7 @@ function deserialize(row) {
     notes: row.notes,
     attempt: row.attempt,
     result: row.result_json ? JSON.parse(row.result_json) : null,
+    resultSha256: row.result_sha256 || null,
     error: row.error,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

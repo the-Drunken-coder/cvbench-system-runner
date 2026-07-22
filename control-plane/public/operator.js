@@ -1,6 +1,7 @@
 let operatorToken = "";
 let selectedJobId = "";
 let timer;
+let nextCursor = null;
 
 document.querySelector("#operator-auth")?.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -10,17 +11,28 @@ document.querySelector("#operator-auth")?.addEventListener("submit", async (even
   scheduleRefresh();
 });
 document.querySelector("#refresh")?.addEventListener("click", refreshJobs);
+document.querySelector("#load-more")?.addEventListener("click", () => loadJobs());
 document.querySelector("#status-filter")?.addEventListener("change", refreshJobs);
 document.querySelector("#auto-refresh")?.addEventListener("change", scheduleRefresh);
 
 async function refreshJobs() {
+  await loadJobs({ reset: true });
+}
+
+async function loadJobs({ reset = false } = {}) {
   if (!operatorToken) return;
+  if (reset) nextCursor = null;
   const status = document.querySelector("#status-filter").value;
-  const response = await fetch(`/api/v1/operator/jobs${status ? `?status=${encodeURIComponent(status)}` : ""}`, { headers: { authorization: `Bearer ${operatorToken}` } });
+  const params = new URLSearchParams();
+  if (status) params.set("status", status);
+  if (nextCursor) params.set("cursor", nextCursor);
+  params.set("limit", "25");
+  const response = await fetch(`/api/v1/operator/jobs?${params}`, { headers: { authorization: `Bearer ${operatorToken}` } });
   if (!response.ok) return showMessage(`Operator API returned ${response.status}.`);
   const body = await response.json();
   const list = document.querySelector("#job-list");
-  list.replaceChildren();
+  if (reset) list.replaceChildren();
+  nextCursor = body.next_cursor;
   for (const job of body.jobs) {
     const button = document.createElement("button");
     button.className = `job-row${job.id === selectedJobId ? " selected" : ""}`;
@@ -33,6 +45,8 @@ async function refreshJobs() {
     button.append(title, meta);
     list.append(button);
   }
+  const loadMore = document.querySelector("#load-more");
+  loadMore.hidden = !nextCursor;
   if (selectedJobId) await selectJob(selectedJobId);
 }
 

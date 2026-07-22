@@ -53,6 +53,9 @@ def build_audit_evidence(
     for match in matches:
         matches_by_frame[(match.sequence_id, match.source_timestamp_ns)].append(match)
         matched_records.add(id(match.output))
+    match_by_target_frame = {
+        (match.sequence_id, match.source_timestamp_ns, match.target_id): match for match in matches
+    }
 
     frame_keys = sorted(gt_by_frame)
     sample_count = min(MAX_FRAME_SAMPLES, len(frame_keys))
@@ -82,17 +85,29 @@ def build_audit_evidence(
         frame_matches = matches_by_frame.get(key, [])
         ground_truth_explanations = []
         for row in gt_by_frame[key]:
-            match = next((item for item in frame_matches if item.target_id == row["target_id"]), None)
+            match = match_by_target_frame.get((sequence_id, timestamp, row["target_id"]))
+            observed_match = match is not None and match.output.get("support") == "observed"
+            eligible = row["on_screen"] and row["eligible_for_detection"]
+            counted_toward_score = {
+                "observed_coverage": eligible and observed_match,
+                "continuity_coverage": eligible and match is not None,
+                "localization": observed_match,
+                "acquisition": eligible
+                and observed_match
+                and match.output.get("state") in {"confirmed", "reacquired"},
+            }
             if not row["on_screen"]:
                 reason = "off_screen"
+            elif not row["eligible_for_detection"] and match is not None:
+                reason = "matched_but_ineligible_for_detection"
             elif not row["eligible_for_detection"]:
                 reason = "not_eligible"
             elif match is None:
                 reason = "no_gated_match"
-            elif match.output.get("support") == "observed":
-                reason = "matched_observed"
+            elif observed_match:
+                reason = "matched_observed_and_counted"
             else:
-                reason = "continuity_only_predicted"
+                reason = "matched_predicted_for_continuity_only"
             ground_truth_explanations.append(
                 {
                     "target_id": row["target_id"],
@@ -101,7 +116,8 @@ def build_audit_evidence(
                     "eligible_for_detection": row["eligible_for_detection"],
                     "visibility_fraction": row["visibility_fraction"],
                     "occlusion": row["occlusion"],
-                    "counted": match is not None,
+                    "matched": match is not None,
+                    "counted_toward_score": counted_toward_score,
                     "counted_as": match.output.get("support") if match else None,
                     "count_reason": reason,
                 }
@@ -258,21 +274,61 @@ def build_audit_evidence(
     ]
     score_explanation = {
         "ground_truth_records": len(ground_truth),
-        "counted_continuity": len(matches),
-        "counted_observed": sum(match.output.get("support") == "observed" for match in matches),
+        "matched_continuity": len(matches),
+        "matched_observed": sum(match.output.get("support") == "observed" for match in matches),
         "excluded_off_screen": sum(not row["on_screen"] for row in ground_truth),
         "excluded_not_eligible": sum(row["on_screen"] and not row["eligible_for_detection"] for row in ground_truth),
+        "ineligible_rows_with_matches": sum(
+            row["on_screen"]
+            and not row["eligible_for_detection"]
+            and (row["sequence_id"], row["source_timestamp_ns"], row["target_id"]) in match_by_target_frame
+            for row in ground_truth
+        ),
         "eligible_without_gated_match": sum(
             row["on_screen"]
             and row["eligible_for_detection"]
-            and not any(
-                match.target_id == row["target_id"]
-                and match.source_timestamp_ns == row["source_timestamp_ns"]
-                and match.sequence_id == row["sequence_id"]
-                for match in matches
-            )
+            and (row["sequence_id"], row["source_timestamp_ns"], row["target_id"]) not in match_by_target_frame
             for row in ground_truth
         ),
+        "component_eligibility": {
+            "observed_coverage": "on_screen and eligible_for_detection with an observed gated match",
+            "continuity_coverage": "on_screen and eligible_for_detection with any gated match",
+            "localization": "any observed gated match, including an ineligible row when geometry is scored",
+            "acquisition": "on_screen and eligible_for_detection with an observed confirmed or reacquired match",
+        },
+        "component_counts": {
+            "observed_coverage": sum(
+                row["on_screen"]
+                and row["eligible_for_detection"]
+                and (
+                    match_by_target_frame.get(
+                        (row["sequence_id"], row["source_timestamp_ns"], row["target_id"])
+                    )
+                    is not None
+                )
+                and match_by_target_frame[
+                    (row["sequence_id"], row["source_timestamp_ns"], row["target_id"])
+                ].output.get("support")
+                == "observed"
+                for row in ground_truth
+            ),
+            "continuity_coverage": sum(
+                row["on_screen"]
+                and row["eligible_for_detection"]
+                and (row["sequence_id"], row["source_timestamp_ns"], row["target_id"]) in match_by_target_frame
+                for row in ground_truth
+            ),
+            "localization": sum(
+                match.output.get("support") == "observed" for match in matches
+            ),
+            "acquisition": sum(
+                match.output.get("support") == "observed"
+                and match.output.get("state") in {"confirmed", "reacquired"}
+                and match.gt["on_screen"]
+                and match.gt["eligible_for_detection"]
+                for match in matches
+            ),
+        },
     }
     return {
         "schema_version": "cvbench.audit/v1",

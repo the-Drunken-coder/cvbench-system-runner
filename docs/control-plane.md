@@ -19,7 +19,7 @@ The Worker source, site, migrations, and JavaScript tests live in `control-plane
 - Submission keys are compared through fixed-length SHA-256 digests with a constant-time byte comparison. D1 stores only the submitter-key digest.
 - `Idempotency-Key` is unique per submitter-key digest. Repeating the same body returns the existing job; changing the body returns `409`.
 - Public reads omit contact, notes, authentication data, lease data, raw model output, stderr, and raw evidence artifacts. They return score summaries and finding statements only.
-- Operator reads use a separate `OPERATOR_API_TOKEN`; submission and runner tokens cannot access them. The token is compared through the same SHA-256 digest plus constant-time comparison path and is never stored in D1. Operator notes store only the operator-token digest.
+- Operator reads use `OPERATOR_READ_API_KEYS`; adjudication writes use a separate `OPERATOR_ADJUDICATOR_API_KEYS` credential and stable non-secret `OPERATOR_ACTOR_ID`. Submission, runner, and read-only tokens cannot write notes. All bearer verification uses the same SHA-256 digest plus constant-time comparison path; only credential digests and the actor ID are stored, never bearer values.
 - Operator flags are deterministic review aids. They never automatically disqualify a model; adjudication is an explicit note/verdict trail.
 - A trusted runner bearer token protects leases and callbacks. Each lease also gets an independent random token, stored only as a digest, and state updates require `running -> succeeded|failed`. The 3000-second lease exceeds the 40-minute workflow timeout with callback margin.
 - Each lease advertises the Worker's one-MiB result-body budget. The trusted runner preserves the complete scored report and deterministically retains head-and-tail stderr diagnostics that fit, recording original, retained, and omitted counts in the public result.
@@ -47,7 +47,9 @@ Create `control-plane/.dev.vars` with local-only values (the file is ignored by 
 ```bash
 SUBMISSION_API_KEYS="local-submission-key"
 RUNNER_TOKEN="local-runner-token"
-OPERATOR_API_TOKEN="local-operator-token"
+OPERATOR_READ_API_KEYS="local-operator-read-token"
+OPERATOR_ADJUDICATOR_API_KEYS="local-operator-write-token"
+OPERATOR_ACTOR_ID="local-operator"
 ```
 
 Then open the local URL printed by Wrangler. The health, contract, and OpenAPI endpoints are:
@@ -69,7 +71,8 @@ set +a
 CVBENCH_API_BASE_URL=http://127.0.0.1:8787 \
 CVBENCH_API_KEY="$SUBMISSION_API_KEYS" \
 CVBENCH_RUNNER_TOKEN="$RUNNER_TOKEN" \
-CVBENCH_OPERATOR_TOKEN="$OPERATOR_API_TOKEN" \
+CVBENCH_OPERATOR_READ_TOKEN="$OPERATOR_READ_API_KEYS" \
+CVBENCH_OPERATOR_WRITE_TOKEN="$OPERATOR_ADJUDICATOR_API_KEYS" \
 CVBENCH_REPORT_PATH=/absolute/path/to/report.json \
 npm run test:d1
 ```
@@ -99,10 +102,11 @@ In the Cloudflare dashboard:
    ```bash
    npx wrangler secret put SUBMISSION_API_KEYS
    npx wrangler secret put RUNNER_TOKEN
-   npx wrangler secret put OPERATOR_API_TOKEN
+   npx wrangler secret put OPERATOR_READ_API_KEYS
+   npx wrangler secret put OPERATOR_ADJUDICATOR_API_KEYS
    ```
 
-   `SUBMISSION_API_KEYS` accepts comma-separated keys to allow rotation. Do not put either value in `wrangler.jsonc`, Actions variables, job metadata, PR text, or logs.
+   `SUBMISSION_API_KEYS`, `OPERATOR_READ_API_KEYS`, and `OPERATOR_ADJUDICATOR_API_KEYS` accept comma-separated keys to allow rotation. Set the non-secret Worker variable `OPERATOR_ACTOR_ID` to the stable operator identity. Do not put bearer values in `wrangler.jsonc`, Actions variables, job metadata, PR text, or logs.
 
 9. In GitHub repository settings, add the Actions variable `CVBENCH_API_BASE_URL` with the deployed `https://...workers.dev` origin. Create an environment named `cvbench-production`, restrict its deployment branches to `main` only, and put `CVBENCH_RUNNER_TOKEN` in that environment with exactly the same value as the Worker `RUNNER_TOKEN`. Do not keep a repository-level copy of this secret.
 10. Manually dispatch **Trusted benchmark runner** once. The cron schedule checks for one queued job every 15 minutes.
@@ -139,16 +143,16 @@ Poll the public `Location` returned by the create call. Status moves through `qu
 The private dashboard is `/operator.html`. It polls JSON rather than scraping UI state. Keep the operator token in an environment variable or a local secret manager:
 
 ```bash
-export CVBENCH_OPERATOR_TOKEN='local-only-or-secret-manager-value'
+export CVBENCH_OPERATOR_READ_TOKEN='local-only-or-secret-manager-value'
 curl -sS "$CVBENCH_API_BASE_URL/api/v1/operator/jobs?status=running" \
-  -H "Authorization: Bearer $CVBENCH_OPERATOR_TOKEN"
+  -H "Authorization: Bearer $CVBENCH_OPERATOR_READ_TOKEN"
 
 curl -sS "$CVBENCH_API_BASE_URL/api/v1/operator/jobs/$JOB_ID" \
-  -H "Authorization: Bearer $CVBENCH_OPERATOR_TOKEN"
+  -H "Authorization: Bearer $CVBENCH_OPERATOR_READ_TOKEN"
 curl -sS "$CVBENCH_API_BASE_URL/api/v1/operator/jobs/$JOB_ID/audit" \
-  -H "Authorization: Bearer $CVBENCH_OPERATOR_TOKEN"
+  -H "Authorization: Bearer $CVBENCH_OPERATOR_READ_TOKEN"
 curl -sS "$CVBENCH_API_BASE_URL/api/v1/operator/jobs/$JOB_ID/evidence" \
-  -H "Authorization: Bearer $CVBENCH_OPERATOR_TOKEN"
+  -H "Authorization: Bearer $CVBENCH_OPERATOR_READ_TOKEN"
 ```
 
 For a terminal-friendly watcher:
@@ -164,7 +168,7 @@ Leave a fairness/adjudication trail without changing the score:
 
 ```bash
 curl -sS -X POST "$CVBENCH_API_BASE_URL/api/v1/operator/jobs/$JOB_ID/notes" \
-  -H "Authorization: Bearer $CVBENCH_OPERATOR_TOKEN" \
+  -H "Authorization: Bearer $CVBENCH_OPERATOR_WRITE_TOKEN" \
   -H "Content-Type: application/json" \
   --data '{"verdict":"accepted","note":"Reviewed sampled overlays and latency evidence; legitimate result."}'
 ```

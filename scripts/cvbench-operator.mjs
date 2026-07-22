@@ -2,7 +2,7 @@
 
 const [command = "list", value] = process.argv.slice(2);
 const baseUrl = required("CVBENCH_API_BASE_URL").replace(/\/$/, "");
-const token = required("CVBENCH_OPERATOR_TOKEN");
+const token = required("CVBENCH_OPERATOR_READ_TOKEN");
 let lastBody;
 
 if (command === "watch") {
@@ -13,10 +13,12 @@ if (command === "watch") {
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   } while (true);
 } else if (["list", "detail", "audit", "evidence", "notes"].includes(command)) {
-  const path = command === "list" ? "/api/v1/operator/jobs" : `/api/v1/operator/jobs/${encodeURIComponent(requiredArg(value, "job id"))}/${command === "detail" ? "" : command}`;
+  const path = command === "list"
+    ? `/api/v1/operator/jobs?limit=${encodeURIComponent(process.env.CVBENCH_OPERATOR_LIMIT || "25")}${value ? `&cursor=${encodeURIComponent(value)}` : ""}`
+    : `/api/v1/operator/jobs/${encodeURIComponent(requiredArg(value, "job id"))}/${command === "detail" ? "" : command}`;
   await call(path.replace(/\/$/, ""));
 } else {
-  throw new Error("Usage: cvbench-operator.mjs list | watch [job-id] | detail <job-id> | audit <job-id> | evidence <job-id> | notes <job-id>");
+  throw new Error("Usage: cvbench-operator.mjs list [next-cursor] | watch [job-id] | detail <job-id> | audit <job-id> | evidence <job-id> | notes <job-id>");
 }
 
 async function call(path) {

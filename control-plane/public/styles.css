@@ -154,6 +154,7 @@ footer > div a { font: 700 .72rem var(--mono); text-transform: uppercase; }
 .job-row { display: grid; gap: .25rem; text-align: left; padding: .9rem; border: 1px solid #394039; background: #171d17; color: white; cursor: pointer; }
 .job-row.selected, .job-row:hover { border-color: var(--acid); }
 .job-row span { color: #aeb5ae; font: .68rem var(--mono); overflow-wrap: anywhere; }
+.job-list + .button { margin-top: 1rem; }
 .operator-grid .status-output { min-height: 420px; color: var(--ink); }
 .operator-grid .status-output h3 { margin-top: 0; }
 .operator-grid .status-output pre { max-height: 680px; }

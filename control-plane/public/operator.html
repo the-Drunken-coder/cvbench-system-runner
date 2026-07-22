@@ -14,13 +14,13 @@
       <h1>Run control.</h1>
       <p class="hero-copy">Watch queue state, inspect bounded evidence, evaluate review flags, and leave an adjudication trail. Model output is rendered as text.</p>
       <form id="operator-auth" class="operator-auth">
-        <label for="operator-token">Operator token</label>
+        <label for="operator-token">Operator read token</label>
         <div><input id="operator-token" type="password" autocomplete="off" required><button class="button primary">Open console</button></div>
         <small>Token is kept in memory for this page only.</small>
       </form>
       <section id="operator-console" hidden>
-        <div class="operator-toolbar"><label>Status <select id="status-filter"><option value="">all</option><option>queued</option><option>running</option><option>succeeded</option><option>failed</option></select></label><button id="refresh" class="button secondary">Refresh</button><label><input id="auto-refresh" type="checkbox" checked> poll every 5s</label></div>
-        <div class="operator-grid"><section><h2>Jobs</h2><div id="job-list" class="job-list"></div></section><section><h2>Selected job</h2><div id="job-detail" class="status-output"><p>Select a job.</p></div></section></div>
+        <div class="operator-toolbar"><label>Status <select id="status-filter"><option value="">all</option><option>queued</option><option>running</option><option>succeeded</option><option>failed</option></select></label><button id="refresh" class="button secondary" type="button">Refresh</button><label><input id="auto-refresh" type="checkbox" checked> poll every 5s</label></div>
+        <div class="operator-grid"><section><h2>Jobs</h2><div id="job-list" class="job-list"></div><button id="load-more" class="button secondary" type="button" hidden>Load next page</button></section><section><h2>Selected job</h2><div id="job-detail" class="status-output"><p>Select a job.</p></div></section></div>
       </section>
     </main>
   </body>

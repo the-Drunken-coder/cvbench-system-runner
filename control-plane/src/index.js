@@ -8,7 +8,9 @@ export default {
       assets: env.ASSETS,
       submissionKeys: env.SUBMISSION_API_KEYS || "",
       runnerToken: env.RUNNER_TOKEN || "",
-      operatorToken: env.OPERATOR_API_TOKEN || "",
+      operatorReadKeys: env.OPERATOR_READ_API_KEYS || env.OPERATOR_API_TOKEN || "",
+      operatorWriteKeys: env.OPERATOR_ADJUDICATOR_API_KEYS || "",
+      operatorActorId: env.OPERATOR_ACTOR_ID || "unattributed-operator",
       maxSubmissionsPerHour: env.MAX_SUBMISSIONS_PER_HOUR,
       leaseSeconds: env.LEASE_SECONDS,
     });

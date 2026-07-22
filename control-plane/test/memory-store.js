@@ -38,6 +38,7 @@ export class MemoryStore {
       completedAt: null,
       leaseExpiresAt: null,
       leaseTokenHash: null,
+      resultSha256: null,
     };
     this.rows.set(row.id, stored);
     return { kind: "created", submission: clone(stored) };
@@ -58,8 +59,23 @@ export class MemoryStore {
     return { rows: page, nextCursor: rows.length > limit && last ? { createdAt: last.createdAt, id: last.id } : null };
   }
 
-  async addOperatorNote({ id, submissionId, verdict, note, createdAt }) {
-    const stored = { id, submissionId, verdict, note, createdAt };
+  async operatorComparisons() {
+    const imageCounts = new Map();
+    const resultCounts = new Map();
+    for (const row of this.rows.values()) {
+      imageCounts.set(row.image, (imageCounts.get(row.image) || 0) + 1);
+      if (row.resultSha256) resultCounts.set(row.resultSha256, (resultCounts.get(row.resultSha256) || 0) + 1);
+    }
+    return {
+      scope: "store_wide",
+      truncated: false,
+      duplicateImages: new Set([...imageCounts].filter(([, count]) => count > 1).map(([image]) => image)),
+      duplicateResults: new Set([...resultCounts].filter(([, count]) => count > 1).map(([hash]) => hash)),
+    };
+  }
+
+  async addOperatorNote({ id, submissionId, verdict, note, createdAt, actorId }) {
+    const stored = { id, submissionId, verdict, note, createdAt, actorId };
     this.notes.set(id, stored);
     return clone(stored);
   }
@@ -99,7 +115,7 @@ export class MemoryStore {
     return count;
   }
 
-  async completeJob({ id, leaseTokenHash, status, report, error, now }) {
+  async completeJob({ id, leaseTokenHash, status, report, resultSha256, error, now }) {
     const row = this.rows.get(id);
     if (!row || row.status !== "running" || row.leaseTokenHash !== leaseTokenHash || row.leaseExpiresAt < now) {
       return null;
@@ -107,6 +123,7 @@ export class MemoryStore {
     Object.assign(row, {
       status,
       result: report,
+      resultSha256,
       error,
       completedAt: now,
       updatedAt: now,

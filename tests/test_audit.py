@@ -29,8 +29,8 @@ def test_audit_evidence_is_bounded_and_keeps_fairness_signals() -> None:
     assert len(evidence["resources_and_isolation"]["resources"]["over_time"]) == 64
     assert evidence["timeline"]["support_counts"]["observed"] == 160
     assert evidence["false_track_segments"][0]["track_id"] == "false"
-    assert evidence["frame_samples"][0]["ground_truth"][0]["count_reason"] == "matched_observed"
-    assert evidence["score_explanation"]["counted_observed"] == 80
+    assert evidence["frame_samples"][0]["ground_truth"][0]["count_reason"] == "matched_observed_and_counted"
+    assert evidence["score_explanation"]["matched_observed"] == 80
     assert all(flag["review_aid_only"] for flag in evidence["flags"])
     assert any(flag["id"] == "exact_ground_truth_replay" and flag["status"] == "flagged" for flag in evidence["flags"])
 
@@ -51,3 +51,34 @@ def test_audit_marks_impossible_latency_without_disqualifying() -> None:
 
     assert any(flag["id"] == "impossible_latency" and flag["status"] == "flagged" for flag in evidence["flags"])
     assert evidence["review_disposition"].startswith("review_aid_only")
+
+
+def test_matched_ineligible_rows_are_not_claimed_as_coverage_score() -> None:
+    ground_truth = [
+        gt(index * 1_000_000, sequence="twelve", eligible=index < 10, visibility=1 if index < 10 else 0)
+        for index in range(12)
+    ]
+    records = [output(index * 1_000_000, sequence="twelve") for index in range(12)]
+    metrics, matches = calculate_metrics(ground_truth, records, Thresholds())
+    evidence = build_audit_evidence(
+        ground_truth,
+        records,
+        matches,
+        metrics,
+        {"delivered_frames": 12},
+        {"sample_count": 1},
+        {"status": "verified", "network_mode": "none"},
+    )
+
+    assert metrics["sample_counts"]["matches"] == 12
+    assert metrics["coverage"]["overall_observed"] == 1
+    assert metrics["localization"]["sample_count"] == 12
+    ineligible = evidence["frame_samples"][-1]["ground_truth"][0]
+    assert ineligible["matched"] is True
+    assert ineligible["counted_toward_score"]["observed_coverage"] is False
+    assert ineligible["counted_toward_score"]["localization"] is True
+    assert ineligible["count_reason"] == "matched_but_ineligible_for_detection"
+    assert evidence["score_explanation"]["ineligible_rows_with_matches"] == 2
+    assert "including an ineligible row" in evidence["score_explanation"]["component_eligibility"]["localization"]
+    assert evidence["score_explanation"]["component_counts"]["observed_coverage"] == 10
+    assert evidence["score_explanation"]["component_counts"]["localization"] == 12

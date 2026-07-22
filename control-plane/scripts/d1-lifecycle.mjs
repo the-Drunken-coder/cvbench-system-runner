@@ -3,7 +3,8 @@ import { readFile } from "node:fs/promises";
 const baseUrl = required("CVBENCH_API_BASE_URL").replace(/\/$/, "");
 const submissionKey = required("CVBENCH_API_KEY");
 const runnerToken = required("CVBENCH_RUNNER_TOKEN");
-const operatorToken = required("CVBENCH_OPERATOR_TOKEN");
+const operatorReadToken = required("CVBENCH_OPERATOR_READ_TOKEN");
+const operatorWriteToken = required("CVBENCH_OPERATOR_WRITE_TOKEN");
 const report = JSON.parse(await readFile(required("CVBENCH_REPORT_PATH"), "utf8"));
 const digest = "b".repeat(64);
 const idempotencyKey = `safe-baseline-${crypto.randomUUID()}`;
@@ -66,7 +67,7 @@ const completed = await publicResponse.json();
 assert(completed.status === "succeeded", "submission did not reach succeeded");
 assert(completed.result.scores.sample_counts.matches > 0, "public result lost scored matches");
 
-const operatorHeaders = { authorization: `Bearer ${operatorToken}` };
+const operatorHeaders = { authorization: `Bearer ${operatorReadToken}` };
 const operatorResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/audit`, { headers: operatorHeaders });
 await assertStatus(operatorResponse, 200, "operator audit");
 const audit = await operatorResponse.json();
@@ -75,6 +76,14 @@ const evidenceResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.
 await assertStatus(evidenceResponse, 200, "operator evidence");
 const evidence = await evidenceResponse.json();
 assert(evidence.audit_evidence?.schema_version === "cvbench.audit/v1", "audit evidence was not retrieved");
+const noteResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/notes`, {
+  method: "POST",
+  headers: { authorization: `Bearer ${operatorWriteToken}`, "content-type": "application/json" },
+  body: JSON.stringify({ verdict: "accepted", note: "D1 lifecycle audit evidence retrieved." }),
+});
+await assertStatus(noteResponse, 201, "operator adjudication note");
+const note = await noteResponse.json();
+assert(note.actorId, "operator note is missing stable actor attribution");
 
 console.log(JSON.stringify({
   submission_id: completed.id,
@@ -83,6 +92,7 @@ console.log(JSON.stringify({
   benchmark_outcome: completed.result.outcome.status,
   audit_schema: evidence.audit_evidence.schema_version,
   flagged_review_aids: audit.flags.filter((flag) => flag.status === "flagged").map((flag) => flag.id),
+  actor_id: note.actorId,
 }));
 
 function required(name) {
