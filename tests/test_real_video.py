@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from cvbench.audit import build_audit_evidence
 from cvbench.config import load_benchmark
 from cvbench.examples.real_video_baseline import _lifecycle_event
 from cvbench.metrics import calculate_metrics
@@ -315,11 +316,57 @@ def test_static_scoreable_roi_filters_out_of_scope_predictions() -> None:
     assert _filter_outputs_to_scoreable_rois([kept, dropped], scenarios) == [kept]
 
 
-def test_canonical_frame_manifest_has_exactly_78_hashes_and_prep_is_container_only() -> None:
+def test_audit_evidence_uses_only_scoreable_collected_records() -> None:
+    sequence = "run-audit-roi-seq-00"
+    scenario = Scenario(
+        id="audit-roi-fixture",
+        family="fixture",
+        root=ROOT,
+        frames=[Frame(sequence, 0, 0, 1920, 1080, ROOT / "fixture.jpg")],
+        ground_truth=[gt(0, sequence=sequence, box=[100, 100, 200, 200])],
+        scoreable_roi=(0.0, 100.0, 1800.0, 1000.0),
+    )
+    matched = output(0, sequence=sequence, track="target", box=[100, 100, 200, 200])
+    in_scope_false = output(0, sequence=sequence, track="in-scope-false", box=[300, 300, 350, 350])
+    out_of_scope_false = output(0, sequence=sequence, track="out-of-scope-false", box=[1810, 100, 1900, 200])
+    scored_collected = _filter_outputs_to_scoreable_rois(
+        [matched, in_scope_false, out_of_scope_false], [scenario]
+    )
+    metrics, matches = calculate_metrics(
+        scenario.ground_truth,
+        scored_collected,
+        load_benchmark(ROOT / "benchmarks/real-video-v1.yaml").thresholds,
+    )
+    evidence = build_audit_evidence(
+        scenario.ground_truth,
+        scored_collected,
+        matches,
+        metrics,
+        {"delivered_frames": 1},
+        {"sample_count": 0, "over_time": []},
+        {"status": "verified", "future_frame_isolation": True},
+    )
+    serialized = json.dumps(evidence)
+    assert metrics["false_detections"]["detections"] == 1
+    assert "in-scope-false" in serialized
+    assert "out-of-scope-false" not in serialized
+    assert all(segment["track_id"] != "out-of-scope-false" for segment in evidence["false_track_segments"])
+
+
+def test_canonical_frame_manifest_has_exactly_78_hashes_and_prep_is_container_only(tmp_path: Path) -> None:
     expected = ROOT / "scenarios/real-video-v1/expected-frame-sha256.txt"
     assert len(expected.read_text().splitlines()) == 78
     result = subprocess.run(
-        [sys.executable, "scripts/prepare_real_video.py", "--verify-only", "--output", "data/real-video-v1"],
+        [
+            sys.executable,
+            str(ROOT / "scripts/prepare_real_video.py"),
+            "--repo-root",
+            str(ROOT),
+            "--verify-only",
+            "--output",
+            str(ROOT / "data/real-video-v1"),
+        ],
+        cwd=tmp_path,
         capture_output=True,
         text=True,
         check=False,

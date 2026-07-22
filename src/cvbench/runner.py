@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import random
 import shutil
 import socket
 import tempfile
@@ -32,6 +31,8 @@ from .resources import ResourceMonitor
 from .runtime import StartedRuntime, cleanup_runtime, start_runtime, stop_runtime, verify_docker_isolation
 from .scenario import load_scenario
 from .stability import evaluate_long_run_assertions
+
+EVALUATION_ORDER_ALGORITHM = "sha256-sort/v1"
 
 
 def _sha256(path: Path) -> str:
@@ -82,6 +83,7 @@ def _comparison_fingerprint(benchmark: BenchmarkConfig, scenarios: list[Scenario
         "playback_rate": benchmark.playback_rate,
         "thresholds": asdict(benchmark.thresholds),
         "evaluation_order": {
+            "algorithm": EVALUATION_ORDER_ALGORITHM,
             "mode": "configured_seed" if benchmark.evaluation_order_seed is not None else "private_per_run_fallback",
             "seed": benchmark.evaluation_order_seed,
         },
@@ -270,14 +272,28 @@ def _load_unique_scenarios(
 ) -> list[Scenario]:
     scenarios: list[Scenario] = []
     seen: dict[str, int] = {}
-    ordered_paths = list(paths)
     if evaluation_order_seed is None:
-        order_material = f"private-per-run:{run_id}"
+        order_material: dict[str, Any] = {"mode": "private_per_run_fallback", "run_id": run_id}
     else:
-        order_material = f"configured:{type(evaluation_order_seed).__name__}:{evaluation_order_seed}"
-    random.Random(hashlib.sha256(order_material.encode()).digest()).shuffle(ordered_paths)
-    for path in ordered_paths:
-        scenario = load_scenario(path)
+        order_material = {
+            "mode": "configured_seed",
+            "seed": evaluation_order_seed,
+            "seed_type": type(evaluation_order_seed).__name__,
+        }
+    loaded = [(path, load_scenario(path)) for path in paths]
+
+    def order_key(item: tuple[Path, Scenario]) -> tuple[str, str, str]:
+        path, scenario = item
+        material = {
+            "algorithm": EVALUATION_ORDER_ALGORITHM,
+            "order_material": order_material,
+            "scenario_id": scenario.id,
+            "manifest_sha256": _sha256(path),
+        }
+        encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest(), scenario.id, _sha256(path)
+
+    for _path, scenario in sorted(loaded, key=order_key):
         sequence = scenario.frames[0].sequence_id
         seen[sequence] = seen.get(sequence, 0) + 1
         if seen[sequence] > 1:
@@ -559,6 +575,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                     if benchmark.evaluation_order_seed is not None
                     else "private_per_run_fallback"
                 ),
+                "algorithm": EVALUATION_ORDER_ALGORITHM,
                 "seed": benchmark.evaluation_order_seed,
                 "private_per_run": benchmark.evaluation_order_seed is None,
                 "run_scoped_sequence_ids": True,
@@ -582,7 +599,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     }
     report["audit_evidence"] = build_audit_evidence(
         ground_truth,
-        collected,
+        scored_collected,
         matches,
         metrics,
         feed_counters,

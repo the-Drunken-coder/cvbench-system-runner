@@ -125,5 +125,8 @@ collector-side output and matching decisions. With no configured
 `evaluation_order_seed`, the runner uses and reports a private run-derived
 order (`private_per_run_fallback`); a configured string or integer seed instead
 selects and reports `configured_seed`. The effective mode and seed are part of
-the comparison fingerprint. Both modes use run-scoped sequence IDs. The public
-manifest is calibration material and is intentionally not described as secret.
+the comparison fingerprint. The explicit cross-version ordering algorithm is
+`sha256-sort/v1`: canonical seed material and stable scenario identity are
+hashed, sorted, and never passed through Python's `random` implementation. Both
+modes use run-scoped sequence IDs. The public manifest is calibration material
+and is intentionally not described as secret.

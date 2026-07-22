@@ -1,10 +1,14 @@
-import random
 from dataclasses import replace
 from pathlib import Path
 
 from cvbench.comparison import compare_reports
 from cvbench.config import load_benchmark
-from cvbench.runner import _comparison_fingerprint, _load_unique_scenarios, _portable_path
+from cvbench.runner import (
+    EVALUATION_ORDER_ALGORITHM,
+    _comparison_fingerprint,
+    _load_unique_scenarios,
+    _portable_path,
+)
 from cvbench.scenario import load_scenario
 
 ROOT = Path(__file__).parents[1]
@@ -39,9 +43,13 @@ def test_comparison_fingerprint_is_independent_of_private_delivery_order() -> No
     benchmark = load_benchmark(ROOT / "benchmarks/persistent-target-tracking.yaml")
     scenarios = [load_scenario(path) for path in benchmark.scenarios]
     first_fingerprint, first_inputs = _comparison_fingerprint(benchmark, scenarios)
-    for seed in range(8):
-        shuffled = list(scenarios)
-        random.Random(seed).shuffle(shuffled)
+    delivery_orders = [
+        scenarios,
+        list(reversed(scenarios)),
+        [*scenarios[3:], *scenarios[:3]],
+        [scenarios[index] for index in (0, 4, 8, 1, 5, 9, 2, 6, 10, 3, 7, 11)],
+    ]
+    for shuffled in delivery_orders:
         second_fingerprint, second_inputs = _comparison_fingerprint(benchmark, shuffled)
         assert second_fingerprint == first_fingerprint
         assert second_inputs == first_inputs
@@ -68,8 +76,71 @@ def test_configured_order_seed_is_honored_and_fingerprinted() -> None:
     first_fingerprint, inputs = _comparison_fingerprint(configured, first)
     fallback_fingerprint, fallback_inputs = _comparison_fingerprint(benchmark, first)
     assert first_fingerprint != fallback_fingerprint
-    assert inputs["evaluation_order"] == {"mode": "configured_seed", "seed": 17}
-    assert fallback_inputs["evaluation_order"] == {"mode": "private_per_run_fallback", "seed": None}
+    assert inputs["evaluation_order"] == {
+        "algorithm": EVALUATION_ORDER_ALGORITHM,
+        "mode": "configured_seed",
+        "seed": 17,
+    }
+    assert fallback_inputs["evaluation_order"] == {
+        "algorithm": EVALUATION_ORDER_ALGORITHM,
+        "mode": "private_per_run_fallback",
+        "seed": None,
+    }
+
+
+def test_versioned_order_has_expected_vectors_for_seed_and_private_run() -> None:
+    benchmark = load_benchmark(ROOT / "benchmarks/persistent-target-tracking.yaml")
+    configured = replace(benchmark, evaluation_order_seed=17)
+    configured_order = [scenario.id for scenario in _load_unique_scenarios(configured.scenarios, "run-a-11111111", 17)]
+    assert configured_order == [
+        "synthetic-resource-stress",
+        "synthetic-occlusion-gap-2000ms",
+        "synthetic-multi-target-pair",
+        "synthetic-visible-retention",
+        "synthetic-occlusion-gap-250ms",
+        "synthetic-multi-target-identity",
+        "synthetic-occlusion-gap-100ms",
+        "synthetic-occlusion-reacquisition",
+        "synthetic-occlusion-gap-1000ms",
+        "synthetic-occlusion-gap-500ms",
+        "synthetic-acquisition",
+        "synthetic-false-detection",
+    ]
+    private_a = [scenario.id for scenario in _load_unique_scenarios(benchmark.scenarios, "run-a-11111111")]
+    private_b = [scenario.id for scenario in _load_unique_scenarios(benchmark.scenarios, "run-b-22222222")]
+    configured_other_seed = [
+        scenario.id for scenario in _load_unique_scenarios(configured.scenarios, "run-a-11111111", 18)
+    ]
+    assert configured_other_seed != configured_order
+    assert private_a == [
+        "synthetic-occlusion-gap-100ms",
+        "synthetic-multi-target-pair",
+        "synthetic-occlusion-gap-1000ms",
+        "synthetic-occlusion-gap-2000ms",
+        "synthetic-occlusion-gap-500ms",
+        "synthetic-visible-retention",
+        "synthetic-acquisition",
+        "synthetic-resource-stress",
+        "synthetic-false-detection",
+        "synthetic-multi-target-identity",
+        "synthetic-occlusion-reacquisition",
+        "synthetic-occlusion-gap-250ms",
+    ]
+    assert private_b != private_a
+    assert [scenario.id for scenario in _load_unique_scenarios(configured.scenarios, "run-b-22222222", 17)] == [
+        "synthetic-resource-stress",
+        "synthetic-occlusion-gap-2000ms",
+        "synthetic-multi-target-pair",
+        "synthetic-visible-retention",
+        "synthetic-occlusion-gap-250ms",
+        "synthetic-multi-target-identity",
+        "synthetic-occlusion-gap-100ms",
+        "synthetic-occlusion-reacquisition",
+        "synthetic-occlusion-gap-1000ms",
+        "synthetic-occlusion-gap-500ms",
+        "synthetic-acquisition",
+        "synthetic-false-detection",
+    ]
 
 
 def test_published_provenance_paths_are_portable() -> None:

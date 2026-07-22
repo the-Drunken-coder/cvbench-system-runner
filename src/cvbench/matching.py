@@ -37,6 +37,15 @@ def center_error(left: list[float], right: list[float]) -> float:
     return math.hypot(left_center[0] - right_center[0], left_center[1] - right_center[1])
 
 
+def _target_gate_matches(target: dict[str, Any], output: dict[str, Any], thresholds: Thresholds) -> bool:
+    if not thresholds.class_agnostic and target.get("class_id") != output.get("class_id"):
+        return False
+    prediction_box = output["geometry"]["value"]
+    return bbox_iou(target["bbox_xyxy"], prediction_box) >= thresholds.minimum_match_iou or center_error(
+        target["bbox_xyxy"], prediction_box
+    ) <= thresholds.max_match_center_error_px
+
+
 def _hungarian(cost: list[list[float]]) -> list[tuple[int, int]]:
     """Return a deterministic minimum-cost assignment for a rectangular matrix."""
     if not cost or not cost[0]:
@@ -166,13 +175,20 @@ def mark_ignored_outputs(
     second pass therefore cannot let an ignore annotation steal a real target.
     """
     ignores_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    targets_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for row in ground_truth:
         if row.get("ignore") and row.get("on_screen") and row.get("bbox_xyxy"):
             ignores_by_frame[(row["sequence_id"], row["source_timestamp_ns"])].append(row)
+        elif row.get("on_screen") and row.get("bbox_xyxy"):
+            targets_by_frame[(row["sequence_id"], row["source_timestamp_ns"])].append(row)
     neutral: list[dict[str, Any]] = []
     remaining: list[dict[str, Any]] = []
     for output in outputs:
         if output.get("event") not in TRACK_OBSERVATION_EVENTS:
+            remaining.append(output)
+            continue
+        target_candidates = targets_by_frame.get((output["sequence_id"], output["source_timestamp_ns"]), [])
+        if any(_target_gate_matches(target, output, thresholds) for target in target_candidates):
             remaining.append(output)
             continue
         candidates = ignores_by_frame.get((output["sequence_id"], output["source_timestamp_ns"]), [])

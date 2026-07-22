@@ -1,3 +1,5 @@
+import pytest
+
 from cvbench.config import Thresholds
 from cvbench.matching import intersection_over_prediction_area
 from cvbench.metrics import calculate_metrics, percentile
@@ -210,11 +212,49 @@ def test_ignore_annotations_neutralize_unmatched_predictions_after_target_matchi
     ignored = gt(0, target="ignore-1", box=[20, 20, 40, 40])
     ignored["ignore"] = True
     records = [output(0, box=[0, 0, 10, 10]), output(0, track="unlabeled", box=[20, 20, 40, 40])]
-    metrics, _ = calculate_metrics([target, ignored], records, Thresholds(ignore_match_iou=0.5))
+    metrics, _ = calculate_metrics(
+        [target, ignored], records, Thresholds(ignore_match_iou=0.5, max_match_center_error_px=30)
+    )
     assert metrics["sample_counts"]["matches"] == 1
     assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
     assert metrics["false_detections"]["detections"] == 0
     assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
+
+
+@pytest.mark.parametrize(
+    ("ignore_region", "class_agnostic"),
+    [(False, False), (False, True), (True, False), (True, True)],
+)
+def test_target_compatible_duplicate_survives_overlapping_ignore(
+    ignore_region: bool, class_agnostic: bool
+) -> None:
+    target = gt(0, box=[0, 0, 10, 10])
+    ignored = gt(0, target="ignore-object", box=[20, 0, 30, 10])
+    ignored["ignore"] = True
+    ignored["ignore_region"] = ignore_region
+    ignored["class_id"] = "car" if class_agnostic else "person"
+    primary = output(0, track="primary", box=[0, 0, 10, 10])
+    duplicate = output(0, track="duplicate", box=[20, 0, 30, 10])
+    metrics, _ = calculate_metrics(
+        [target, ignored],
+        [primary, duplicate],
+        Thresholds(class_agnostic=class_agnostic, max_match_center_error_px=30),
+    )
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 0
+    assert metrics["false_detections"]["detections"] == 1
+    assert metrics["false_detections"]["track_births"] == 1
+    assert metrics["identity"]["duplicate_tracks"] == 1
+    assert metrics["identity"]["track_splits"] == 1
+
+
+def test_legitimate_non_target_ignore_still_neutralizes() -> None:
+    target = gt(0, box=[0, 0, 10, 10])
+    ignored = gt(0, target="ignore-object", box=[40, 40, 60, 60])
+    ignored["ignore"] = True
+    prediction = output(0, track="non-target", box=[40, 40, 60, 60])
+    metrics, _ = calculate_metrics([target, ignored], [output(0, track="primary"), prediction], Thresholds())
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
 
 
 def test_class_aware_wrong_class_ordinary_ignore_is_false_and_births_a_track() -> None:
