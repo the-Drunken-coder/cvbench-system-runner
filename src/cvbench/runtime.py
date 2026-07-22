@@ -336,6 +336,7 @@ def _reset_verification_claims(isolation: dict[str, object]) -> None:
             "container_user_alignment_verified": None,
         }
     )
+    isolation.pop("error", None)
     image_identity = isolation.get("image_identity")
     if isinstance(image_identity, dict):
         image_identity.update({"executed_reference": None, "executed_image_id": None})

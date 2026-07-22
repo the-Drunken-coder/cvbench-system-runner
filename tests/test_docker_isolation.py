@@ -166,6 +166,11 @@ def test_docker_inspection_distinguishes_applied_limits(tmp_path: Path) -> None:
         evidence = verify_docker_isolation(runtime, tmp_path / "socket")
     assert evidence["status"] == "verification_failed"
     assert evidence["container_user_alignment_verified"] is None
+    inspected[0]["Config"]["User"] = f"{EXPECTED_UID}:{EXPECTED_GID}"
+    with patch("cvbench.runtime.subprocess.run", return_value=result):
+        evidence = verify_docker_isolation(runtime, tmp_path / "socket")
+    assert evidence["status"] == "verified"
+    assert "error" not in evidence
 
 
 def _minimal_verification_runtime(tmp_path: Path, *, with_cidfile: bool = True) -> StartedRuntime:
@@ -200,6 +205,7 @@ def _minimal_verification_runtime(tmp_path: Path, *, with_cidfile: bool = True) 
 
 def _assert_unknown_verification_claims(evidence: dict[str, object]) -> None:
     assert evidence["status"] == "verification_failed"
+    assert evidence["error"]
     for key in (
         "future_frame_isolation",
         "ground_truth_access",
