@@ -13,6 +13,7 @@ import yaml
 from cvbench.config import load_benchmark
 from cvbench.examples.real_video_baseline import _lifecycle_event
 from cvbench.metrics import calculate_metrics
+from cvbench.model import Frame, Scenario
 from cvbench.protocol import receive_message
 from cvbench.runner import _deliver_scenarios, _filter_outputs_to_scoreable_rois, _load_unique_scenarios
 from cvbench.scenario import load_scenario
@@ -98,10 +99,14 @@ def test_all_real_clips_have_ignore_coverage_and_crowd_frames_are_locked() -> No
 def test_static_roi_object_coverage_and_fairness_regressions() -> None:
     for clip in CLIPS:
         manifest = ROOT / "scenarios/real-video-v1" / clip["id"] / "scenario.yaml"
-        scenario = load_scenario(manifest)
-        assert scenario.scoreable_roi is not None
-        roi = scenario.scoreable_roi
-        targets = [row for row in scenario.ground_truth if not row.get("ignore")]
+        manifest_data = yaml.safe_load(manifest.read_text())
+        roi = tuple(float(value) for value in manifest_data["scoreable_roi"])
+        ground_truth = [
+            json.loads(line)
+            for line in manifest.parent.joinpath("ground_truth.jsonl").read_text().splitlines()
+            if line.strip()
+        ]
+        targets = [row for row in ground_truth if not row.get("ignore")]
         assert all(
             min(row["bbox_xyxy"][2], roi[2]) > max(row["bbox_xyxy"][0], roi[0])
             and min(row["bbox_xyxy"][3], roi[3]) > max(row["bbox_xyxy"][1], roi[1])
@@ -111,13 +116,13 @@ def test_static_roi_object_coverage_and_fairness_regressions() -> None:
         for timestamp in {row["source_timestamp_ns"] for row in targets}:
             ignored = [
                 row
-                for row in scenario.ground_truth
+                    for row in ground_truth
                 if row.get("ignore") and row["source_timestamp_ns"] == timestamp
             ]
             assert ignored, f"no reviewed object annotations at {clip['id']}:{timestamp}"
         roi_ignored = [
             row
-            for row in scenario.ground_truth
+            for row in ground_truth
             if row.get("ignore")
             and min(row["bbox_xyxy"][2], roi[2]) > max(row["bbox_xyxy"][0], roi[0])
             and min(row["bbox_xyxy"][3], roi[3]) > max(row["bbox_xyxy"][1], roi[1])
@@ -147,13 +152,21 @@ def test_static_roi_object_coverage_and_fairness_regressions() -> None:
             assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
             assert metrics["false_detections"]["detections"] == 0
 
-    crowd = load_scenario(ROOT / "scenarios/real-video-v1/rv1-a7f3/scenario.yaml")
+    crowd_manifest = ROOT / "scenarios/real-video-v1/rv1-a7f3/scenario.yaml"
+    crowd_manifest_data = yaml.safe_load(crowd_manifest.read_text())
+    crowd_ground_truth = [
+        json.loads(line)
+        for line in crowd_manifest.parent.joinpath("ground_truth.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
     crowd_target = next(
-        row for row in crowd.ground_truth if not row.get("ignore") and row["source_timestamp_ns"] == 10 * 4 * FPS_NS
+        row
+        for row in crowd_ground_truth
+        if not row.get("ignore") and row["source_timestamp_ns"] == 10 * 4 * FPS_NS
     )
     foreground = next(
         row
-        for row in crowd.ground_truth
+        for row in crowd_ground_truth
         if row.get("ignore_region_id") == "foreground-pedestrian-mid"
         and row["source_timestamp_ns"] == crowd_target["source_timestamp_ns"]
     )
@@ -203,10 +216,17 @@ def test_static_roi_object_coverage_and_fairness_regressions() -> None:
 
 
 def test_static_scoreable_roi_filters_out_of_scope_predictions() -> None:
-    scenarios = _load_unique_scenarios(
-        (ROOT / "scenarios/real-video-v1/rv1-a7f3/scenario.yaml",), "20260722T010416Z-aaaa1111"
-    )
-    sequence = scenarios[0].frames[0].sequence_id
+    sequence = "run-fixture-seq-00"
+    scenarios = [
+        Scenario(
+            id="roi-fixture",
+            family="fixture",
+            root=ROOT,
+            frames=[Frame(sequence, 0, 0, 1920, 1080, ROOT / "fixture.jpg")],
+            ground_truth=[],
+            scoreable_roi=(0.0, 100.0, 1800.0, 1000.0),
+        )
+    ]
     timestamp = scenarios[0].frames[0].relative_timestamp_ns
     kept = output(timestamp, sequence=sequence, box=[100, 100, 200, 200])
     dropped = output(timestamp, sequence=sequence, box=[1810, 100, 1900, 200])
