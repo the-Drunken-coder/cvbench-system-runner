@@ -111,6 +111,32 @@ test("result callback payloads cannot exceed the advertised budget", async () =>
   assert.equal((await jsonRequest(`/api/v1/submissions/${created.id}`)).status, "running");
 });
 
+test("authenticated evidence preserves unknown Docker verification claims", async () => {
+  const created = await (await submit(validBody(), "unknown-isolation-0001")).json();
+  const leased = await (await lease()).json();
+  const report = scoredReport({
+    status: "verification_failed",
+    future_frame_isolation: null,
+    ground_truth_access: null,
+    repository_access: null,
+    media_access: null,
+    mounts: null,
+    network_mode: null,
+    image_identity_verified: null,
+    container_user_alignment_verified: null,
+  });
+  await result(created.id, { status: "succeeded", lease_token: leased.lease.token, report });
+
+  const headers = { authorization: `Bearer ${OPERATOR_READ_TOKEN}` };
+  const evidence = await (await request(`/api/v1/operator/jobs/${created.id}/evidence`, { headers })).json();
+  assert.equal(evidence.audit_evidence.resources_and_isolation.runtime_isolation.status, "verification_failed");
+  assert.equal(evidence.audit_evidence.resources_and_isolation.runtime_isolation.future_frame_isolation, null);
+  assert.equal(evidence.audit_evidence.resources_and_isolation.runtime_isolation.network_mode, null);
+  const publicResult = await (await request(`/api/v1/submissions/${created.id}`)).json();
+  assert.equal(publicResult.result.audit_evidence, undefined);
+  assert.equal(publicResult.result.runtime_isolation, undefined);
+});
+
 test("operator API is separate from public and runner credentials", async () => {
   const created = await (await submit(validBody(), "operator-job-0001")).json();
   assert.equal((await request("/api/v1/operator/jobs")).status, 401);
@@ -459,7 +485,7 @@ function validBody() {
   };
 }
 
-function scoredReport() {
+function scoredReport(runtimeIsolation = { status: "verified", network_mode: "none" }) {
   return {
     outcome: { status: "completed" },
     metrics: {
@@ -469,7 +495,7 @@ function scoredReport() {
       localization: { sample_count: 12 },
       false_detections: { track_births: 1 },
     },
-    runtime_isolation: { status: "verified", network_mode: "none" },
+    runtime_isolation: runtimeIsolation,
     diagnostics: { sut_stderr: ["<script>throw new Error('untrusted')</script>"] },
     audit_evidence: {
       schema_version: "cvbench.audit/v1",
@@ -489,6 +515,7 @@ function scoredReport() {
       },
       flags: [{ id: "false_track", status: "flagged", review_aid_only: true }],
       false_track_segments: [{ track_id: "false-track", duration_ms: 100 }],
+      resources_and_isolation: { runtime_isolation: runtimeIsolation },
     },
     provenance: { raw_evidence_available: false },
   };

@@ -148,10 +148,17 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
             "network_access": config.resources.get("network_access", False),
         },
         "status": "not_enforced_local" if config.runtime_type == "local" else "pending_verification",
-        "future_frame_isolation": config.runtime_type == "docker",
-        "ground_truth_access": False if config.runtime_type == "docker" else None,
-        "repository_access": False if config.runtime_type == "docker" else None,
-        "media_access": False if config.runtime_type == "docker" else None,
+        "future_frame_isolation": None,
+        "ground_truth_access": None,
+        "repository_access": None,
+        "media_access": None,
+        "container_id": None,
+        "mounts": None,
+        "network_mode": None,
+        "applied": None,
+        "image_identity_verified": None,
+        "executed_container_user": None,
+        "container_user_alignment_verified": None,
         "expected_container_user": container_user,
         "socket_access": socket_access,
         "expected_mount": (
@@ -210,47 +217,58 @@ def stop_runtime(runtime: StartedRuntime, grace: float) -> tuple[int | None, boo
 
 
 def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: float = 10) -> dict[str, object]:
+    _reset_verification_claims(runtime.isolation)
     if runtime.cidfile is None:
-        return runtime.isolation
+        return _verification_failed(runtime, "container ID file is unavailable")
     deadline = time.monotonic() + timeout
     container_id = ""
     while time.monotonic() < deadline:
         if runtime.cidfile.exists():
-            container_id = runtime.cidfile.read_text().strip()
+            try:
+                container_id = runtime.cidfile.read_text().strip()
+            except OSError as exc:
+                return _verification_failed(runtime, f"container ID file could not be read: {exc}")
             if container_id:
                 break
         time.sleep(0.02)
     if not container_id:
-        runtime.isolation.update({"status": "verification_failed", "error": "container ID was not created"})
-        return runtime.isolation
-    result = subprocess.run(
-        ["docker", "inspect", container_id], capture_output=True, text=True, timeout=10, check=False
-    )
+        return _verification_failed(runtime, "container ID was not created")
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", container_id], capture_output=True, text=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return _verification_failed(runtime, f"docker inspect failed: {exc}")
     if result.returncode:
-        runtime.isolation.update({"status": "verification_failed", "error": result.stderr.strip()})
-        return runtime.isolation
-    inspected = json.loads(result.stdout)[0]
+        return _verification_failed(runtime, result.stderr.strip() or "docker inspect failed")
+    try:
+        payload = json.loads(result.stdout)
+        if not isinstance(payload, list) or len(payload) != 1 or not isinstance(payload[0], dict):
+            raise ValueError("docker inspect returned an invalid container record")
+        inspected = payload[0]
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return _verification_failed(runtime, f"malformed docker inspect output: {exc}")
     host = inspected.get("HostConfig", {})
     mounts = inspected.get("Mounts", [])
+    container_config = inspected.get("Config", {})
+    if not isinstance(host, dict) or not isinstance(mounts, list) or not isinstance(container_config, dict):
+        return _verification_failed(runtime, "malformed docker inspect fields")
+    if not all(isinstance(mount, dict) for mount in mounts):
+        return _verification_failed(runtime, "malformed docker inspect mounts")
     mount_pairs = [{"source": item.get("Source"), "destination": item.get("Destination")} for item in mounts]
-    requested = runtime.isolation["requested"]
-    assert isinstance(requested, dict)
+    requested = runtime.isolation.get("requested")
+    if not isinstance(requested, dict):
+        return _verification_failed(runtime, "runtime isolation request metadata is malformed")
     expected_cpu = requested.get("cpu_limit")
     expected_memory = requested.get("memory_limit_mb")
-    cpu_applied = host.get("NanoCpus", 0) / 1_000_000_000 if host.get("NanoCpus") else None
-    memory_applied = host.get("Memory", 0) / (1024 * 1024) if host.get("Memory") else None
+    cpu_applied = _scaled_number(host.get("NanoCpus"), 1_000_000_000)
+    memory_applied = _scaled_number(host.get("Memory"), 1024 * 1024)
     executed_image_id = inspected.get("Image")
-    container_config = inspected.get("Config", {})
     executed_reference = container_config.get("Image")
     executed_user = container_config.get("User")
-    image_identity = runtime.isolation["image_identity"]
-    assert isinstance(image_identity, dict)
-    image_identity.update(
-        {
-            "executed_reference": executed_reference,
-            "executed_image_id": executed_image_id,
-        }
-    )
+    image_identity = runtime.isolation.get("image_identity")
+    if not isinstance(image_identity, dict):
+        return _verification_failed(runtime, "runtime image identity metadata is malformed")
     identity_ok = (
         executed_image_id == runtime.resolved_image_id and executed_reference == runtime.resolved_image
     )
@@ -266,11 +284,17 @@ def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: 
     limits_ok = (expected_cpu is None or float(expected_cpu) == cpu_applied) and (
         expected_memory is None or float(expected_memory) == memory_applied
     )
+    if not (mount_ok and network_ok and limits_ok and identity_ok and user_ok):
+        return _verification_failed(runtime, "Docker isolation inspection did not satisfy every required claim")
+    image_identity.update(
+        {
+            "executed_reference": executed_reference,
+            "executed_image_id": executed_image_id,
+        }
+    )
     runtime.isolation.update(
         {
-            "status": "verified"
-            if mount_ok and network_ok and limits_ok and identity_ok and user_ok
-            else "verification_failed",
+            "status": "verified",
             "container_id": container_id,
             "mounts": mount_pairs,
             "network_mode": host.get("NetworkMode"),
@@ -284,6 +308,42 @@ def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: 
             "container_user_alignment_verified": user_ok,
         }
     )
+    return runtime.isolation
+
+
+def _scaled_number(value: object, divisor: float) -> float | None:
+    if value is None or value == 0:
+        return None
+    try:
+        return float(value) / divisor
+    except (TypeError, ValueError):
+        return None
+
+
+def _reset_verification_claims(isolation: dict[str, object]) -> None:
+    isolation.update(
+        {
+            "container_id": None,
+            "mounts": None,
+            "network_mode": None,
+            "applied": None,
+            "future_frame_isolation": None,
+            "ground_truth_access": None,
+            "repository_access": None,
+            "media_access": None,
+            "image_identity_verified": None,
+            "executed_container_user": None,
+            "container_user_alignment_verified": None,
+        }
+    )
+    image_identity = isolation.get("image_identity")
+    if isinstance(image_identity, dict):
+        image_identity.update({"executed_reference": None, "executed_image_id": None})
+
+
+def _verification_failed(runtime: StartedRuntime, error: str) -> dict[str, object]:
+    _reset_verification_claims(runtime.isolation)
+    runtime.isolation.update({"status": "verification_failed", "error": error})
     return runtime.isolation
 
 

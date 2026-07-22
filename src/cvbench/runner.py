@@ -452,6 +452,12 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             cleanup_runtime(runtime)
         shutil.rmtree(socket_dir, ignore_errors=True)
 
+    if runtime is not None and system.runtime_type == "docker" and runtime.isolation.get("status") != "verified":
+        outcome.status = "failed"
+        verification_error = runtime.isolation.get("error", "Docker isolation verification failed")
+        if verification_error not in outcome.errors:
+            outcome.errors.append(str(verification_error))
+
     runtime_seconds = (time.monotonic_ns() - started_ns) / 1_000_000_000
     if not ground_truth:
         # Preserve scoreable ground truth even for startup/crash failures.
@@ -543,7 +549,14 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         "resources": resource_data,
         "runtime_isolation": runtime.isolation
         if runtime
-        else {"runtime": system.runtime_type, "status": "not_started", "future_frame_isolation": False},
+        else {
+            "runtime": system.runtime_type,
+            "status": "not_started",
+            "future_frame_isolation": None,
+            "ground_truth_access": None,
+            "repository_access": None,
+            "media_access": None,
+        },
         "findings": findings,
         "comparison": [],
         "provenance": {

@@ -5,6 +5,8 @@ from pathlib import Path
 from subprocess import Popen
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from cvbench.config import load_system
 from cvbench.runner import _restrict_socket_access
 from cvbench.runtime import ResolvedImage, StartedRuntime, start_runtime, verify_docker_isolation
@@ -44,9 +46,11 @@ def test_docker_command_mounts_only_socket_and_disables_network(tmp_path: Path) 
         "destination": "/run/cvbench",
     }
     assert runtime.isolation["expected_container_user"] == f"{EXPECTED_UID}:{EXPECTED_GID}"
-    assert runtime.isolation["ground_truth_access"] is False
-    assert runtime.isolation["repository_access"] is False
-    assert runtime.isolation["media_access"] is False
+    assert runtime.isolation["future_frame_isolation"] is None
+    assert runtime.isolation["ground_truth_access"] is None
+    assert runtime.isolation["repository_access"] is None
+    assert runtime.isolation["media_access"] is None
+    assert runtime.isolation["image_identity_verified"] is None
     assert runtime.isolation["socket_access"] == {
         "owner_uid": EXPECTED_UID,
         "owner_gid": EXPECTED_GID,
@@ -135,7 +139,13 @@ def test_docker_inspection_distinguishes_applied_limits(tmp_path: Path) -> None:
     with patch("cvbench.runtime.subprocess.run", return_value=mismatch):
         evidence = verify_docker_isolation(runtime, tmp_path / "socket")
     assert evidence["status"] == "verification_failed"
-    assert evidence["image_identity_verified"] is False
+    assert evidence["image_identity_verified"] is None
+    assert evidence["future_frame_isolation"] is None
+    assert evidence["ground_truth_access"] is None
+    assert evidence["repository_access"] is None
+    assert evidence["media_access"] is None
+    assert evidence["network_mode"] is None
+    assert evidence["mounts"] is None
 
     inspected[0]["Image"] = "sha256:image-id"
     inspected[0]["Mounts"][0]["Source"] = str(tmp_path / "wrong-socket")
@@ -143,7 +153,11 @@ def test_docker_inspection_distinguishes_applied_limits(tmp_path: Path) -> None:
     with patch("cvbench.runtime.subprocess.run", return_value=wrong_mount):
         evidence = verify_docker_isolation(runtime, tmp_path / "socket")
     assert evidence["status"] == "verification_failed"
-    assert evidence["future_frame_isolation"] is False
+    assert evidence["future_frame_isolation"] is None
+    assert evidence["ground_truth_access"] is None
+    assert evidence["repository_access"] is None
+    assert evidence["media_access"] is None
+    assert evidence["image_identity_verified"] is None
 
     inspected[0]["Mounts"][0]["Source"] = str(tmp_path / "socket")
     inspected[0]["Config"]["User"] = "999:999"
@@ -151,7 +165,79 @@ def test_docker_inspection_distinguishes_applied_limits(tmp_path: Path) -> None:
     with patch("cvbench.runtime.subprocess.run", return_value=wrong_user):
         evidence = verify_docker_isolation(runtime, tmp_path / "socket")
     assert evidence["status"] == "verification_failed"
-    assert evidence["container_user_alignment_verified"] is False
+    assert evidence["container_user_alignment_verified"] is None
+
+
+def _minimal_verification_runtime(tmp_path: Path, *, with_cidfile: bool = True) -> StartedRuntime:
+    cidfile = tmp_path / "container.cid" if with_cidfile else None
+    if cidfile is not None:
+        cidfile.write_text("abc")
+    return StartedRuntime(
+        process=MagicMock(spec=Popen),
+        cidfile=cidfile,
+        resolved_image="sha256:image",
+        resolved_image_id="sha256:image-id",
+        command=[],
+        isolation={
+            "requested": {"cpu_limit": 4, "memory_limit_mb": 2048, "network_access": False},
+            "status": "pending_verification",
+            "future_frame_isolation": True,
+            "ground_truth_access": False,
+            "repository_access": False,
+            "media_access": False,
+            "expected_container_user": f"{EXPECTED_UID}:{EXPECTED_GID}",
+            "expected_mount": {"source": str(tmp_path / "socket"), "destination": "/run/cvbench"},
+            "image_identity": {
+                "configured_reference": "good:latest",
+                "resolved_reference": "sha256:image",
+                "resolved_image_id": "sha256:image-id",
+                "executed_reference": "stale",
+                "executed_image_id": "sha256:stale",
+            },
+        },
+    )
+
+
+def _assert_unknown_verification_claims(evidence: dict[str, object]) -> None:
+    assert evidence["status"] == "verification_failed"
+    for key in (
+        "future_frame_isolation",
+        "ground_truth_access",
+        "repository_access",
+        "media_access",
+        "mounts",
+        "network_mode",
+        "applied",
+        "image_identity_verified",
+        "executed_container_user",
+        "container_user_alignment_verified",
+    ):
+        assert evidence[key] is None, key
+    assert evidence["image_identity"]["executed_reference"] is None
+    assert evidence["image_identity"]["executed_image_id"] is None
+
+
+def test_missing_cidfile_keeps_verification_claims_unknown(tmp_path: Path) -> None:
+    evidence = verify_docker_isolation(_minimal_verification_runtime(tmp_path, with_cidfile=False), tmp_path / "socket")
+    _assert_unknown_verification_claims(evidence)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        MagicMock(returncode=1, stdout="", stderr="inspect failed"),
+        MagicMock(returncode=0, stdout="not-json", stderr=""),
+        MagicMock(returncode=0, stdout="{}", stderr=""),
+    ],
+    ids=["inspect-failure", "malformed-json", "malformed-record"],
+)
+def test_inspection_failures_keep_verification_claims_unknown(
+    tmp_path: Path, result: MagicMock
+) -> None:
+    runtime = _minimal_verification_runtime(tmp_path)
+    with patch("cvbench.runtime.subprocess.run", return_value=result):
+        evidence = verify_docker_isolation(runtime, tmp_path / "socket")
+    _assert_unknown_verification_claims(evidence)
 
 
 def test_benchmark_socket_permissions_are_owner_only(tmp_path: Path) -> None:

@@ -60,3 +60,36 @@ def test_ci_sanitization_writes_a_safe_copy_without_mutating_core_report(
     )
     main()
     _assert_safe(destination_run / "report.json")
+
+
+def test_failed_isolation_remains_unknown_in_public_safe_copy(tmp_path: Path) -> None:
+    source_run = tmp_path / "source" / "run-unknown"
+    source_run.mkdir(parents=True)
+    core = {
+        "outcome": {"status": "failed", "errors": ["container ID was not created"]},
+        "runtime_isolation": {
+            "status": "verification_failed",
+            "future_frame_isolation": None,
+            "ground_truth_access": None,
+            "repository_access": None,
+            "media_access": None,
+            "mounts": None,
+            "network_mode": None,
+            "image_identity_verified": None,
+            "container_user_alignment_verified": None,
+        },
+        "metrics": {"sample_counts": {"matches": 0}},
+    }
+    (source_run / "report.json").write_text(json.dumps(core))
+    (source_run / "resources.csv").write_text("elapsed_ms,process_count\n")
+
+    destination = sanitize_runs(tmp_path / "source", tmp_path / "safe")
+    safe = json.loads((destination / "report.json").read_text())
+    isolation = safe["runtime_isolation"]
+    assert safe["outcome"]["status"] == "failed"
+    assert isolation["status"] == "verification_failed"
+    assert isolation["future_frame_isolation"] is None
+    assert isolation["ground_truth_access"] is None
+    assert isolation["repository_access"] is None
+    assert isolation["media_access"] is None
+    assert isolation["image_identity_verified"] is None
