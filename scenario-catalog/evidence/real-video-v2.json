@@ -6,12 +6,12 @@
     "id": "classical-motion-baseline",
     "name": "Bundled class-aware motion baseline",
     "version": "real-video-v2",
-    "sha256": "ebefa4cdf0b3d5279fa7da1cccbaa4a83eb4738d72eedbdcfdf3ac08b10fcaa6"
+    "sha256": "0deba6dfb8a97e50341d3490e26e0b25215ecc8c823aed41618582f918979064"
   },
   "validation_status": "completed",
   "benchmark_id": "real-video-full-frame-mot",
-  "run_id": "20260722T180234Z-b043c28e",
-  "report_sha256": "e4e86ead65e3942c89bc5c8d7a630abcd8c9fca3a5feb90f0ccd757f5f74c4b2",
+  "run_id": "20260722T181811Z-6e6e915b",
+  "report_sha256": "1ea1fded84e99724c0c02530d0d3156f084bf4cf3a8e8d563ca8a3d33055f990",
   "scenarios": {
     "rvmot-a1c9": {
       "association_accuracy": 0.01789967268435054,
