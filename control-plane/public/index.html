@@ -45,10 +45,10 @@
         <div class="section-intro">
           <span class="section-number">01</span>
           <div><p class="kicker">What CVBench measures</p><h2>A leaderboard with receipts.</h2></div>
-          <p>Every score is backed by deterministic matching, external timestamps, resource samples, and evidence artifacts. One flattering average cannot hide system failure.</p>
+          <p>Every public submission runs the declared 16-scenario Version 2 suite: 13 deterministic synthetic tests plus three exhaustive, full-frame, native-30-FPS real-video sequences. Every score is backed by deterministic matching, external timestamps, resource samples, and evidence artifacts.</p>
         </div>
         <div class="metric-grid">
-          <article><span class="metric-index">A</span><h3>Accuracy</h3><p>Detection, localization, classification, and confidence calibration against frame-level ground truth.</p></article>
+          <article><span class="metric-index">A</span><h3>Accuracy</h3><p>Class-aware detection, HOTA, IDF1, localization, identity association, misses, and false tracks against frame-level ground truth.</p></article>
           <article><span class="metric-index">R</span><h3>Robustness</h3><p>Acquisition, visible retention, identity continuity, occlusion recovery, and fault response.</p></article>
           <article><span class="metric-index">L</span><h3>Latency</h3><p>Receive time minus source-frame time, recorded by the harness—not self-reported by the submitted system.</p></article>
           <article><span class="metric-index">Ω</span><h3>Resources</h3><p>CPU, memory, process count, and optional GPU telemetry sampled outside the submitted container.</p></article>

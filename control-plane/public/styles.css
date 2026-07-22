@@ -190,17 +190,21 @@ footer > div a { font: 700 .72rem var(--mono); text-transform: uppercase; }
 .overlay-label.roi { fill: #8ee9ff; }
 .fault-overlay rect { fill: rgba(163, 29, 29, .9); }
 .fault-overlay text { fill: white; font-family: var(--mono); font-weight: 800; }
-.viewer-controls { display: grid; grid-template-columns: 44px 72px 44px minmax(130px, auto) minmax(120px, 1fr) auto; align-items: center; gap: .45rem; padding-top: .8rem; }
+.viewer-controls { display: grid; grid-template-columns: 44px 72px 44px minmax(115px, auto) minmax(100px, 1fr) auto auto; align-items: center; gap: .45rem; padding-top: .8rem; }
 .viewer-controls button { min-width: 44px; min-height: 44px; border: 1px solid #566056; background: #202720; color: white; cursor: pointer; }
 .viewer-controls button:disabled { opacity: .35; cursor: default; }
-.viewer-controls button:focus-visible, .overlay-controls input:focus-visible { outline: 3px solid var(--acid); outline-offset: 2px; }
+.viewer-controls button:focus-visible, .viewer-controls select:focus-visible, .overlay-controls input:focus-visible { outline: 3px solid var(--acid); outline-offset: 2px; }
 .scrubber-label { font: .68rem var(--mono); color: #b5bdb5; }
 .viewer-controls input[type="range"] { width: 100%; min-height: 44px; accent-color: var(--acid); }
 .viewer-controls output { font: .68rem var(--mono); white-space: nowrap; color: #b5bdb5; }
+.speed-label { display: flex; align-items: center; gap: .35rem; font: .68rem var(--mono); color: #b5bdb5; }
+.speed-label select { min-height: 44px; border: 1px solid #566056; background: #202720; color: white; }
 .overlay-controls { display: flex; flex-wrap: wrap; gap: .5rem 1rem; margin: .3rem 0 0; padding: .7rem 0 0; border: 0; border-top: 1px solid #394039; }
 .overlay-controls legend { float: left; margin-right: 1rem; font: 700 .68rem var(--mono); text-transform: uppercase; color: #b5bdb5; }
 .overlay-controls label { min-height: 44px; display: inline-flex; align-items: center; gap: .4rem; font-size: .78rem; }
+.overlay-controls label[hidden] { display: none; }
 .overlay-controls input { width: 1.1rem; height: 1.1rem; accent-color: var(--acid); }
+.overlay-disclosure { margin: .6rem 0 0; color: #b5bdb5; font: .72rem/1.5 var(--mono); }
 .frame-inspector { min-width: 0; max-height: 720px; overflow: auto; padding: 1.2rem; border: 1px solid var(--ink); background: var(--paper); }
 .frame-inspector h3, .detail-facts h3 { margin: .2rem 0 1rem; font-size: 1.2rem; }
 .frame-inspector dl, .detail-facts dl { display: grid; grid-template-columns: minmax(90px, .7fr) minmax(0, 1.3fr); gap: .45rem 1rem; margin: 0 0 1.5rem; }

@@ -112,6 +112,9 @@ def validate_ground_truth(record: Any) -> dict[str, Any]:
     if not isinstance(ignore_region, bool):
         raise ProtocolError("ignore_region must be boolean")
     ignore_region_id = record.get("ignore_region_id")
+    truncated = record.get("truncated", False)
+    if not isinstance(truncated, bool):
+        raise ProtocolError("truncated must be boolean")
     if ignore_region and not ignore:
         raise ProtocolError("ignore_region requires ignore=true")
     if ignore_region and (not isinstance(ignore_region_id, str) or not ignore_region_id):
@@ -128,6 +131,7 @@ def validate_ground_truth(record: Any) -> dict[str, Any]:
     clean = dict(record)
     clean["ignore"] = ignore
     clean["ignore_region"] = ignore_region
+    clean["truncated"] = truncated
     if record["on_screen"]:
         clean["bbox_xyxy"] = validate_bbox(record.get("bbox_xyxy"))
     elif record.get("bbox_xyxy") is not None:

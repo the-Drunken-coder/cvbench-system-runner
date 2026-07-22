@@ -29,7 +29,8 @@ const STATIC_FILES = [
 const BENCHMARK_FILES = [
   "benchmarks/long-running-stability.yaml",
   "benchmarks/persistent-target-tracking.yaml",
-  "benchmarks/real-video-v1.yaml",
+  "benchmarks/public-whole-system-v2.yaml",
+  "benchmarks/real-video-v2.yaml",
 ];
 const ALLOWED_PUBLISHED_EXTENSIONS = new Set(["", ".css", ".html", ".jpg", ".js", ".json"]);
 const PRIVATE_PATH_PATTERN = /(?:^|\/)(?:\.dev\.vars|\.env(?:\.|$)|.*(?:credential|secret|contact|note|failure[-_]?packet|raw[-_]?report|d1[-_]?export|private[-_]?log).*)(?:\/|$)/i;
@@ -58,16 +59,28 @@ const ANNOTATION_FIELDS = new Set([
   "on_screen",
   "reappearance_event",
   "sequence_id",
+  "schema_version",
   "source_timestamp_ns",
   "target_id",
+  "truncated",
   "visibility_fraction",
   "vision_loss_interval",
 ]);
 const SOURCE_FIELDS = new Set([
+  "annotation_geom_sha256",
+  "annotation_provenance",
+  "annotation_types_sha256",
+  "annotation_url",
   "attribution",
+  "corrections",
   "creator",
+  "dataset",
+  "dataset_version",
+  "frame_range",
   "license",
   "license_url",
+  "native_fps",
+  "sequence",
   "source_sha256",
   "source_url",
   "title",
@@ -76,7 +89,10 @@ const SOURCE_FIELDS = new Set([
 const PREPARATION_FIELDS = new Set(["base_image", "expected_frame_manifest", "identity", "platform", "toolchain"]);
 const SCENARIO_METADATA_FIELDS = new Set(["description", "failure_modes", "title"]);
 const METRIC_FIELDS = new Set([
+  "association_accuracy",
   "false_detections",
+  "hota",
+  "idf1",
   "neutral_ignored_predictions",
   "observed_coverage",
   "state_contamination_events",
@@ -195,6 +211,7 @@ function validateBox(box, width, height, label) {
 function sanitizeAnnotation(row, manifest, index) {
   const label = `${manifest.id} annotation ${index}`;
   allowedObject(row, ANNOTATION_FIELDS, label);
+  if ("schema_version" in row && row.schema_version !== "cvbench.ground-truth/v1") fail(`${label}.schema_version is invalid`);
   requiredString(row.sequence_id, `${label}.sequence_id`);
   requiredString(row.target_id, `${label}.target_id`);
   requiredString(row.class_id, `${label}.class_id`);
@@ -203,7 +220,7 @@ function sanitizeAnnotation(row, manifest, index) {
   finiteNumber(row.visibility_fraction, `${label}.visibility_fraction`);
   if (row.visibility_fraction < 0 || row.visibility_fraction > 1) fail(`${label}.visibility_fraction must be between zero and one`);
   requiredString(row.occlusion, `${label}.occlusion`);
-  for (const field of ["entry_event", "exit_event", "ignore", "ignore_region", "reappearance_event", "vision_loss_interval"]) {
+  for (const field of ["entry_event", "exit_event", "ignore", "ignore_region", "reappearance_event", "truncated", "vision_loss_interval"]) {
     if (field in row && typeof row[field] !== "boolean") fail(`${label}.${field} must be boolean`);
   }
   if ("ignore_region_id" in row) requiredString(row.ignore_region_id, `${label}.ignore_region_id`);
@@ -239,12 +256,19 @@ function sanitizeMetadata(metadata, ids) {
   allowedObject(metadata.preparation, PREPARATION_FIELDS, "catalog metadata.preparation");
   for (const field of PREPARATION_FIELDS) requiredString(metadata.preparation[field], `catalog metadata.preparation.${field}`);
   plainObject(metadata.sources, "catalog metadata.sources");
-  const expectedSources = ["rv1-a7f3", "rv1-b2c8", "rv1-c3d1", "synthetic"];
+  const expectedSources = ["rvmot-a1c9", "rvmot-b7e2", "rvmot-c4f6", "synthetic"];
   if (JSON.stringify(Object.keys(metadata.sources).sort()) !== JSON.stringify(expectedSources)) fail("catalog metadata sources must match the public source allowlist");
   const sources = {};
   for (const key of expectedSources) {
     const source = allowedObject(metadata.sources[key], SOURCE_FIELDS, `catalog metadata.sources.${key}`);
-    for (const field of ["attribution", "creator", "license", "source_url", "title", "transformation"]) requiredString(source[field], `catalog metadata.sources.${key}.${field}`);
+    for (const field of ["attribution", "creator", "license", "source_url", "title", "transformation"]) {
+      requiredString(source[field], `catalog metadata.sources.${key}.${field}`);
+    }
+    if (key !== "synthetic") {
+      for (const field of ["annotation_geom_sha256", "annotation_provenance", "annotation_types_sha256", "annotation_url", "corrections", "dataset", "dataset_version", "frame_range", "native_fps", "sequence"]) {
+        requiredString(source[field], `catalog metadata.sources.${key}.${field}`);
+      }
+    }
     if ("license_url" in source) requiredString(source.license_url, `catalog metadata.sources.${key}.license_url`);
     if ("source_sha256" in source) requiredSha256(source.source_sha256, `catalog metadata.sources.${key}.source_sha256`);
     sources[key] = Object.fromEntries(Object.keys(source).sort().map((field) => [field, source[field]]));
@@ -308,13 +332,13 @@ async function benchmarkInventory() {
 
 async function expectedRealHashes() {
   const expected = new Map();
-  const content = await readFile(path.join(ROOT, "scenarios/real-video-v1/expected-frame-sha256.txt"), "utf8");
+  const content = await readFile(path.join(ROOT, "scenarios/real-video-v2/expected-frame-sha256.txt"), "utf8");
   for (const line of content.trim().split("\n")) {
     const [digest, relative] = line.split("  ");
     if (!/^[a-f0-9]{64}$/.test(digest) || !relative) fail("malformed canonical real-frame hash manifest");
     expected.set(relative, digest);
   }
-  if (expected.size !== 78) fail(`canonical real-frame manifest must contain 78 entries, found ${expected.size}`);
+  if (expected.size !== 450) fail(`canonical real-frame manifest must contain 450 entries, found ${expected.size}`);
   return expected;
 }
 
@@ -326,12 +350,22 @@ function annotationPolicy(real) {
     };
   }
   return {
-    scope: "targeted_non_exhaustive",
-    disclosure: "Real annotations cover selected targets and explicit ignore geometry only; they do not claim every visible object is annotated.",
+    scope: "exhaustive_full_frame_moving_objects",
+    disclosure: "Real-video annotations exhaustively cover supported visible movers across the full image with stable physical IDs.",
   };
 }
 
 function scoringPolicy(real) {
+  if (real) {
+    return {
+      class_aware: true,
+      scoreable_region: "full_frame",
+      ignore_matching: "not_used",
+      duplicate_predictions_penalized: true,
+      background_predictions_penalized: true,
+      temporal_metrics: ["HOTA", "IDF1", "ID switches", "fragmentation", "track completeness"],
+    };
+  }
   return {
     class_aware: true,
     target_matching_precedes_ignore_matching: true,
@@ -339,7 +373,7 @@ function scoringPolicy(real) {
     ignore_region_match: ">= 50% prediction-area coverage",
     duplicate_target_predictions_penalized: true,
     background_hallucinations_inside_roi_penalized: true,
-    outside_fixed_roi: real ? "out_of_scope" : "not_applicable_full_frame",
+    outside_fixed_roi: "not_applicable_full_frame",
   };
 }
 
@@ -387,8 +421,12 @@ async function publishFrame(output, source, expectedDigest, publishedFrames) {
 function frameInterval(frames) {
   if (frames.length < 2) return { fps: null, interval_ns: null };
   const intervals = frames.slice(1).map((frame, index) => frame.source_timestamp_ns - frames[index].source_timestamp_ns);
-  if (!intervals.every((value) => value === intervals[0] && value > 0)) return { fps: null, interval_ns: null };
-  return { fps: Number((1_000_000_000 / intervals[0]).toFixed(6)), interval_ns: intervals[0] };
+  if (!intervals.every((value) => value > 0)) fail("frame timestamps must be strictly increasing");
+  const duration = frames.at(-1).source_timestamp_ns - frames[0].source_timestamp_ns;
+  return {
+    fps: Number((((frames.length - 1) * 1_000_000_000) / duration).toFixed(6)),
+    interval_ns: intervals.every((value) => value === intervals[0]) ? intervals[0] : null,
+  };
 }
 
 function countTargets(annotations) {
@@ -499,7 +537,7 @@ async function loadBaselineEvidence(indexFile, catalogRoot, expectedIds) {
 
 async function scenarioDocument({ id, manifestPath, membership, metadata, baseline, expectedHashes, output, publishedFrames }) {
   const manifest = parseYaml(await readFile(manifestPath, "utf8"));
-  allowedObject(manifest, new Set(["family", "faults", "frames", "ground_truth", "id", "license", "schema_version", "scoreable_roi", "sequence_id", "source"]), `${id} scenario manifest`);
+  allowedObject(manifest, new Set(["annotation_scope", "family", "faults", "frames", "ground_truth", "id", "license", "ontology", "schema_version", "scoreable_roi", "sequence_id", "source"]), `${id} scenario manifest`);
   if (manifest.schema_version !== "cvbench.scenario/v1" || manifest.id !== id) fail(`invalid scenario manifest for ${id}`);
   requiredString(manifest.family, `${id} scenario manifest.family`);
   requiredString(manifest.sequence_id, `${id} scenario manifest.sequence_id`);
@@ -511,7 +549,12 @@ async function scenarioDocument({ id, manifestPath, membership, metadata, baseli
     allowedObject(frame, new Set(["frame_index", "height", "path", "source_timestamp_ns", "width"]), `${id} frame ${index}`);
     requiredString(frame.path, `${id} frame ${index}.path`);
   });
-  const real = id.startsWith("rv1-");
+  const real = id.startsWith("rvmot-");
+  if (real) {
+    if (manifest.annotation_scope !== "exhaustive_full_frame_moving_objects") fail(`${id} must declare exhaustive full-frame annotations`);
+    if ("scoreable_roi" in manifest) fail(`${id} must not declare a scoreable ROI`);
+    if (JSON.stringify(manifest.ontology) !== JSON.stringify(["person", "vehicle", "dog"])) fail(`${id} has an invalid ontology`);
+  }
   const source = metadata.sources[real ? id : "synthetic"];
   if (!source || source.license !== manifest.license) fail(`license metadata mismatch for ${id}`);
   const scenarioMeta = metadata.scenarios[id];
@@ -550,7 +593,7 @@ async function scenarioDocument({ id, manifestPath, membership, metadata, baseli
     let expectedDigest;
     if (real) {
       const name = `frame-${String(frame.frame_index).padStart(4, "0")}.jpg`;
-      sourcePath = path.join(CATALOG_SOURCE, "media/real-video-v1", id, "frames", name);
+      sourcePath = path.join(CATALOG_SOURCE, "media/real-video-v2", id, "frames", name);
       expectedDigest = expectedHashes.get(`${id}/frames/${name}`);
       if (!expectedDigest) fail(`no canonical hash declared for ${id}/${name}`);
       await assertedRegularFile(sourcePath, path.join(CATALOG_SOURCE, "media"));
@@ -585,7 +628,8 @@ async function scenarioDocument({ id, manifestPath, membership, metadata, baseli
     schema_version: "cvbench.annotation-manifest/v1",
     scenario_id: id,
     annotation_policy: annotationPolicy(real),
-    scoreable_roi: manifest.scoreable_roi || [0, 0, frames[0].width, frames[0].height],
+    scoreable_region: real ? { type: "full_frame", bounds: [0, 0, frames[0].width, frames[0].height] } :
+      { type: manifest.scoreable_roi ? "fixed_roi" : "full_frame", bounds: manifest.scoreable_roi || [0, 0, frames[0].width, frames[0].height] },
     faults,
     frames: groupedAnnotations,
   });
@@ -601,8 +645,8 @@ async function scenarioDocument({ id, manifestPath, membership, metadata, baseli
     id,
     stable_id: id,
     sequence_id: manifest.sequence_id,
-    version: "1.0.0",
-    pack: { id: real ? "real-video-v1" : "synthetic-v1", version: "1.0.0", status: "public" },
+    version: real ? "2.0.0" : "1.0.0",
+    pack: { id: real ? "real-video-v2" : "synthetic-v1", version: real ? "2.0.0" : "1.0.0", status: "public" },
     status: "public",
     title: scenarioMeta.title,
     description: scenarioMeta.description,
@@ -622,7 +666,8 @@ async function scenarioDocument({ id, manifestPath, membership, metadata, baseli
     annotations: {
       annotation_manifest: annotationManifest,
       policy: annotationPolicy(real),
-      scoreable_roi: manifest.scoreable_roi || [0, 0, frames[0].width, frames[0].height],
+      scoreable_region: real ? { type: "full_frame", bounds: [0, 0, frames[0].width, frames[0].height] } :
+        { type: manifest.scoreable_roi ? "fixed_roi" : "full_frame", bounds: manifest.scoreable_roi || [0, 0, frames[0].width, frames[0].height] },
       target_count: countTargets(annotations),
       class_ids: classes,
       object_rows: annotations.filter((row) => !row.ignore).length,
@@ -632,13 +677,20 @@ async function scenarioDocument({ id, manifestPath, membership, metadata, baseli
     provenance: {
       source: Object.fromEntries(Object.keys(source).sort().map((field) => [field, source[field]])),
       author: real ? `${source.creator}; annotations and preparation by CVBench contributors` : source.creator,
-      preparation: {
+      preparation: real ? {
         base_image: metadata.preparation.base_image,
         dockerfile_sha256: PREPARATION_HASH,
         expected_frame_manifest: metadata.preparation.expected_frame_manifest,
         identity: metadata.preparation.identity,
         platform: metadata.preparation.platform,
         toolchain: metadata.preparation.toolchain,
+      } : {
+        base_image: "not applicable; deterministic source generator",
+        dockerfile_sha256: sha256(Buffer.from(canonicalJson(manifest))),
+        expected_frame_manifest: path.relative(ROOT, manifestPath).replaceAll(path.sep, "/"),
+        identity: "cvbench-synthetic-generator/v1",
+        platform: "portable deterministic Python generation",
+        toolchain: "src/cvbench/synthetic.py",
       },
     },
     baseline: {
@@ -652,14 +704,14 @@ async function scenarioDocument({ id, manifestPath, membership, metadata, baseli
 }
 
 async function assertDeclaredMedia(expectedHashes) {
-  const mediaRoot = path.join(CATALOG_SOURCE, "media");
+  const mediaRoot = path.join(CATALOG_SOURCE, "media", "real-video-v2");
   const actual = [];
   async function walk(directory) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) fail(`symlink in media allowlist: ${path.relative(mediaRoot, file)}`);
       if (entry.isDirectory()) await walk(file);
-      else if (entry.isFile()) actual.push(path.relative(path.join(mediaRoot, "real-video-v1"), file).replaceAll(path.sep, "/"));
+      else if (entry.isFile()) actual.push(path.relative(mediaRoot, file).replaceAll(path.sep, "/"));
       else fail(`non-regular media entry: ${path.relative(mediaRoot, file)}`);
     }
   }

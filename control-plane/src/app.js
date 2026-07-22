@@ -6,6 +6,31 @@ const VALID_JOB_STATUSES = new Set(["queued", "running", "succeeded", "failed"])
 const IMAGE_PATTERN = /^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?\/)?[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$/;
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
+export const PUBLIC_BENCHMARK = Object.freeze({
+  id: "public-whole-system-tracking",
+  version: "2.0.0",
+  manifest: "benchmarks/public-whole-system-v2.yaml",
+  scenario_count: 16,
+  scenario_ids: Object.freeze([
+    "synthetic-acquisition",
+    "synthetic-false-detection",
+    "synthetic-multi-target-identity",
+    "synthetic-multi-target-pair",
+    "synthetic-occlusion-gap-1000ms",
+    "synthetic-occlusion-gap-100ms",
+    "synthetic-occlusion-gap-2000ms",
+    "synthetic-occlusion-gap-250ms",
+    "synthetic-occlusion-gap-500ms",
+    "synthetic-occlusion-reacquisition",
+    "synthetic-resource-stress",
+    "synthetic-track-id-churn",
+    "synthetic-visible-retention",
+    "rvmot-a1c9",
+    "rvmot-b7e2",
+    "rvmot-c4f6",
+  ]),
+});
+
 export function createApp(options) {
   const submissionKeys = splitKeys(options.submissionKeys);
   const runnerToken = String(options.runnerToken || "");
@@ -130,6 +155,9 @@ async function route(request, config) {
     if (parsed.error) return parsed.error;
     const validation = validateResult(parsed.value);
     if (validation.error) return problem(422, "invalid_result", validation.error);
+    if (validation.value.report && !matchesPublicBenchmark(validation.value.report.benchmark)) {
+      return problem(422, "invalid_result", "The report benchmark does not match the assigned public suite.");
+    }
     const report = validation.value.report ? await authoritativeReport(validation.value.report) : null;
     const completed = await config.store.completeJob({
       id: resultMatch[1],
@@ -308,6 +336,7 @@ function publicSubmission(value) {
     id: value.id,
     status: value.status,
     model: { name: value.name, version: value.modelVersion, image: value.image, argv: value.argv },
+    benchmark: PUBLIC_BENCHMARK,
     attempt: value.attempt,
     result: publicResultSummary(value.result),
     error: value.error,
@@ -339,7 +368,7 @@ function operatorSummary(value, comparisons = null) {
       lease_expires_at: iso(value.leaseExpiresAt),
     },
     provenance: {
-      benchmark: report?.benchmark || { id: "persistent-target-tracking", version: "1.0.0" },
+      benchmark: report?.benchmark || PUBLIC_BENCHMARK,
       scenario_manifests: provenance.scenario_manifests || [],
       comparison_fingerprint: provenance.comparison_fingerprint || null,
       runner_commit: runner.commit || null,
@@ -518,8 +547,13 @@ function runnerSubmission(value) {
     image: value.image,
     argv: value.argv,
     model: { name: value.name, version: value.modelVersion },
+    benchmark: PUBLIC_BENCHMARK,
     attempt: value.attempt,
   };
+}
+
+function matchesPublicBenchmark(value) {
+  return isObject(value) && value.id === PUBLIC_BENCHMARK.id && value.version === PUBLIC_BENCHMARK.version;
 }
 
 async function readJson(request, maxBytes) {
@@ -662,9 +696,10 @@ function json(value, status = 200, extraHeaders = {}) {
 export const CONTRACT = {
   schema_version: "cvbench.contract/v1",
   benchmark: {
-    id: "persistent-target-tracking",
-    version: "1.0.0",
-    measures: ["accuracy", "robustness", "latency", "resource use", "diagnostics"],
+    ...PUBLIC_BENCHMARK,
+    selection: "Every public v1 submission runs this fixed versioned suite; the v1 request does not select or override a benchmark.",
+    composition: "13 deterministic synthetic scenarios plus 3 dense, full-frame real-video multi-object tracking scenarios.",
+    measures: ["class-aware detection and association", "HOTA", "IDF1", "misses", "false tracks", "ID switches", "fragmentation", "track completeness", "latency", "resource use", "diagnostics"],
     input: "Progressive timestamped JPEG frames over a Unix-domain socket; the system under test never receives future frames.",
     temporal_support: "The socket stays open across ordered frames. Detector, tracker, temporal-memory, association, filtering, and post-processing pipelines may retain multi-frame state and may use multiple processes.",
   },
@@ -695,7 +730,8 @@ export const CONTRACT = {
 
 export const OPENAPI = {
   openapi: "3.1.0",
-  info: { title: "CVBench Control Plane API", version: "1.0.0", description: "Submit one immutable linux/amd64 OCI image containing a complete vision system to the public CVBench queue." },
+  info: { title: "CVBench Control Plane API", version: "1.0.0", description: "Submit one immutable linux/amd64 OCI image containing a complete vision system. Every v1 submission runs the fixed public-whole-system-tracking Version 2 suite of 13 synthetic and 3 dense full-frame real-video scenarios." },
+  "x-cvbench-public-benchmark": PUBLIC_BENCHMARK,
   servers: [{ url: "/" }],
   paths: {
     "/api/v1/health": { get: { operationId: "health", responses: { 200: { description: "Healthy" }, 503: { description: "D1 unavailable" } } } },

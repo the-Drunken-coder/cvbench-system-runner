@@ -9,16 +9,14 @@ The report keeps categories separate:
 - Visible dropouts: contiguous eligible-visible intervals without a correct observed match, above the declared tolerance.
 - Localization: IoU, pixel and normalized center error, size error, visibility groups, and size groups.
 - Identity: switches, fragments, duplicates, merges/splits, and normalized switch rate.
+- Dense multi-object tracking: class-aware HOTA over IoU thresholds 0.05 through 0.95, plus global-assignment IDF1 at IoU 0.5. Reports include DetA, AssA, LocA, misses, false tracks, and per-scenario results.
 - False output: unmatched detections, births, persistence, track-seconds, confidence, and scenario.
 - Ignore/unlabeled annotations are matched only after scoreable targets have been assigned. An ordinary ignore box
   (`ignore: true`, with `ignore_region` absent or false) uses box IoU at least the benchmark's locked
-  `ignore_match_iou` threshold (0.5 in real-video-v1). A broad `ignore_region` uses intersection over prediction area
+  `ignore_match_iou` threshold (0.5 in the current synthetic benchmarks). A broad `ignore_region` uses intersection over prediction area
   instead. Such an unmatched observed prediction is neutral, excluded from every false-detection and identity
   denominator, and reported separately as `neutral_ignored_predictions`.
-- Real-video scenarios may declare a static reviewed `scoreable_roi`. Predictions outside that fixed ROI are out of
-  scope; predictions inside it remain scoreable unless they overlap a reviewed ignore annotation. This is a reviewed
-  clip-level boundary, not a moving target-centered ROI or a full-frame ignore, and it leaves genuine negative background
-  where hallucinations remain false.
+- Real-video-v2 uses the complete image as the scoring region with exhaustive supported-mover labels and no ignore rows. Every prediction participates in class-aware full-scene scoring. The runner never exposes public annotations or identities to the system under test.
 - Robustness: controlled loss intervals, correct and same-ID reacquisition, gap duration, and latency.
 - Latency: externally measured first and per-update values, percentiles, deadline misses, count groups, and time series.
 - Resources: CPU, time, RAM, disk, network where available, process/thread count, GPU/VRAM where NVIDIA tooling exists, and memory growth.

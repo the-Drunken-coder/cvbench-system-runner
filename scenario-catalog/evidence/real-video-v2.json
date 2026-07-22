@@ -1,0 +1,41 @@
+{
+  "schema_version": "cvbench.sanitized-baseline-evidence/v1",
+  "id": "real-video-v2",
+  "status": "public",
+  "system": {
+    "id": "classical-motion-baseline",
+    "name": "Bundled class-aware motion baseline",
+    "version": "real-video-v2",
+    "sha256": "ebefa4cdf0b3d5279fa7da1cccbaa4a83eb4738d72eedbdcfdf3ac08b10fcaa6"
+  },
+  "validation_status": "completed",
+  "benchmark_id": "real-video-full-frame-mot",
+  "run_id": "20260722T180234Z-b043c28e",
+  "report_sha256": "e4e86ead65e3942c89bc5c8d7a630abcd8c9fca3a5feb90f0ccd757f5f74c4b2",
+  "scenarios": {
+    "rvmot-a1c9": {
+      "association_accuracy": 0.01789967268435054,
+      "false_detections": 198,
+      "hota": 0.014844917558768734,
+      "idf1": 0.011547344110854504,
+      "neutral_ignored_predictions": 0,
+      "observed_coverage": 0.12146892669491526
+    },
+    "rvmot-b7e2": {
+      "association_accuracy": 0.044550658139304866,
+      "false_detections": 285,
+      "hota": 0.025309700105603954,
+      "idf1": 0,
+      "neutral_ignored_predictions": 0,
+      "observed_coverage": 0.17222222183333333
+    },
+    "rvmot-c4f6": {
+      "association_accuracy": 0.01258915470451917,
+      "false_detections": 12,
+      "hota": 0.005212525432260313,
+      "idf1": 0,
+      "neutral_ignored_predictions": 0,
+      "observed_coverage": 0.010294117588538062
+    }
+  }
+}

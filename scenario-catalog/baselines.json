@@ -5,9 +5,9 @@
       "path": "evidence/persistent-tracking.json",
       "sha256": "93d2036fb5f913aa414edb1dfb429415e17c4a412b71b68322148844694afb50"
     },
-    "real-video": {
-      "path": "evidence/real-video.json",
-      "sha256": "e88e7c8ebd41dca1a011b5cf6adbc532a6d80d57b61643ac2ad26482e657da79"
+    "real-video-v2": {
+      "path": "evidence/real-video-v2.json",
+      "sha256": "0fb17fd07b92c83e7ec955708a91f9379ecc62747c98cb7edaf5d03b08704d8b"
     },
     "track-id-churn": {
       "path": "evidence/track-id-churn.json",
@@ -15,9 +15,9 @@
     }
   },
   "scenarios": {
-    "rv1-a7f3": { "evidence_id": "real-video" },
-    "rv1-b2c8": { "evidence_id": "real-video" },
-    "rv1-c3d1": { "evidence_id": "real-video" },
+    "rvmot-a1c9": { "evidence_id": "real-video-v2" },
+    "rvmot-b7e2": { "evidence_id": "real-video-v2" },
+    "rvmot-c4f6": { "evidence_id": "real-video-v2" },
     "synthetic-acquisition": { "evidence_id": "persistent-tracking" },
     "synthetic-false-detection": { "evidence_id": "persistent-tracking" },
     "synthetic-multi-target-identity": { "evidence_id": "persistent-tracking" },

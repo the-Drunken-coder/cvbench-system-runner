@@ -10,6 +10,7 @@ const state = {
   baseline: null,
   selected: 0,
   playing: false,
+  playbackSpeed: 1,
   timer: null,
   verifiedMedia: new Set(),
   generation: 0,
@@ -87,6 +88,10 @@ function currentAnnotationFrame() {
   return state.annotations.frames[state.selected];
 }
 
+function realVideoDetail() {
+  return state.detail?.pack?.id === "real-video-v2";
+}
+
 function faultLabels(frameIndex) {
   const labels = [];
   for (const fault of state.annotations.faults || []) {
@@ -122,7 +127,10 @@ function renderOverlay() {
   const frame = state.frames.frames[state.selected];
   svg.replaceChildren();
   svg.setAttribute("viewBox", `0 0 ${frame.width} ${frame.height}`);
-  if (overlayEnabled("roi")) drawBox(svg, state.annotations.scoreable_roi, "roi", "scoreable ROI", overlayEnabled("labels"), frame.width);
+  const region = state.annotations.scoreable_region;
+  if (overlayEnabled("roi") && region?.type !== "full_frame") {
+    drawBox(svg, region.bounds, "roi", "scoreable boundary", overlayEnabled("labels"), frame.width);
+  }
   for (const object of currentAnnotationFrame().objects) {
     if (!object.bbox_xyxy) continue;
     const ignored = Boolean(object.ignore);
@@ -151,18 +159,20 @@ function renderInspector() {
   appendDefinition(facts, "Source time", formatTime(frame.source_timestamp_ns));
   appendDefinition(facts, "Resolution", `${frame.width} × ${frame.height}`);
   appendDefinition(facts, "JPEG", `${humanBytes(frame.media.bytes)} · sha256:${frame.media.sha256.slice(0, 16)}…`);
-  appendDefinition(facts, "Targets", annotations.filter((row) => !row.ignore).length);
-  appendDefinition(facts, "Ignores", annotations.filter((row) => row.ignore).length);
+  appendDefinition(facts, realVideoDetail() ? "Tracked movers" : "Targets", annotations.filter((row) => !row.ignore).length);
+  if (!realVideoDetail()) appendDefinition(facts, "Ignores", annotations.filter((row) => row.ignore).length);
   appendDefinition(facts, "Faults", faultLabels(frame.frame_index).join(", ") || "None");
   const list = byId("frame-annotations");
   list.replaceChildren();
-  if (!annotations.length) list.append(element("p", "No target or ignore rows on this frame. This is explicit public ground truth, not a loading error."));
+  if (!annotations.length) list.append(element("p", realVideoDetail()
+    ? "No supported moving objects are visible on this frame. This is explicit exhaustive ground truth, not a loading error."
+    : "No target or ignore rows on this frame. This is explicit public ground truth, not a loading error."));
   for (const object of annotations) {
     const row = element("article");
-    row.append(element("strong", object.ignore ? (object.ignore_region ? "Ignore region" : "Ignore") : "Target"));
+    row.append(element("strong", object.ignore ? (object.ignore_region ? "Ignore region" : "Ignore") : (realVideoDetail() ? "Tracked object" : "Target")));
     row.append(element("span", `${object.target_id} · ${object.class_id}`));
     if (object.bbox_xyxy) row.append(element("code", `[${object.bbox_xyxy.join(", ")}]`));
-    if (!object.ignore) row.append(element("small", `${object.occlusion} occlusion · ${(object.visibility_fraction * 100).toFixed(0)}% visible · ${object.eligible_for_detection ? "scoreable" : "not detection-eligible"}`));
+    if (!object.ignore) row.append(element("small", `${object.occlusion} occlusion · ${(object.visibility_fraction * 100).toFixed(0)}% visible · ${object.truncated ? "truncated" : "not truncated"} · ${object.eligible_for_detection ? "scoreable" : "not detection-eligible"}`));
     list.append(row);
   }
 }
@@ -243,6 +253,7 @@ async function showFrame(index, announcement = true) {
 
 function annotationsSummary() {
   const rows = currentAnnotationFrame().objects;
+  if (realVideoDetail()) return `${rows.filter((row) => !row.ignore).length} tracked moving objects`;
   return `${rows.filter((row) => !row.ignore).length} targets and ${rows.filter((row) => row.ignore).length} ignores`;
 }
 
@@ -265,7 +276,7 @@ function scheduleNext() {
     stopPlayback();
     return;
   }
-  const delay = Math.max(16, (next.source_timestamp_ns - current.source_timestamp_ns) / 1_000_000);
+  const delay = Math.max(8, (next.source_timestamp_ns - current.source_timestamp_ns) / 1_000_000 / state.playbackSpeed);
   state.timer = window.setTimeout(async () => {
     const wasPlaying = state.playing;
     await showFrame(state.selected + 1, false);
@@ -316,8 +327,13 @@ function renderDetailFacts() {
   appendDefinition(scenario, "Resolution", `${detail.media.width} × ${detail.media.height}`);
   appendDefinition(scenario, "Classes", detail.annotations.class_ids.join(", ") || "No targets by design");
   appendDefinition(scenario, "Annotation policy", detail.annotations.policy.disclosure);
-  appendDefinition(scenario, "Scoring boundary", `Class-aware. ${detail.annotations.scoring.outside_fixed_roi.replaceAll("_", " ")}. Target matching precedes ignore matching.`);
-  appendDefinition(scenario, "Ignore rules", `Ignore region: ${detail.annotations.scoring.ignore_region_match}; ordinary ignore: ${detail.annotations.scoring.ordinary_ignore_match}.`);
+  if (detail.annotations.scoring.scoreable_region === "full_frame") {
+    appendDefinition(scenario, "Scoring boundary", "Class-aware, full-frame scoring. Every supported visible mover is exhaustive ground truth; misses, duplicates, false tracks, and background predictions are penalized.");
+    appendDefinition(scenario, "Temporal scoring", detail.annotations.scoring.temporal_metrics.join(", "));
+  } else {
+    appendDefinition(scenario, "Scoring boundary", `Class-aware. ${detail.annotations.scoring.outside_fixed_roi.replaceAll("_", " ")}. Target matching precedes ignore matching.`);
+    appendDefinition(scenario, "Ignore rules", `Ignore region: ${detail.annotations.scoring.ignore_region_match}; ordinary ignore: ${detail.annotations.scoring.ordinary_ignore_match}.`);
+  }
 
   const provenance = byId("provenance-facts");
   provenance.replaceChildren();
@@ -328,7 +344,9 @@ function renderDetailFacts() {
   if (detail.provenance.source.license_url) provenance.append(safeLink(detail.provenance.source.license, detail.provenance.source.license_url));
   else provenance.append(element("p", detail.provenance.source.license));
   provenance.append(element("p", detail.provenance.source.transformation));
-  provenance.append(element("p", `Preparation: ${detail.provenance.preparation.identity} · ${detail.provenance.preparation.platform} · Dockerfile sha256:${detail.provenance.preparation.dockerfile_sha256.slice(0, 16)}…`));
+  if (detail.provenance.source.annotation_provenance) provenance.append(element("p", `Annotation provenance: ${detail.provenance.source.annotation_provenance}`));
+  if (detail.provenance.source.corrections) provenance.append(element("p", `Audited corrections: ${detail.provenance.source.corrections}`));
+  provenance.append(element("p", `Preparation: ${detail.provenance.preparation.identity} · ${detail.provenance.preparation.platform} · definition sha256:${detail.provenance.preparation.dockerfile_sha256.slice(0, 16)}…`));
 
   const baseline = byId("baseline-facts");
   baseline.replaceChildren();
@@ -383,6 +401,13 @@ async function loadDetail(id) {
     byId("detail-title").textContent = detail.title;
     byId("detail-description").textContent = detail.description;
     byId("frame-scrubber").max = String(frames.frames.length - 1);
+    const real = detail.pack.id === "real-video-v2";
+    byId("objects-overlay-label").querySelector("span").textContent = real ? "Tracked objects" : "Targets";
+    byId("ignores-overlay-label").hidden = real;
+    byId("region-overlay-label").hidden = real;
+    byId("overlay-disclosure").textContent = real
+      ? "Public whole-scene overlays are human inspection aids. Systems receive only progressive frames and timestamps—never these boxes, identities, annotations, or future frames."
+      : "Public overlays are human inspection aids and are never sent to submitted systems.";
     byId("scenario-detail").hidden = false;
     renderDetailFacts();
     void showFrame(0, false);
@@ -413,6 +438,14 @@ byId("pack-filter").addEventListener("change", renderCatalog);
 byId("previous-frame").addEventListener("click", () => void showFrame(state.selected - 1));
 byId("next-frame").addEventListener("click", () => void showFrame(state.selected + 1));
 byId("play-pause").addEventListener("click", togglePlayback);
+byId("playback-speed").addEventListener("change", (event) => {
+  state.playbackSpeed = Number(event.currentTarget.value);
+  if (state.playing) {
+    if (state.timer) window.clearTimeout(state.timer);
+    scheduleNext();
+  }
+  byId("viewer-announcement").textContent = `Playback speed ${state.playbackSpeed} times.`;
+});
 byId("frame-scrubber").addEventListener("input", (event) => void showFrame(Number(event.currentTarget.value)));
 for (const toggle of document.querySelectorAll("[data-overlay]")) toggle.addEventListener("change", renderOverlay);
 byId("frame-viewer").addEventListener("keydown", (event) => {

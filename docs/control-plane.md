@@ -2,6 +2,8 @@
 
 CVBench's public control plane is one Cloudflare Worker with Static Assets and D1. It validates and queues immutable submitted system images; it never runs submitted code. A scheduled or manually dispatched GitHub-hosted Actions runner leases one job at a time and invokes the existing Docker-isolated CVBench engine.
 
+Every public v1 submission runs the fixed `public-whole-system-tracking` Version 2 suite declared by `benchmarks/public-whole-system-v2.yaml`: 13 synthetic scenarios and 3 dense, full-frame real-video scenarios. The request schema remains compatible and has no benchmark selector. Queued/public records and runner leases state the exact assignment, and the Worker rejects a successful callback whose report identifies a different benchmark or version.
+
 ```text
 human or agent -> Worker API -> D1 queue
                        ^             |
@@ -61,7 +63,7 @@ curl -sS http://localhost:8787/api/v1/contract
 curl -sS http://localhost:8787/api/v1/openapi.json
 ```
 
-`npm run build` deterministically creates the allowlisted Static Assets tree in `control-plane/dist`, including the complete public scenario catalog. `npm test` exercises the catalog build plus a complete in-memory HTTP lifecycle: authenticated creation, idempotent replay, public read, lease, scored result callback, terminal-state rejection, failure callback, rate limit, payload limit, and lease expiry. It uses a safe baseline system-image reference and a representative scored CVBench report; it does not execute Docker.
+`npm run build` deterministically creates the allowlisted Static Assets tree in `control-plane/dist`, including the complete public scenario catalog. `npm test` exercises the catalog build plus a complete in-memory HTTP lifecycle: authenticated creation with the fixed 16-scenario assignment, idempotent replay, public read, lease, benchmark-bound scored result callback, terminal-state rejection, failure callback, rate limit, payload limit, and lease expiry. It uses a safe baseline system-image reference and a representative scored CVBench report; it does not execute Docker.
 
 `npm ci` also invokes this build through the package's `postinstall` hook, and the build-time YAML parser is a production dependency so `npm ci --omit=dev` follows the same contract. An explicit `npm run build` remains useful only for local regeneration after source edits.
 
@@ -83,7 +85,7 @@ CVBENCH_REPORT_PATH=/absolute/path/to/report.json \
 npm run test:d1
 ```
 
-The existing Linux CI `docker-scored-e2e` remains the execution-boundary proof: it builds `examples/Dockerfile.good`, runs the real benchmark engine, asserts a scored report, and checks the tested container is gone.
+The Linux CI `docker-scored-e2e` builds the synthetic and real-video baseline images, prepares and hash-verifies the dense corpus, runs the complete public 16-scenario manifest through the Docker-isolated engine, asserts HOTA/IDF1 and the exact benchmark identity, and checks the tested containers are gone. Together with the Worker lifecycle tests, this covers public queue assignment through isolated execution and a benchmark-bound callback.
 
 ## Production with Cloudflare Workers Builds
 

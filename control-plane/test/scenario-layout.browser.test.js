@@ -151,11 +151,21 @@ test("image pixels and SVG annotations share one rendered coordinate space", asy
     height: 26 * scale,
   }, "known [8,40,28,66] target overlay", 0.25);
 
-  await loadScenario(page, fixture.origin, "rv1-a7f3");
+  await loadScenario(page, fixture.origin, "rvmot-a1c9", 75);
   const realVideo = await frameGeometry(page);
   assertBoundsMatch(realVideo.image, realVideo.stage, "real-video image layer");
   assertBoundsMatch(realVideo.svg, realVideo.stage, "real-video SVG layer");
   assertBoundsMatch(realVideo.imageContent, realVideo.svgContent, "real-video content transform");
+  assert.ok(realVideo.target, "dense real-video tracked-object overlay must render");
+  assert.equal(await page.locator("#ignores-overlay-label").isHidden(), true);
+  assert.equal(await page.locator("#region-overlay-label").isHidden(), true);
+  assert.match(await page.locator("#overlay-disclosure").textContent(), /never these boxes, identities, annotations, or future frames/);
+
+  const before = Number(await page.locator("#frame-scrubber").inputValue());
+  await page.locator("#play-pause").click();
+  await page.waitForFunction((value) => Number(document.querySelector("#frame-scrubber").value) >= value + 3, before);
+  await page.locator("#play-pause").click();
+  assert.equal(await page.locator("#playback-speed").inputValue(), "1");
 
   for (const width of [320, 390, 430]) {
     await page.setViewportSize({ width, height: 900 });

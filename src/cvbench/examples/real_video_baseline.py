@@ -1,4 +1,4 @@
-"""Small model-free motion baseline for the real-video tranche.
+"""Small model-free, class-aware motion baseline for real-video-v2.
 
 It deliberately uses only the current JPEG and the immediately preceding
 grayscale frame.  It has no scenario map, query box, labels, or ground-truth
@@ -28,6 +28,7 @@ from cvbench.protocol import receive_message
 class Track:
     identifier: str
     box: list[float]
+    class_id: str
     velocity: tuple[float, float] = (0.0, 0.0)
     misses: int = 0
     hits: int = 1
@@ -43,7 +44,7 @@ def _lifecycle_event(*, created: bool, was_missing: bool) -> str:
     return "track_started" if created else ("track_reacquired" if was_missing else "track_update")
 
 
-def _detections(payload: bytes, previous: np.ndarray | None) -> tuple[list[list[float]], np.ndarray | None]:
+def _detections(payload: bytes, previous: np.ndarray | None) -> tuple[list[tuple[list[float], str]], np.ndarray | None]:
     image = cv2.imdecode(np.frombuffer(payload, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         return [], previous
@@ -56,12 +57,17 @@ def _detections(payload: bytes, previous: np.ndarray | None) -> tuple[list[list[
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
     mask = cv2.dilate(mask, np.ones((7, 7), np.uint8), iterations=2)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    boxes: list[list[float]] = []
+    detections: list[tuple[list[float], str]] = []
     for contour in contours:
         x, y, width, height = cv2.boundingRect(contour)
         if width >= 12 and height >= 12 and width * height >= 250:
-            boxes.append([float(x), float(y), float(x + width), float(y + height)])
-    return sorted(boxes, key=lambda box: (-(box[2] - box[0]) * (box[3] - box[1]), box[0], box[1]))[:8], gray
+            box = [float(x), float(y), float(x + width), float(y + height)]
+            class_id = "person" if height >= width * 1.15 else "vehicle"
+            detections.append((box, class_id))
+    return sorted(
+        detections,
+        key=lambda item: (-(item[0][2] - item[0][0]) * (item[0][3] - item[0][1]), item[0][0], item[0][1]),
+    )[:16], gray
 
 
 def _clamp(box: list[float], width: int, height: int) -> list[float]:
@@ -83,7 +89,7 @@ def _emit(metadata: dict[str, Any], track: Track, state: str, support: str, even
                 "track_id": track.identifier,
                 "state": state,
                 "support": support,
-                "class_id": "target",
+                "class_id": track.class_id,
                 "confidence": 0.55 if support == "observed" else 0.25,
                 "geometry": {"type": "bbox_xyxy", "space": "source_pixels", "value": track.box},
             },
@@ -131,7 +137,7 @@ def main() -> int:
             detections, previous = _detections(payload, previous)
             available = set(tracks)
             matched: set[str] = set()
-            for box in detections:
+            for box, class_id in detections:
                 center = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
                 candidates = sorted(
                     (
@@ -140,7 +146,7 @@ def main() -> int:
                         identifier,
                     )
                     for identifier, track in tracks.items()
-                    if identifier in available
+                    if identifier in available and track.class_id == class_id
                 )
                 created = False
                 if candidates and candidates[0][0] <= 180**2:
@@ -149,7 +155,7 @@ def main() -> int:
                 else:
                     identifier = f"motion-{next_id}"
                     next_id += 1
-                    tracks[identifier] = Track(identifier, box)
+                    tracks[identifier] = Track(identifier, box, class_id)
                     created = True
                 track = tracks[identifier]
                 was_missing = track.was_missing

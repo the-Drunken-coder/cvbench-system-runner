@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { beforeEach, test } from "node:test";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
 
-import { canonicalJson, createApp } from "../src/app.js";
+import { canonicalJson, createApp, PUBLIC_BENCHMARK } from "../src/app.js";
 import { MemoryStore } from "./memory-store.js";
 
 const SUBMISSION_KEY = "submission-key-with-enough-entropy";
@@ -12,6 +16,7 @@ const OPERATOR_SECOND_WRITE_TOKEN = "operator-bob-write-token-with-enough-entrop
 const IMAGE = `ghcr.io/example/tracker@sha256:${"a".repeat(64)}`;
 let app;
 let store;
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
 beforeEach(() => {
   store = new MemoryStore();
@@ -36,14 +41,34 @@ test("health and machine-readable metadata are public", async () => {
   assert.match(contract.container.image, /sha256/);
   assert.match(contract.container.filesystem, /no extra mounts and no Docker socket/);
   assert.match(contract.benchmark.temporal_support, /multiple processes/);
+  assert.equal(contract.benchmark.id, "public-whole-system-tracking");
+  assert.equal(contract.benchmark.version, "2.0.0");
+  assert.equal(contract.benchmark.scenario_count, 16);
+  assert.deepEqual(contract.benchmark.scenario_ids, PUBLIC_BENCHMARK.scenario_ids);
+  assert.match(contract.benchmark.selection, /Every public v1 submission/);
   assert.match(contract.submission.terminology, /packaging, reproducibility, and security boundary/);
   assert.match(contract.submission.compatibility_names.model_version, /system version/);
   const openapi = await jsonRequest("/api/v1/openapi.json");
   assert.equal(openapi.openapi, "3.1.0");
   assert.match(openapi.info.description, /complete vision system/);
+  assert.deepEqual(openapi["x-cvbench-public-benchmark"], PUBLIC_BENCHMARK);
   assert.match(openapi.components.schemas.CreateSubmission.properties.model_version.description, /submitted system version/);
   assert.ok(openapi.components.securitySchemes.operatorReadKey);
   assert.ok(openapi.components.securitySchemes.operatorAdjudicatorKey);
+});
+
+test("public benchmark descriptor exactly matches its versioned manifest", async () => {
+  const benchmarkPath = path.join(ROOT, PUBLIC_BENCHMARK.manifest);
+  const benchmark = parseYaml(await readFile(benchmarkPath, "utf8"));
+  const scenarioIds = [];
+  for (const relative of benchmark.scenarios) {
+    const scenario = parseYaml(await readFile(path.resolve(path.dirname(benchmarkPath), relative), "utf8"));
+    scenarioIds.push(scenario.id);
+  }
+  assert.equal(benchmark.id, PUBLIC_BENCHMARK.id);
+  assert.equal(benchmark.version, PUBLIC_BENCHMARK.version);
+  assert.deepEqual(scenarioIds.sort(), [...PUBLIC_BENCHMARK.scenario_ids].sort());
+  assert.equal(scenarioIds.length, PUBLIC_BENCHMARK.scenario_count);
 });
 
 test("catalog assets keep honest status, MIME, and cache semantics", async () => {
@@ -106,6 +131,7 @@ test("submission create, public read, idempotent replay, lease, and scored resul
   assert.equal(createdResponse.status, 201);
   const created = await createdResponse.json();
   assert.equal(created.status, "queued");
+  assert.deepEqual(created.benchmark, PUBLIC_BENCHMARK);
   assert.equal(created.contact, undefined);
 
   const replayResponse = await submit(validBody(), "baseline-safe-0001");
@@ -126,6 +152,7 @@ test("submission create, public read, idempotent replay, lease, and scored resul
   const leased = await leaseResponse.json();
   assert.equal(leased.submission.id, created.id);
   assert.equal(leased.submission.attempt, 1);
+  assert.deepEqual(leased.submission.benchmark, PUBLIC_BENCHMARK);
   assert.equal(leased.lease.max_result_bytes, 1024 * 1024);
   assert.equal((await lease()).status, 204);
 
@@ -139,8 +166,23 @@ test("submission create, public read, idempotent replay, lease, and scored resul
   assert.equal(completedResponse.status, 200);
   const completed = await completedResponse.json();
   assert.equal(completed.status, "succeeded");
+  assert.deepEqual(completed.benchmark, PUBLIC_BENCHMARK);
   assert.equal(completed.result.scores.sample_counts.matches, 12);
   assert.equal((await result(created.id, { status: "failed", lease_token: leased.lease.token, error: "late" })).status, 409);
+});
+
+test("runner callbacks must match the fixed public benchmark assignment", async () => {
+  const created = await (await submit(validBody(), "wrong-suite-0001")).json();
+  const leased = await (await lease()).json();
+  const report = scoredReport();
+  report.benchmark = { id: "persistent-target-tracking", version: "1.0.0" };
+  const response = await result(created.id, {
+    status: "succeeded",
+    lease_token: leased.lease.token,
+    report,
+  });
+  assert.equal(response.status, 422);
+  assert.match((await response.json()).error.message, /assigned public suite/);
 });
 
 test("failed jobs require a bounded error and valid running lease", async () => {
@@ -449,7 +491,7 @@ test("adjudicator credentials map to distinct actors and cannot cross scopes", a
 test("Worker canonical audit hash verifies through API after parsing 1.0 as 1", async () => {
   const created = await (await submit(validBody(), "audit-hash-0001")).json();
   const leased = await (await lease()).json();
-  const rawReport = '{"outcome":{"status":"completed"},"audit_evidence":{"schema_version":"cvbench.audit/v1","numeric_probe":1.0}}';
+  const rawReport = '{"benchmark":{"id":"public-whole-system-tracking","version":"2.0.0"},"outcome":{"status":"completed"},"audit_evidence":{"schema_version":"cvbench.audit/v1","numeric_probe":1.0}}';
   const callback = await request(`/api/v1/internal/submissions/${created.id}/result`, {
     method: "POST",
     headers: { authorization: `Bearer ${RUNNER_TOKEN}`, "content-type": "application/json" },
@@ -540,6 +582,7 @@ function validBody() {
 
 function scoredReport(runtimeIsolation = { status: "verified", network_mode: "none" }) {
   return {
+    benchmark: { id: PUBLIC_BENCHMARK.id, version: PUBLIC_BENCHMARK.version },
     outcome: { status: "completed" },
     metrics: {
       sample_counts: { matches: 12, neutral_ignored_predictions: 1 },

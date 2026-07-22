@@ -19,17 +19,17 @@ test("a delayed detail request cannot overwrite the current history selection", 
   const commit = async (bundle) => { view = bundle; };
 
   const firstLoad = loader.load("synthetic-acquisition", () => first.promise, selectedId, commit);
-  url = "/scenarios/?scenario=rv1-b2c8";
-  const secondLoad = loader.load("rv1-b2c8", () => second.promise, selectedId, commit);
-  second.resolve({ detail: { id: "rv1-b2c8" }, frames: { scenario_id: "rv1-b2c8" }, annotations: { scenario_id: "rv1-b2c8" } });
+  url = "/scenarios/?scenario=rvmot-b7e2";
+  const secondLoad = loader.load("rvmot-b7e2", () => second.promise, selectedId, commit);
+  second.resolve({ detail: { id: "rvmot-b7e2" }, frames: { scenario_id: "rvmot-b7e2" }, annotations: { scenario_id: "rvmot-b7e2" } });
   assert.equal(await secondLoad, true);
   first.resolve({ detail: { id: "synthetic-acquisition" }, frames: { scenario_id: "synthetic-acquisition" }, annotations: { scenario_id: "synthetic-acquisition" } });
   assert.equal(await firstLoad, false);
 
-  assert.equal(selectedId(), "rv1-b2c8");
-  assert.equal(view.detail.id, "rv1-b2c8");
-  assert.equal(view.frames.scenario_id, "rv1-b2c8");
-  assert.equal(view.annotations.scenario_id, "rv1-b2c8");
+  assert.equal(selectedId(), "rvmot-b7e2");
+  assert.equal(view.detail.id, "rvmot-b7e2");
+  assert.equal(view.frames.scenario_id, "rvmot-b7e2");
+  assert.equal(view.annotations.scenario_id, "rvmot-b7e2");
 });
 
 test("frame retrieval status distinguishes missing from unavailable", () => {

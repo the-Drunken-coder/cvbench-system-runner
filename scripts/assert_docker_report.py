@@ -6,9 +6,9 @@ from pathlib import Path
 
 
 def main() -> None:
-    if len(sys.argv) not in {2, 3} or (len(sys.argv) == 3 and sys.argv[2] != "--real-video"):
-        raise SystemExit("usage: assert_docker_report.py RUNS [--real-video]")
-    real_video = len(sys.argv) == 3
+    if len(sys.argv) not in {2, 3} or (len(sys.argv) == 3 and sys.argv[2] not in {"--combined", "--real-video"}):
+        raise SystemExit("usage: assert_docker_report.py RUNS [--combined|--real-video]")
+    mode = sys.argv[2] if len(sys.argv) == 3 else "synthetic"
     reports = sorted(Path(sys.argv[1]).glob("*/report.json"))
     if len(reports) != 1:
         raise SystemExit(f"expected one Docker report, found {len(reports)}")
@@ -16,9 +16,35 @@ def main() -> None:
     isolation = report["runtime_isolation"]
     assert report["outcome"]["status"] == "completed", report["outcome"]
     assert report["metrics"]["sample_counts"]["matches"] > 0
-    if real_video:
-        assert report["benchmark"]["id"] == "real-video-v1"
-        assert report["metrics"]["sample_counts"]["neutral_ignored_predictions"] >= 1
+    if mode == "real-video":
+        assert report["benchmark"]["id"] == "real-video-full-frame-mot"
+        assert report["benchmark"]["version"] == "2.0.0"
+        assert report["metrics"]["multi_object_tracking"]["hota"] >= 0
+        assert report["metrics"]["multi_object_tracking"]["idf1"] >= 0
+        assert report["metrics"]["sample_counts"]["neutral_ignored_predictions"] == 0
+    elif mode == "combined":
+        assert report["benchmark"]["id"] == "public-whole-system-tracking"
+        assert report["benchmark"]["version"] == "2.0.0"
+        scenarios = report["provenance"]["comparison_inputs"]["scenarios"]
+        assert {scenario["id"] for scenario in scenarios} == {
+            "synthetic-acquisition",
+            "synthetic-false-detection",
+            "synthetic-multi-target-identity",
+            "synthetic-multi-target-pair",
+            "synthetic-occlusion-gap-1000ms",
+            "synthetic-occlusion-gap-100ms",
+            "synthetic-occlusion-gap-2000ms",
+            "synthetic-occlusion-gap-250ms",
+            "synthetic-occlusion-gap-500ms",
+            "synthetic-occlusion-reacquisition",
+            "synthetic-resource-stress",
+            "synthetic-track-id-churn",
+            "synthetic-visible-retention",
+            "rvmot-a1c9",
+            "rvmot-b7e2",
+            "rvmot-c4f6",
+        }
+        assert report["metrics"]["multi_object_tracking"]["hota"] >= 0
     else:
         assert report["metrics"]["identity"]["id_switches"] == 0
     assert isolation["status"] == "verified", isolation
