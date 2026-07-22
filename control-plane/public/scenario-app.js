@@ -1,4 +1,4 @@
-import { createLatestScenarioLoader, exactFrameFailureMessage } from "/scenario-loader.js";
+import { createLatestScenarioLoader, exactFrameFailureMessage, renderExactFrameFailure } from "/scenario-loader.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const detailLoader = createLatestScenarioLoader();
@@ -236,9 +236,7 @@ async function showFrame(index, announcement = true) {
     void prefetchNextFrames(generation);
   } catch (error) {
     if (generation !== state.generation) return;
-    mediaState.hidden = false;
-    mediaState.classList.add("error");
-    mediaState.textContent = error.message;
+    renderExactFrameFailure(mediaState, error);
   }
   if (announcement) byId("viewer-announcement").textContent = `Frame ${state.selected + 1} of ${state.frames.frames.length}, ${annotationsSummary()}.`;
 }

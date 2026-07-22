@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createLatestScenarioLoader, exactFrameFailureMessage } from "../public/scenario-loader.js";
+import { createLatestScenarioLoader, exactFrameFailureMessage, renderExactFrameFailure } from "../public/scenario-loader.js";
 
 function deferred() {
   let resolve;
@@ -32,6 +32,21 @@ test("a delayed detail request cannot overwrite the current history selection", 
   assert.equal(view.annotations.scenario_id, "rv1-b2c8");
 });
 
-test("missing frame failures are presented honestly in the media status UI", () => {
+test("frame retrieval status distinguishes missing from unavailable", () => {
   assert.equal(exactFrameFailureMessage(404), "Exact frame is missing (404).");
+  assert.equal(exactFrameFailureMessage(500), "Exact frame is unavailable because retrieval failed (500).");
+  assert.equal(exactFrameFailureMessage(503), "Exact frame is unavailable because retrieval failed (503).");
+});
+
+test("the media status UI presents retrieval failures without claiming absence", () => {
+  const classes = new Set();
+  const output = {
+    hidden: true,
+    textContent: "Verifying exact frame hash…",
+    classList: { add: (name) => classes.add(name) },
+  };
+  renderExactFrameFailure(output, new Error(exactFrameFailureMessage(503)));
+  assert.equal(output.hidden, false);
+  assert.equal(classes.has("error"), true);
+  assert.equal(output.textContent, "Exact frame is unavailable because retrieval failed (503).");
 });
