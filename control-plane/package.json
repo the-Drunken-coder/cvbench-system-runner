@@ -19,6 +19,7 @@
     "yaml": "^2.8.3"
   },
   "devDependencies": {
+    "playwright-core": "1.61.1",
     "wrangler": "4.112.0"
   }
 }

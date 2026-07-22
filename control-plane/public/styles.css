@@ -176,7 +176,7 @@ footer > div a { font: 700 .72rem var(--mono); text-transform: uppercase; }
 .frame-viewer { min-width: 0; background: var(--ink); color: white; padding: clamp(.7rem, 2vw, 1.2rem); outline: none; }
 .frame-viewer:focus-visible { box-shadow: 0 0 0 5px var(--acid); }
 .frame-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #080a08; overflow: hidden; display: grid; place-items: center; }
-.frame-stage img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.frame-stage img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
 .frame-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .media-state { position: absolute; inset: auto 1rem 1rem; margin: 0; padding: .6rem .8rem; background: rgba(16,20,16,.88); color: white; font: .72rem var(--mono); }
 .media-state.error { background: #9f1d1d; }
