@@ -190,7 +190,7 @@ def _signal_process_group(runtime: StartedRuntime, sig: signal.Signals) -> None:
         if runtime.process.poll() is None:
             runtime.process.send_signal(sig)
         return
-    with contextlib.suppress(ProcessLookupError):
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(runtime.process_group_id, sig)
 
 

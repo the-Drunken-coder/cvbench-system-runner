@@ -10,8 +10,8 @@
   },
   "validation_status": "completed",
   "benchmark_id": "real-video-full-frame-mot",
-  "run_id": "20260722T181811Z-6e6e915b",
-  "report_sha256": "1ea1fded84e99724c0c02530d0d3156f084bf4cf3a8e8d563ca8a3d33055f990",
+  "run_id": "20260722T192115Z-81763aec",
+  "report_sha256": "8c1f8a28f8aa1435b3270c9f04271daaf0cbcb1eaec9da75eee395e9a735dcdf",
   "scenarios": {
     "rvmot-a1c9": {
       "association_accuracy": 0.01789967268435054,
@@ -22,20 +22,20 @@
       "observed_coverage": 0.12146892669491526
     },
     "rvmot-b7e2": {
-      "association_accuracy": 0.044550658139304866,
-      "false_detections": 285,
-      "hota": 0.025309700105603954,
-      "idf1": 0,
+      "association_accuracy": 0.024071989997398426,
+      "false_detections": 284,
+      "hota": 0.018260074913720215,
+      "idf1": 0.0017528483786152498,
       "neutral_ignored_predictions": 0,
-      "observed_coverage": 0.17222222183333333
+      "observed_coverage": 0.13999999966666668
     },
     "rvmot-c4f6": {
-      "association_accuracy": 0.01258915470451917,
-      "false_detections": 12,
-      "hota": 0.005212525432260313,
+      "association_accuracy": 0.010551216762950765,
+      "false_detections": 11,
+      "hota": 0.004948810203275979,
       "idf1": 0,
       "neutral_ignored_predictions": 0,
-      "observed_coverage": 0.010294117588538062
+      "observed_coverage": 0.009356725087719299
     }
   }
 }

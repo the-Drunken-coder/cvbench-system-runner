@@ -144,7 +144,7 @@ test("licenses, annotation scope, scoring rules, and track churn evidence are ex
     assert.equal(scenario.annotations.scoring.scoreable_region, "full_frame");
     assert.equal(scenario.annotations.ignore_rows, 0);
     assert.deepEqual(scenario.annotations.scoreable_region.bounds, [0, 0, scenario.media.width, scenario.media.height]);
-    assert.ok(scenario.media.fps >= 24);
+    assert.equal(scenario.media.fps, 30);
     const baseline = JSON.parse(await readFile(path.join(output, scenario.baseline.manifest.url)));
     assert.ok("hota" in baseline.metrics);
     assert.ok("idf1" in baseline.metrics);
@@ -199,7 +199,7 @@ test("catalog safety helpers reject traversal, symlinks, malformed geometry, has
   await writeFile(path.join(output, "safe-name.json"), '{"contact":"private@example.invalid"}');
   await assert.rejects(outputEvidence(output), /private artifact content/);
 
-  const manifest = { id: "canary", sequence_id: "sequence", frames: [{ source_timestamp_ns: 0, width: 10, height: 10 }] };
+  const manifest = { id: "canary", sequence_id: "sequence", ontology: ["target"], frames: [{ source_timestamp_ns: 0, width: 10, height: 10 }] };
   const annotation = {
     bbox_xyxy: [0, 0, 5, 5],
     class_id: "target",
@@ -212,6 +212,7 @@ test("catalog safety helpers reject traversal, symlinks, malformed geometry, has
     visibility_fraction: 1,
   };
   assert.throws(() => sanitizeAnnotation({ ...annotation, undeclared: "canary" }, manifest, 0), /undeclared field undeclared/);
+  assert.throws(() => sanitizeAnnotation({ ...annotation, class_id: "unsupported-cat" }, manifest, 0), /outside the scenario ontology/);
   assert.throws(() => sanitizeAnnotation({ ...annotation, metadata: { api_key: "canary" } }, manifest, 0), /private-looking field api_key/);
   assert.throws(() => sanitizeAnnotation({ ...annotation, local_path: "/private/canary" }, manifest, 0), /private-looking field local_path/);
   assert.throws(() => sanitizeFault({ type: "blackout", api_key: "canary" }, "canary", 0), /private-looking field api_key/);

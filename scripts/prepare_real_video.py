@@ -13,10 +13,12 @@ import argparse
 import ast
 import hashlib
 import importlib.metadata
+import io
 import json
 import os
 import shutil
 import statistics
+import tarfile
 import time
 import urllib.error
 import urllib.request
@@ -204,18 +206,53 @@ def _median_box(boxes: list[list[int]]) -> list[int]:
     return [round(statistics.median(box[index] for box in boxes)) for index in range(4)]
 
 
-def _box_iou(left: list[float], right: list[float]) -> float:
-    intersection = max(0.0, min(left[2], right[2]) - max(left[0], right[0])) * max(
-        0.0, min(left[3], right[3]) - max(left[1], right[1])
-    )
-    left_area = (left[2] - left[0]) * (left[3] - left[1])
-    right_area = (right[2] - right[0]) * (right[3] - right[1])
-    union = left_area + right_area - intersection
-    return intersection / union if union else 0.0
+def _visual_audit() -> dict[str, Any]:
+    path = ROOT / "scenarios" / "real-video-v2" / "visual-audit.json"
+    audit = json.loads(path.read_text())
+    if audit.get("schema_version") != "cvbench.real-video-visual-audit/v1":
+        raise RuntimeError("invalid real-video visual audit schema")
+    if audit.get("annotation_commit") != MEVA_ANNOTATION_COMMIT:
+        raise RuntimeError("visual audit is not bound to the pinned annotation commit")
+    expected_manifest = ROOT / "scenarios" / "real-video-v2" / "expected-frame-sha256.txt"
+    if audit.get("frame_manifest_sha256") != _sha256(expected_manifest):
+        raise RuntimeError("visual audit is not bound to the exact prepared frame manifest")
+    if set(audit.get("clips", {})) != {clip["id"] for clip in CLIPS}:
+        raise RuntimeError("visual audit scenario set does not match the prepared corpus")
+    return audit
+
+
+def _apply_visual_corrections(
+    clip: dict[str, Any], physical: dict[str, dict[int, list[float]]], audit: dict[str, Any]
+) -> None:
+    clip_audit = audit["clips"].get(clip["id"])
+    if not clip_audit or clip_audit.get("status") not in {"complete", "corrected-and-complete"}:
+        raise RuntimeError(f"{clip['id']} lacks a completed all-frame visual audit")
+    if clip_audit.get("omitted_supported_movers") != []:
+        raise RuntimeError(f"{clip['id']} still declares omitted supported movers")
+    groups = {group["target_id"]: group for group in clip["track_groups"]}
+    for correction in clip_audit.get("corrections", []):
+        target_id = correction.get("target_id")
+        group = groups.get(target_id)
+        if not group or correction.get("class_id") != group["class_id"]:
+            raise RuntimeError(f"invalid correction target for {clip['id']}:{target_id}")
+        if correction.get("upstream_source_ids") != list(group["source_ids"]):
+            raise RuntimeError(f"correction source IDs disagree for {clip['id']}:{target_id}")
+        corrected = physical[target_id]
+        for row in correction.get("rows", []):
+            frame_index = row["frame_index"]
+            corrected[clip["start_frame"] + frame_index] = [float(value) for value in row["bbox_xyxy"]]
+        for item in correction.get("constant_box_ranges", []):
+            first, last = item["frame_indexes"]
+            for frame_index in range(first, last + 1):
+                corrected[clip["start_frame"] + frame_index] = [float(value) for value in item["bbox_xyxy"]]
 
 
 def _rows_for_clip(
-    clip: dict[str, Any], source: dict[str, Any], tracks: dict[int, dict[int, list[int]]], output_height: int
+    clip: dict[str, Any],
+    source: dict[str, Any],
+    tracks: dict[int, dict[int, list[int]]],
+    output_height: int,
+    audit: dict[str, Any],
 ) -> list[dict[str, Any]]:
     scale = TARGET_WIDTH / int(source["width"])
     physical: dict[str, dict[int, list[float]]] = {}
@@ -232,20 +269,17 @@ def _rows_for_clip(
         if not frames:
             raise RuntimeError(f"{clip['id']} physical track {group['target_id']} has no source geometry")
         physical[group["target_id"]] = frames
+    _apply_visual_corrections(clip, physical, audit)
 
     rows: list[dict[str, Any]] = []
     for group in clip["track_groups"]:
         frames = physical[group["target_id"]]
         first, last = min(frames), max(frames)
+        expected_span = set(range(first, last + 1))
+        if set(frames) != expected_span:
+            raise RuntimeError(f"{clip['id']} physical track {group['target_id']} has an unaudited visible-span gap")
         for source_frame, box in sorted(frames.items()):
             truncated = box[0] == 0 or box[1] == 0 or box[2] == TARGET_WIDTH or box[3] == output_height
-            peers = [
-                other_frames[source_frame]
-                for target_id, other_frames in physical.items()
-                if target_id != group["target_id"] and source_frame in other_frames
-            ]
-            partial = any(_box_iou(box, peer) >= 0.08 for peer in peers)
-            visibility = 0.55 if truncated and partial else (0.7 if partial else (0.8 if truncated else 1.0))
             output_index = source_frame - clip["start_frame"]
             rows.append(
                 {
@@ -255,8 +289,8 @@ def _rows_for_clip(
                     "source_timestamp_ns": round(output_index * 1_000_000_000 / FPS),
                     "on_screen": True,
                     "eligible_for_detection": True,
-                    "visibility_fraction": visibility,
-                    "occlusion": "partial" if partial else "none",
+                    "visibility_fraction": None,
+                    "occlusion": "unknown",
                     "truncated": truncated,
                     "class_id": group["class_id"],
                     "bbox_xyxy": box,
@@ -335,7 +369,7 @@ def _write_manifest(
 
 
 def _write_review_contact_sheets(clip: dict[str, Any], rows: list[dict[str, Any]], data_root: Path) -> list[str]:
-    review = ROOT / "scenarios" / "real-video-v2" / clip["id"] / "review"
+    review = data_root / "review"
     shutil.rmtree(review, ignore_errors=True)
     review.mkdir(parents=True, exist_ok=True)
     rows_by_time: dict[int, list[dict[str, Any]]] = {}
@@ -376,6 +410,24 @@ def _write_review_contact_sheets(clip: dict[str, Any], rows: list[dict[str, Any]
         cv2.imwrite(str(review / name), sheet, [cv2.IMWRITE_JPEG_QUALITY, 90])
         names.append(name)
     return names
+
+
+def _write_deterministic_tar(source: Path, destination: Path, names: list[str]) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    with tarfile.open(temporary, "w", format=tarfile.USTAR_FORMAT) as archive:
+        for name in names:
+            body = (source / name).read_bytes()
+            info = tarfile.TarInfo(name)
+            info.size = len(body)
+            info.mode = 0o644
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            info.mtime = 0
+            archive.addfile(info, io.BytesIO(body))
+    temporary.replace(destination)
 
 
 def _write_artifact_manifest(output: Path) -> None:
@@ -435,6 +487,8 @@ def prepare(output: Path) -> list[Path]:
         "clips": [],
     }
     paths = []
+    audit = _visual_audit()
+    archive_declarations: dict[str, dict[str, Any]] = {}
     for clip in CLIPS:
         source = SOURCES[clip["source"]]
         clip_output = output / clip["id"]
@@ -444,14 +498,29 @@ def prepare(output: Path) -> list[Path]:
         for group in clip["track_groups"]:
             if any(classes.get(source_id) != group["class_id"] for source_id in group["source_ids"]):
                 raise RuntimeError(f"class reconciliation mismatch for {clip['id']}:{group['target_id']}")
-        rows = _rows_for_clip(clip, source, tracks, height)
+        rows = _rows_for_clip(clip, source, tracks, height, audit)
         _write_manifest(clip_output, clip, rows, height)
         checked_in = ROOT / "scenarios" / "real-video-v2" / clip["id"]
         _write_manifest(checked_in, clip, rows, height, ROOT / "data" / "real-video-v2" / clip["id"])
-        public_frames = ROOT / "scenario-catalog" / "media" / "real-video-v2" / clip["id"] / "frames"
-        shutil.rmtree(public_frames, ignore_errors=True)
-        shutil.copytree(clip_output / "frames", public_frames)
         review_sheets = _write_review_contact_sheets(clip, rows, clip_output)
+        archives = ROOT / "scenarios" / "real-video-v2" / "archives"
+        frame_archive = archives / f"{clip['id']}.frames.tar"
+        frame_names = [f"frames/frame-{index:04d}.jpg" for index in range(FRAME_COUNT)]
+        _write_deterministic_tar(clip_output, frame_archive, frame_names)
+        review_archive = archives / f"{clip['id']}.visual-audit.tar"
+        _write_deterministic_tar(clip_output, review_archive, [f"review/{name}" for name in review_sheets])
+        archive_declarations[clip["id"]] = {
+            "frame_archive": {
+                "bytes": frame_archive.stat().st_size,
+                "path": frame_archive.relative_to(ROOT).as_posix(),
+                "sha256": _sha256(frame_archive),
+            },
+            "review_archive": {
+                "bytes": review_archive.stat().st_size,
+                "path": review_archive.relative_to(ROOT).as_posix(),
+                "sha256": _sha256(review_archive),
+            },
+        }
         provenance["clips"].append(
             {
                 "scenario_id": clip["id"],
@@ -488,6 +557,14 @@ def prepare(output: Path) -> list[Path]:
         paths.append(clip_output / "scenario.yaml")
     (output / "provenance.json").write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n")
     _write_expected_frame_manifest(output)
+    archive_manifest = {
+        "schema_version": "cvbench.real-video-archives/v1",
+        "frame_count": len(CLIPS) * FRAME_COUNT,
+        "archives": archive_declarations,
+    }
+    archive_body = json.dumps(archive_manifest, indent=2, sort_keys=True) + "\n"
+    (ROOT / "scenarios" / "real-video-v2" / "archives.json").write_text(archive_body)
+    (output / "archives.json").write_text(archive_body)
     _write_artifact_manifest(output)
     verify_artifacts(output)
     return paths

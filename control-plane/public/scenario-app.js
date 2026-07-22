@@ -172,7 +172,12 @@ function renderInspector() {
     row.append(element("strong", object.ignore ? (object.ignore_region ? "Ignore region" : "Ignore") : (realVideoDetail() ? "Tracked object" : "Target")));
     row.append(element("span", `${object.target_id} · ${object.class_id}`));
     if (object.bbox_xyxy) row.append(element("code", `[${object.bbox_xyxy.join(", ")}]`));
-    if (!object.ignore) row.append(element("small", `${object.occlusion} occlusion · ${(object.visibility_fraction * 100).toFixed(0)}% visible · ${object.truncated ? "truncated" : "not truncated"} · ${object.eligible_for_detection ? "scoreable" : "not detection-eligible"}`));
+    if (!object.ignore) {
+      const visibility = object.visibility_fraction === null
+        ? "visibility/occlusion not independently labeled"
+        : `${object.occlusion} occlusion · ${(object.visibility_fraction * 100).toFixed(0)}% visible`;
+      row.append(element("small", `${visibility} · ${object.truncated ? "truncated" : "not truncated"} · ${object.eligible_for_detection ? "scoreable" : "not detection-eligible"}`));
+    }
     list.append(row);
   }
 }

@@ -482,13 +482,13 @@ def calculate_metrics(
             target_total += duration
             target_observed += duration if is_observed else 0
             target_continuity += duration if is_continuous else 0
-            visibility = (
-                "full"
-                if row["visibility_fraction"] >= 0.8
-                else ("partial" if row["visibility_fraction"] >= 0.3 else "low")
-            )
-            coverage_by_visibility[visibility][0] += duration if is_observed else 0
-            coverage_by_visibility[visibility][1] += duration
+            visibility_fraction = row.get("visibility_fraction")
+            if visibility_fraction is not None:
+                visibility = (
+                    "full" if visibility_fraction >= 0.8 else ("partial" if visibility_fraction >= 0.3 else "low")
+                )
+                coverage_by_visibility[visibility][0] += duration if is_observed else 0
+                coverage_by_visibility[visibility][1] += duration
             family = str(row.get("scenario_family", "unknown"))
             coverage_by_scenario[family][0] += duration if is_observed else 0
             coverage_by_scenario[family][1] += duration
@@ -542,13 +542,13 @@ def calculate_metrics(
         diagonal = math.hypot(gt_box[2] - gt_box[0], gt_box[3] - gt_box[1])
         area = (gt_box[2] - gt_box[0]) * (gt_box[3] - gt_box[1])
         size = "small" if area < 32**2 else ("medium" if area < 96**2 else "large")
-        visibility = (
-            "full"
-            if match.gt["visibility_fraction"] >= 0.8
-            else ("partial" if match.gt["visibility_fraction"] >= 0.3 else "low")
-        )
         size_groups[size].append(match.iou)
-        visibility_groups[visibility].append(match.iou)
+        visibility_fraction = match.gt.get("visibility_fraction")
+        if visibility_fraction is not None:
+            visibility = (
+                "full" if visibility_fraction >= 0.8 else ("partial" if visibility_fraction >= 0.3 else "low")
+            )
+            visibility_groups[visibility].append(match.iou)
         localization_rows.append(
             {
                 "iou": match.iou,

@@ -74,6 +74,17 @@ async function capture(filename, scenario, viewport, frame = 0) {
   await page.close();
 }
 
+async function captureMissingMedia(filename, scenario, viewport) {
+  const page = await browser.newPage({ viewport });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.route("**/*.jpg", (route) => route.fulfill({ status: 404, contentType: "text/plain", body: "Not found" }));
+  await page.goto(`${origin}/scenarios/?scenario=${scenario}`);
+  await page.locator("#scenario-detail:not([hidden])").waitFor();
+  await page.locator("#media-state:not([hidden])").waitFor();
+  await page.locator("#scenario-detail").screenshot({ path: path.join(OUTPUT, filename) });
+  await page.close();
+}
+
 try {
   await capture("desktop-synthetic.png", "synthetic-acquisition", { width: 1440, height: 1100 }, 2);
   await capture("mobile-synthetic-390px.png", "synthetic-acquisition", { width: 390, height: 900 }, 2);
@@ -81,6 +92,8 @@ try {
   await capture("mobile-real-390px.png", "rvmot-c4f6", { width: 390, height: 900 }, 100);
   await capture("empty-ground-truth.png", "synthetic-false-detection", { width: 1280, height: 900 });
   await capture("long-sequence.png", "synthetic-resource-stress", { width: 1280, height: 900 }, 120);
+  await captureMissingMedia("missing-media-state.png", "rvmot-a1c9", { width: 1280, height: 900 });
+  await capture("navigation-race-final.png", "rvmot-c4f6", { width: 1280, height: 900 }, 100);
 } finally {
   await browser.close();
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

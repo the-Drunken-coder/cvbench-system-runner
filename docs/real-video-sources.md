@@ -13,8 +13,8 @@ Video sources are checksum-pinned r13 ground-camera files. Annotation sources ar
 | Scenario | Upstream sequence and inclusive frames | Native cadence | Output | Physical tracks | Label rows |
 | --- | --- | ---: | --- | ---: | ---: |
 | `rvmot-a1c9` | `2018-03-05.13-15-00.13-20-00.bus.G340.r13.avi`, 2813–2962 | 30 FPS | 150 frames, 896×504, 4.967 s | 3 (2 person, 1 vehicle) | 354 |
-| `rvmot-b7e2` | same G340 sequence, 3039–3188 | 30 FPS | 150 frames, 896×504, 4.967 s | 3 (2 person, 1 vehicle) | 360 |
-| `rvmot-c4f6` | `2018-03-05.13-20-01.13-25-01.school.G328.r13.avi`, 3272–3421 | 30 FPS | 150 frames, 896×500, 4.967 s | 7 (4 person, 3 vehicle) | 680 |
+| `rvmot-b7e2` | same G340 sequence, 3039–3188 | 30 FPS | 150 frames, 896×504, 4.967 s | 3 (2 person, 1 vehicle) | 450 |
+| `rvmot-c4f6` | `2018-03-05.13-20-01.13-25-01.school.G328.r13.avi`, 3272–3421 | 30 FPS | 150 frames, 896×500, 4.967 s | 7 (4 person, 3 vehicle) | 855 |
 
 All image pixels are scoreable. There are no real-video ignore rows and no scoreable ROI. Parked background objects that never move or participate during the clip are outside the explicit moving-object ontology; any person, vehicle, or dog that is visible and moves or participates during the sequence is labeled for its complete visible span.
 
@@ -26,13 +26,13 @@ The small closed ontology is:
 - `vehicle`: a powered road vehicle, including a temporarily stopped vehicle within an active track;
 - `dog`: a dog when present. None is present in these three sequences.
 
-Boxes use output-image `xyxy` pixels. `truncated=true` means the object continues beyond the image boundary. `occlusion=partial` means another supported object visibly covers part of it; such rows remain detection-eligible. `visibility_fraction` is 1.0 when fully visible, 0.8 for boundary truncation, 0.7 for partial supported-object occlusion, and 0.55 when both apply. Full occlusion would remain part of the stable track with `on_screen=false` and would not be detection-eligible; no selected span contains a fully occluded interval.
+Boxes use output-image `xyxy` pixels. `truncated=true` means a box touches the image boundary. MEVA does not provide independently verified per-frame occlusion depth ordering or visibility fractions for these records, so every real-video row explicitly uses `occlusion="unknown"` and `visibility_fraction=null`. These unknown values do not enter visibility-stratified coverage or localization metrics. CVBench does not infer fractions from box overlap or invent front/back ordering. All rows in these windows are visible and detection-eligible; any future fully hidden interval would remain associated with its stable track but would be marked off-screen and ineligible for detection.
 
 ## Audited corrections
 
-MEVA activity annotation can assign more than one upstream activity ID to the same physical object. The committed `CLIPS[*].track_groups` mapping in `scripts/prepare_real_video.py` is the machine-auditable correction record. When duplicate source rows exist on one frame, CVBench takes the coordinate-wise median after visually confirming they refer to the same object. Distinct overlapping people remain distinct (notably `rvmot-c4f6` `p-001` and `p-003`). No frame, box, or identity is temporally interpolated.
+MEVA activity annotation can assign more than one upstream activity ID to the same physical object and can stop geometry when an annotated activity ends even though the object remains visible. The committed `CLIPS[*].track_groups` mapping in `scripts/prepare_real_video.py` binds upstream identities. The hash-bound `scenarios/real-video-v2/visual-audit.json` ledger records every visual correction against the pinned annotation commit and exact frame manifest. It adds `rvmot-b7e2` `v-001` frames 0–89, `rvmot-c4f6` `p-004` frames 72–149 with individually reviewed boxes, and `rvmot-c4f6` `v-003` frames 0–31 and 85–149. When duplicate upstream rows exist on one frame, CVBench takes the coordinate-wise median after visually confirming they refer to the same object. Distinct overlapping people remain distinct (notably `rvmot-c4f6` `p-001` and `p-003`). No unreviewed generated or interpolated label becomes truth.
 
-Six committed 25-frame review sheets per scenario cover all 450 output frames. They were inspected against the source pixels after consolidation. The pinned annotation hashes, source-ID mapping, frame ranges, output transform, and review-sheet names are also emitted in `data/real-video-v2/provenance.json` during preparation. This evidence makes every normalization and correction reproducible without exposing any private scorer artifact—these annotations are already public.
+Six deterministic 25-frame review sheets per scenario cover all 450 output frames. They were inspected at full resolution and as contact sheets after consolidation, and are committed in three content-addressed visual-audit tar archives. The pinned annotation hashes, source-ID mapping, frame ranges, output transform, correction ledger, and review-sheet names are also emitted in `data/real-video-v2/provenance.json` during preparation. This evidence makes every normalization and correction reproducible without exposing any private scorer artifact—these annotations are already public.
 
 ## Deterministic preparation
 
@@ -44,7 +44,7 @@ CVBENCH_REAL_VIDEO_PREP_IMAGE=cvbench-real-video-prep:v2 scripts/prepare_real_vi
 CVBENCH_REAL_VIDEO_PREP_IMAGE=cvbench-real-video-prep:v2 scripts/prepare_real_video_container.sh --output data/real-video-v2 --verify-only
 ```
 
-Preparation preserves all 150 consecutive source frames per scenario and the native 30 FPS rational timestamps. It performs one aspect-preserving downscale, then deterministic JPEG quality-78 encoding. It never duplicates, interpolates, or skips frames. `artifacts.sha256` binds the runtime corpus; `scenarios/real-video-v2/expected-frame-sha256.txt` binds all 450 published JPEGs.
+Preparation preserves all 150 consecutive source frames per scenario and the exact native 30 FPS rational timestamps. It performs one aspect-preserving downscale, then deterministic JPEG quality-78 encoding. It never duplicates, interpolates, or skips frames. Six deterministic tar archives replace hundreds of loose source files: three frame archives hydrate a fresh trusted runner and the public catalog, and three audit archives retain the all-frame visual evidence. `archives.json` binds their sizes and hashes, `artifacts.sha256` binds the hydrated runtime corpus, and `expected-frame-sha256.txt` binds all 450 published JPEGs.
 
 ## Scoring and execution
 

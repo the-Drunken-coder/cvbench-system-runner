@@ -425,12 +425,10 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     except (OSError, RuntimeFailure, TimeoutError) as exc:
         outcome.errors.append(str(exc))
         outcome.timed_out = isinstance(exc, TimeoutError) or outcome.timed_out
-        process_had_exited = runtime is not None and runtime.process.poll() is not None
         if runtime is not None:
-            stop_runtime(runtime, 0)
-        if runtime is not None:
-            outcome.exit_code = runtime.process.poll()
-            outcome.crashed = process_had_exited and outcome.exit_code not in {0, None} and not outcome.timed_out
+            exit_code, forced = stop_runtime(runtime, 0.1)
+            outcome.exit_code = exit_code
+            outcome.crashed = exit_code not in {0, None} and not forced and not outcome.timed_out
     finally:
         server.close()
         if monitor is not None:

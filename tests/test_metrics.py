@@ -207,6 +207,15 @@ def test_freshness_requires_exact_source_timestamp() -> None:
     assert metrics["sample_counts"]["matches"] == 0
 
 
+def test_unknown_visibility_does_not_invent_score_strata() -> None:
+    row = gt(0)
+    row["visibility_fraction"] = None
+    row["occlusion"] = "unknown"
+    metrics, _ = calculate_metrics([row], [output(0)], Thresholds())
+    assert metrics["coverage"]["by_visibility"] == {}
+    assert metrics["localization"]["mean_iou_by_visibility"] == {}
+
+
 def test_ignore_annotations_neutralize_unmatched_predictions_after_target_matching() -> None:
     target = gt(0, box=[0, 0, 10, 10])
     ignored = gt(0, target="ignore-1", box=[20, 20, 40, 40])

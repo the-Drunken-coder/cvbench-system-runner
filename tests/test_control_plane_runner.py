@@ -157,6 +157,7 @@ def test_execution_timeout_still_runs_unique_label_cleanup(tmp_path: Path) -> No
         "argv": ["python", "-m", "tracker"],
     }
     with (
+        patch("scripts.run_control_plane_job.hydrate"),
         patch(
             "scripts.run_control_plane_job.subprocess.run",
             side_effect=subprocess.TimeoutExpired(["docker", "pull"], 600),

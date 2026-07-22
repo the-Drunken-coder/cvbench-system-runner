@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -9,6 +12,7 @@ import yaml
 from cvbench.config import Thresholds
 from cvbench.metrics import calculate_metrics
 from cvbench.model import CollectedRecord
+from scripts.hydrate_real_video_corpus import _extract_frames, _validated_archive
 from scripts.prepare_real_video import CLIPS, FPS, FRAME_COUNT, MEVA_ANNOTATION_COMMIT, SOURCES
 
 ROOT = Path(__file__).parents[1]
@@ -47,7 +51,8 @@ def test_replacement_sources_are_pinned_upstream_labeled_meva_sequences() -> Non
     assert len(CLIPS) == 3
     assert set(SOURCES) == {"G328", "G340"}
     assert len(MEVA_ANNOTATION_COMMIT) == 40
-    assert all(source["fps"] >= 24 for source in SOURCES.values())
+    assert FPS == 30
+    assert all(source["fps"] == FPS for source in SOURCES.values())
     assert all(len(source["sha256"]) == 64 for source in SOURCES.values())
     assert all(len(source["geom_sha256"]) == 64 for source in SOURCES.values())
     assert all(len(source["types_sha256"]) == 64 for source in SOURCES.values())
@@ -73,6 +78,10 @@ def test_real_scenarios_are_full_frame_native_cadence_and_have_no_ignores() -> N
             for left, right in zip(manifest["frames"], manifest["frames"][1:], strict=False)
         ]
         assert set(intervals) == {33_333_333, 33_333_334}
+        assert all(
+            frame["source_timestamp_ns"] == round(frame["frame_index"] * 1_000_000_000 / 30)
+            for frame in manifest["frames"]
+        )
         assert all(not row.get("ignore", False) for row in rows)
         assert all(row["on_screen"] and row["eligible_for_detection"] for row in rows)
         assert {row["class_id"] for row in rows} <= {"person", "vehicle", "dog"}
@@ -103,10 +112,31 @@ def test_physical_track_corrections_are_explicit_and_frame_unique() -> None:
         keys = [(row["source_timestamp_ns"], row["target_id"]) for row in rows]
         assert len(keys) == len(set(keys))
         assert all(isinstance(row["truncated"], bool) for row in rows)
-        assert all(row["occlusion"] in {"none", "partial"} for row in rows)
-        assert all(0 < row["visibility_fraction"] <= 1 for row in rows)
-        review = ROOT / "scenarios" / "real-video-v2" / clip["id"] / "review"
-        assert len(list(review.glob("*.jpg"))) == 6
+        assert all(row["occlusion"] == "unknown" for row in rows)
+        assert all(row["visibility_fraction"] is None for row in rows)
+        archive = ROOT / "scenarios" / "real-video-v2" / "archives" / f"{clip['id']}.visual-audit.tar"
+        assert archive.is_file()
+
+
+def test_visual_audit_closes_every_supported_mover_span() -> None:
+    audit = json.loads((ROOT / "scenarios" / "real-video-v2" / "visual-audit.json").read_text())
+    assert audit["schema_version"] == "cvbench.real-video-visual-audit/v1"
+    assert set(audit["clips"]) == {clip["id"] for clip in CLIPS}
+    assert all(item["omitted_supported_movers"] == [] for item in audit["clips"].values())
+    frame_manifest = (ROOT / "scenarios" / "real-video-v2" / "expected-frame-sha256.txt").read_bytes()
+    assert audit["frame_manifest_sha256"] == hashlib.sha256(frame_manifest).hexdigest()
+    spans = {}
+    for clip in CLIPS:
+        rows = _rows(clip["id"])
+        for target in {row["target_id"] for row in rows}:
+            timestamps = [row["source_timestamp_ns"] for row in rows if row["target_id"] == target]
+            spans[(clip["id"], target)] = (
+                round(min(timestamps) * 30 / 1e9),
+                round(max(timestamps) * 30 / 1e9),
+            )
+    assert spans[("rvmot-b7e2", "v-001")] == (0, 149)
+    assert spans[("rvmot-c4f6", "p-004")] == (32, 149)
+    assert spans[("rvmot-c4f6", "v-003")] == (0, 149)
 
 
 def test_expected_frame_manifest_covers_exact_corpus() -> None:
@@ -114,6 +144,41 @@ def test_expected_frame_manifest_covers_exact_corpus() -> None:
     assert len(lines) == len(CLIPS) * FRAME_COUNT
     assert len({line.split("  ", 1)[1] for line in lines}) == len(lines)
     assert all(len(line.split("  ", 1)[0]) == 64 for line in lines)
+
+
+def test_hydrator_rejects_nonregular_tar_entries(tmp_path: Path) -> None:
+    archive = tmp_path / "frames.tar"
+    with tarfile.open(archive, "w", format=tarfile.USTAR_FORMAT) as handle:
+        for index in range(FRAME_COUNT):
+            member = tarfile.TarInfo(f"frames/frame-{index:04d}.jpg")
+            if index == 0:
+                member.type = tarfile.SYMTYPE
+                member.linkname = "../secret"
+                handle.addfile(member)
+            else:
+                member.size = 1
+                handle.addfile(member, io.BytesIO(b"x"))
+    expected = {f"canary/frames/frame-{index:04d}.jpg": "0" * 64 for index in range(FRAME_COUNT)}
+    with pytest.raises(RuntimeError, match="non-regular"):
+        _extract_frames(archive, tmp_path / "output", "canary", expected)
+
+
+def test_hydrator_rejects_ancestor_directory_symlink(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    archive_root = real / "scenarios" / "real-video-v2" / "archives"
+    archive_root.mkdir(parents=True)
+    archive = archive_root / "rvmot-a1c9.frames.tar"
+    archive.write_bytes(b"tar")
+    linked_repo = tmp_path / "repo"
+    linked_repo.mkdir()
+    (linked_repo / "scenarios").symlink_to(real / "scenarios", target_is_directory=True)
+    declaration = {
+        "bytes": archive.stat().st_size,
+        "path": "scenarios/real-video-v2/archives/rvmot-a1c9.frames.tar",
+        "sha256": "0" * 64,
+    }
+    with pytest.raises(RuntimeError, match="symlink"):
+        _validated_archive(linked_repo, declaration, "rvmot-a1c9")
 
 
 def test_perfect_multi_object_tracking_scores_perfect_hota_and_idf1() -> None:

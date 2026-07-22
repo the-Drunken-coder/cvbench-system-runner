@@ -112,7 +112,7 @@ sources:
     native_fps: 30 FPS
     transformation: Exact consecutive frames downscaled from 1920x1080 to 896x504 without aspect distortion and re-encoded as deterministic JPEG quality 78; upstream boxes scaled to output pixels.
     annotation_provenance: Per-frame MEVA geometry and types records supply class, box, and upstream identity; every output frame was visually inspected.
-    corrections: Upstream activity IDs [20,22,39] map to p-001, [21,40] to p-002, and [23] to v-001 after visually verified same-object reconciliation; coordinate medians resolve duplicate boxes; no temporal interpolation.
+    corrections: Upstream activity IDs [20,22,39] map to p-001, [21,40] to p-002, and [23] to v-001; the hash-bound visual audit extends the visibly present v-001 through frames 0–89; coordinate medians resolve duplicate boxes; no temporal interpolation is accepted as truth.
     source_sha256: 6a99ed045f9d29a77f726856298d75b8a0890621242f90535316b303e06afd34
     annotation_geom_sha256: 40236c84c263fb8c7764e888656600bfa720a5eaf2c96348b0567d4349dcdf1f
     annotation_types_sha256: 3702fb5c75dee26c7dcd28ca95b0ae49662455da60433ea8574819fcb0553eb7
@@ -131,7 +131,7 @@ sources:
     native_fps: 30 FPS
     transformation: Exact consecutive frames downscaled from 1920x1072 to 896x500 without aspect distortion and re-encoded as deterministic JPEG quality 78; upstream boxes scaled to output pixels.
     annotation_provenance: Per-frame MEVA geometry and types records supply class, box, and upstream identity; every output frame was visually inspected.
-    corrections: Upstream activity IDs are reconciled by the committed preparation mapping into four people and three vehicles after frame-by-frame review; coordinate medians resolve duplicate boxes; no temporal interpolation.
+    corrections: Upstream activity IDs are reconciled into four people and three vehicles; the hash-bound visual audit extends p-004 through frames 72–149 and v-003 through frames 0–31 and 85–149; coordinate medians resolve duplicate boxes; no temporal interpolation is accepted as truth.
     source_sha256: 64102272e6611681dbcf7d6fa5ac7aa939595ce29d54151ff604c077e9061dd1
     annotation_geom_sha256: fa7c62bce3bac7a49189ff1eb36f7f0c17be8b42a2053aecf50cceaff956cd42
     annotation_types_sha256: 52a5e77f2372c6ab8ef130bcff6cad617aa96a8b33595175817d60c03812ac63

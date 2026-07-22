@@ -18,6 +18,11 @@ from typing import Any
 from cvbench.audit import AUDIT_EVIDENCE_MAX_BYTES
 from cvbench.json_contract import serialized_json_bytes
 
+try:
+    from scripts.hydrate_real_video_corpus import hydrate
+except ModuleNotFoundError:  # Direct `python scripts/run_control_plane_job.py` execution.
+    from hydrate_real_video_corpus import hydrate
+
 IMAGE_PATTERN = re.compile(
     r"^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?/)?"
     r"[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$"
@@ -244,6 +249,7 @@ def execute_submission(repository: Path, submission: dict[str, Any], work: Path)
         raise ValueError("submission ID is invalid")
     environment["CVBENCH_DOCKER_JOB_ID"] = job_id
     try:
+        hydrate(repository)
         subprocess.run(
             ["docker", "pull", "--platform", "linux/amd64", image],
             cwd=repository,
@@ -282,11 +288,17 @@ def execute_submission(repository: Path, submission: dict[str, Any], work: Path)
         if benchmark.get("id") != PUBLIC_BENCHMARK_ID or benchmark.get("version") != PUBLIC_BENCHMARK_VERSION:
             raise RuntimeError("benchmark report does not match the assigned public suite")
         reported_scenarios = report.get("provenance", {}).get("comparison_inputs", {}).get("scenarios", [])
+        reported_ids = (
+            [scenario.get("id") for scenario in reported_scenarios]
+            if isinstance(reported_scenarios, list)
+            else []
+        )
         if (
             not isinstance(reported_scenarios, list)
             or len(reported_scenarios) != len(PUBLIC_SCENARIO_IDS)
             or not all(isinstance(scenario, dict) for scenario in reported_scenarios)
-            or {scenario.get("id") for scenario in reported_scenarios} != PUBLIC_SCENARIO_IDS
+            or len(set(reported_ids)) != len(reported_ids)
+            or set(reported_ids) != PUBLIC_SCENARIO_IDS
         ):
             raise RuntimeError("benchmark report scenario set does not match the assigned public suite")
         isolation = report.get("runtime_isolation", {})

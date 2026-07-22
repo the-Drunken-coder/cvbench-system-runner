@@ -8,8 +8,10 @@ import hashlib
 from pathlib import Path
 
 try:
+    from scripts.hydrate_real_video_corpus import _load_archives, _load_expected, _validated_archive
     from scripts.prepare_real_video import CLIPS, FRAME_COUNT, verify_artifacts
 except ModuleNotFoundError:  # Direct execution from the preparation image.
+    from hydrate_real_video_corpus import _load_archives, _load_expected, _validated_archive
     from prepare_real_video import CLIPS, FRAME_COUNT, verify_artifacts
 
 
@@ -24,19 +26,17 @@ def verify(repo_root: Path) -> str:
     committed_manifest = repo_root / "scenarios" / "real-video-v2" / "expected-frame-sha256.txt"
     if prepared_manifest.read_bytes() != committed_manifest.read_bytes():
         raise RuntimeError("prepared and committed frame manifests differ")
-    expected = {}
-    for line in committed_manifest.read_text().splitlines():
-        digest, relative = line.split("  ", 1)
-        expected[relative] = digest
+    expected = _load_expected(repo_root)
     if len(expected) != len(CLIPS) * FRAME_COUNT:
         raise RuntimeError(f"expected {len(CLIPS) * FRAME_COUNT} frame hashes, found {len(expected)}")
     for relative, digest in expected.items():
         actual = _sha256(output / relative)
         if actual != digest:
             raise RuntimeError(f"frame checksum mismatch for {relative}: expected {digest}, got {actual}")
-        published = repo_root / "scenario-catalog" / "media" / "real-video-v2" / relative
-        if not published.is_file() or _sha256(published) != digest:
-            raise RuntimeError(f"published frame checksum mismatch for {relative}")
+    archives = _load_archives(repo_root)
+    for clip in CLIPS:
+        declaration = archives["archives"][clip["id"]]["frame_archive"]
+        _validated_archive(repo_root, declaration, clip["id"])
     for clip in CLIPS:
         prepared = output / clip["id"] / "ground_truth.jsonl"
         committed = repo_root / "scenarios" / "real-video-v2" / clip["id"] / "ground_truth.jsonl"

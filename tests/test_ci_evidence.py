@@ -1,9 +1,12 @@
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 from scripts.assert_docker_report import _parse_mode
+from scripts.assert_docker_report import main as assert_docker_report
+from scripts.evidence_hashes import main as evidence_hashes
 from scripts.sanitize_ci_report import sanitize_runs
 from scripts.verify_ci_evidence import _assert_safe, main
 
@@ -20,6 +23,49 @@ def test_docker_report_mode_flags_reach_their_named_contract(argv: list[str], ex
     assert _parse_mode(argv) == expected
 
 
+def test_combined_report_rejects_duplicate_scenario_even_when_set_is_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenario_ids = [
+        "synthetic-acquisition",
+        "synthetic-false-detection",
+        "synthetic-multi-target-identity",
+        "synthetic-multi-target-pair",
+        "synthetic-occlusion-gap-1000ms",
+        "synthetic-occlusion-gap-100ms",
+        "synthetic-occlusion-gap-2000ms",
+        "synthetic-occlusion-gap-250ms",
+        "synthetic-occlusion-gap-500ms",
+        "synthetic-occlusion-reacquisition",
+        "synthetic-resource-stress",
+        "synthetic-track-id-churn",
+        "synthetic-visible-retention",
+        "rvmot-a1c9",
+        "rvmot-b7e2",
+        "rvmot-c4f6",
+    ]
+    run = tmp_path / "runs" / "one"
+    run.mkdir(parents=True)
+    report = {
+        "outcome": {"status": "completed"},
+        "benchmark": {"id": "public-whole-system-tracking", "version": "2.0.0"},
+        "metrics": {
+            "sample_counts": {"matches": 1},
+            "multi_object_tracking": {"hota": 0},
+        },
+        "provenance": {
+            "comparison_inputs": {
+                "scenarios": [{"id": scenario_id} for scenario_id in [*scenario_ids, scenario_ids[0]]]
+            }
+        },
+        "runtime_isolation": {},
+    }
+    (run / "report.json").write_text(json.dumps(report))
+    monkeypatch.setattr("sys.argv", ["assert_docker_report.py", str(tmp_path / "runs"), "--combined"])
+    with pytest.raises(AssertionError):
+        assert_docker_report()
+
+
 def test_safe_report_and_resources_are_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     run = tmp_path / "runs" / "one"
     run.mkdir(parents=True)
@@ -29,6 +75,19 @@ def test_safe_report_and_resources_are_accepted(tmp_path: Path, monkeypatch: pyt
     manifest.write_text("a" * 64 + "  frame.jpg\n")
     monkeypatch.setattr("sys.argv", ["verify_ci_evidence.py", str(tmp_path / "runs"), str(manifest)])
     main()
+
+
+def test_evidence_hash_manifest_binds_exact_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "report.json").write_text('{"outcome":"completed"}\n')
+    (tmp_path / "resources.csv").write_text("elapsed_ms\n100\n")
+    monkeypatch.setattr(sys, "argv", ["evidence_hashes.py", "evidence.sha256", "report.json", "resources.csv"])
+    assert evidence_hashes() == 0
+    monkeypatch.setattr(sys, "argv", ["evidence_hashes.py", "evidence.sha256", "--verify"])
+    assert evidence_hashes() == 0
+    (tmp_path / "report.json").write_text("changed")
+    with pytest.raises(RuntimeError, match="hash mismatch"):
+        evidence_hashes()
 
 
 def test_restricted_ground_truth_payload_is_rejected(tmp_path: Path) -> None:

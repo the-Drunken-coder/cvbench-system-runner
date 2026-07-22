@@ -32,7 +32,7 @@ def main() -> None:
         assert report["benchmark"]["id"] == "public-whole-system-tracking"
         assert report["benchmark"]["version"] == "2.0.0"
         scenarios = report["provenance"]["comparison_inputs"]["scenarios"]
-        assert {scenario["id"] for scenario in scenarios} == {
+        expected_ids = {
             "synthetic-acquisition",
             "synthetic-false-detection",
             "synthetic-multi-target-identity",
@@ -50,6 +50,12 @@ def main() -> None:
             "rvmot-b7e2",
             "rvmot-c4f6",
         }
+        assert isinstance(scenarios, list)
+        assert len(scenarios) == len(expected_ids)
+        assert all(isinstance(scenario, dict) for scenario in scenarios)
+        scenario_ids = [scenario.get("id") for scenario in scenarios]
+        assert len(set(scenario_ids)) == len(scenario_ids)
+        assert set(scenario_ids) == expected_ids
         assert report["metrics"]["multi_object_tracking"]["hota"] >= 0
     else:
         assert report["metrics"]["identity"]["id_switches"] == 0

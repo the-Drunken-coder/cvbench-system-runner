@@ -5,9 +5,9 @@ For each `(sequence_id, source_timestamp_ns)`, ground-truth targets and track re
 The report keeps categories separate:
 
 - Acquisition: eligible/acquired/never acquired, rate, exact per-target latency, percentiles, and configurable deadlines.
-- Coverage and continuity: frame-duration-weighted observed coverage versus observed-or-predicted continuity, by target, scenario, and visibility.
+- Coverage and continuity: frame-duration-weighted observed coverage versus observed-or-predicted continuity, by target and scenario, plus visibility strata only where ground truth supplies a verified numeric visibility fraction.
 - Visible dropouts: contiguous eligible-visible intervals without a correct observed match, above the declared tolerance.
-- Localization: IoU, pixel and normalized center error, size error, visibility groups, and size groups.
+- Localization: IoU, pixel and normalized center error, size error, verified visibility groups, and size groups. Explicitly unknown visibility values are omitted from visibility strata rather than assigned a heuristic bucket.
 - Identity: switches, fragments, duplicates, merges/splits, and normalized switch rate.
 - Dense multi-object tracking: class-aware HOTA over IoU thresholds 0.05 through 0.95, plus global-assignment IDF1 at IoU 0.5. Reports include DetA, AssA, LocA, misses, false tracks, and per-scenario results.
 - False output: unmatched detections, births, persistence, track-seconds, confidence, and scenario.
