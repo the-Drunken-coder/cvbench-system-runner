@@ -1,6 +1,8 @@
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const MAX_SUBMISSION_BYTES = 16 * 1024;
 const MAX_RESULT_BYTES = 1024 * 1024;
+const MAX_OPERATOR_NOTE_BYTES = 8 * 1024;
+const VALID_JOB_STATUSES = new Set(["queued", "running", "succeeded", "failed"]);
 const IMAGE_PATTERN = /^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?\/)?[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$/;
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -10,6 +12,7 @@ export function createApp(options) {
     assets: options.assets,
     submissionKeys: splitKeys(options.submissionKeys),
     runnerToken: String(options.runnerToken || ""),
+    operatorToken: String(options.operatorToken || ""),
     maxSubmissionsPerHour: boundedInteger(options.maxSubmissionsPerHour, 20, 1, 1000),
     leaseSeconds: boundedInteger(options.leaseSeconds, 3000, 60, 7200),
   };
@@ -135,6 +138,47 @@ async function route(request, config) {
     return json({ requeued });
   }
 
+  const operatorMatch = url.pathname.match(/^\/api\/v1\/operator\/jobs(?:\/([^/]+)(?:\/(audit|evidence|notes))?)?$/);
+  if (operatorMatch) {
+    if (!(await authorized(bearerToken(request), [config.operatorToken]))) return unauthorized("operator token");
+    const id = operatorMatch[1];
+    const subresource = operatorMatch[2];
+    if (!id) {
+      if (request.method !== "GET") return problem(405, "method_not_allowed", "Only GET is supported for the operator job list.");
+      const status = url.searchParams.get("status") || "";
+      const model = url.searchParams.get("model") || "";
+      const limit = boundedInteger(url.searchParams.get("limit"), 25, 1, 100);
+      if (status && !VALID_JOB_STATUSES.has(status)) return problem(400, "invalid_status", "status must be queued, running, succeeded, or failed.");
+      const cursor = parseCursor(url.searchParams.get("cursor"));
+      if (url.searchParams.has("cursor") && !cursor) return problem(400, "invalid_cursor", "cursor must be a timestamp and UUID returned by the operator list.");
+      const page = await config.store.listSubmissions({ status, model, limit, cursor });
+      return json({ schema_version: "cvbench.operator/v1", jobs: page.rows.map((row) => operatorSummary(row, page.rows)), next_cursor: encodeCursor(page.nextCursor) });
+    }
+    if (!ID_PATTERN.test(id)) return problem(404, "not_found", "Job not found.");
+    const row = await config.store.getSubmission(id);
+    if (!row) return problem(404, "not_found", "Job not found.");
+    if (request.method === "GET" && !subresource) return json(await operatorDetail(row, config.store));
+    if (request.method === "GET" && subresource === "audit") return json(await operatorAudit(row, config.store));
+    if (request.method === "GET" && subresource === "evidence") return json(operatorEvidence(row));
+    if (request.method === "GET" && subresource === "notes") return json({ schema_version: "cvbench.operator/v1", notes: await config.store.listOperatorNotes(id) });
+    if (request.method === "POST" && subresource === "notes") {
+      const parsed = await readJson(request, MAX_OPERATOR_NOTE_BYTES);
+      if (parsed.error) return parsed.error;
+      const validation = validateOperatorNote(parsed.value);
+      if (validation.error) return problem(422, "invalid_operator_note", validation.error);
+      const note = await config.store.addOperatorNote({
+        id: crypto.randomUUID(),
+        submissionId: id,
+        verdict: validation.value.verdict,
+        note: validation.value.note,
+        createdAt: unixTime(),
+        operatorKeyHash: await sha256(bearerToken(request)),
+      });
+      return json(note, 201);
+    }
+    return problem(405, "method_not_allowed", "Unsupported operator job operation.");
+  }
+
   return problem(404, "not_found", "API route not found.");
 }
 
@@ -211,13 +255,155 @@ function publicSubmission(value) {
     status: value.status,
     model: { name: value.name, version: value.modelVersion, image: value.image, argv: value.argv },
     attempt: value.attempt,
-    result: value.result,
+    result: publicResultSummary(value.result),
     error: value.error,
     created_at: iso(value.createdAt),
     updated_at: iso(value.updatedAt),
     started_at: iso(value.startedAt),
     completed_at: iso(value.completedAt),
   };
+}
+
+function operatorSummary(value, rows = []) {
+  const report = value.result;
+  const provenance = report?.provenance || {};
+  const runner = report?.runner || report?.control_plane?.runner || {};
+  const audit = report?.audit_evidence;
+  const duplicateModel = rows.some((other) => other.id !== value.id && other.image === value.image);
+  return {
+    id: value.id,
+    status: value.status,
+    model: { name: value.name, version: value.modelVersion, image: value.image, argv: value.argv },
+    queue: {
+      attempt: value.attempt,
+      retries: Math.max(0, value.attempt - 1),
+      created_at: iso(value.createdAt),
+      updated_at: iso(value.updatedAt),
+      started_at: iso(value.startedAt),
+      completed_at: iso(value.completedAt),
+      lease_expires_at: iso(value.leaseExpiresAt),
+    },
+    provenance: {
+      benchmark: report?.benchmark || { id: "persistent-target-tracking", version: "1.0.0" },
+      scenario_manifests: provenance.scenario_manifests || [],
+      comparison_fingerprint: provenance.comparison_fingerprint || null,
+      runner_commit: runner.commit || null,
+    },
+    checks: { workflow_run_url: runner.workflow_run_url || null, check_links: runner.check_links || [] },
+    scores: scoreSummary(report),
+    diagnostics: {
+      failure_reason: value.error || report?.outcome?.errors?.[0] || null,
+      finding_count: Array.isArray(report?.findings) ? report.findings.length : 0,
+      audit_flag_count: Array.isArray(audit?.flags) ? audit.flags.filter((flag) => flag.status === "flagged").length : 0,
+      duplicate_model_fingerprint: duplicateModel ? "review" : "clear",
+    },
+    result_available: Boolean(report),
+  };
+}
+
+async function operatorDetail(value, store) {
+  return {
+    schema_version: "cvbench.operator/v1",
+    job: operatorSummary(value),
+    raw_result: value.result,
+    notes: await store.listOperatorNotes(value.id),
+  };
+}
+
+async function operatorAudit(value, store) {
+  const report = value.result;
+  const evidence = report?.audit_evidence || null;
+  const flags = evidence?.flags ? [...evidence.flags] : [{ id: "run_pending", status: "pending", review_aid_only: true, reason: "No result has been recorded." }];
+  if (report) {
+    const perfect = scoreSummary(report).perfect;
+    const allRows = (await store.listSubmissions({ limit: 100 })).rows;
+    const fingerprint = await reportFingerprint(report);
+    const fingerprints = await Promise.all(allRows.map(async (other) => ({ id: other.id, fingerprint: other.result ? await reportFingerprint(other.result) : null })));
+    const duplicateResult = fingerprints.some((other) => other.id !== value.id && other.fingerprint === fingerprint);
+    flags.push({ id: "duplicate_result_fingerprint", status: duplicateResult ? "flagged" : "clear", severity: "medium", review_aid_only: true, reason: duplicateResult ? "Another stored result has the same canonical report fingerprint." : "No duplicate canonical report fingerprint was found." });
+    if (perfect) flags.push({ id: "score_review", status: "review", severity: "medium", review_aid_only: true, reason: "Perfect scores require human review, not automatic rejection." });
+  }
+  return {
+    schema_version: "cvbench.audit/v1",
+    disposition: "review_aid_only",
+    automatic_disqualification: false,
+    job_id: value.id,
+    flags,
+    score_components: scoreSummary(report),
+    fairness: {
+      counted_from: "deterministic frame/target matching",
+      explainable_evidence: Boolean(evidence?.frame_samples?.length),
+      adjudication: `/api/v1/operator/jobs/${value.id}/notes`,
+    },
+  };
+}
+
+async function reportFingerprint(report) {
+  return sha256(stableJson(report));
+}
+
+function operatorEvidence(value) {
+  const report = value.result || {};
+  return {
+    schema_version: "cvbench.audit/v1",
+    job_id: value.id,
+    audit_evidence: report.audit_evidence || null,
+    artifacts: report.provenance?.evidence_artifacts || [],
+    raw_artifact_policy: "Large raw JSONL/video artifacts stay in trusted runner storage and require controlled, expiring links.",
+  };
+}
+
+function scoreSummary(report) {
+  const metrics = report?.metrics || {};
+  const sampleCounts = metrics.sample_counts || {};
+  return {
+    sample_counts: sampleCounts,
+    acquisition_rate: metrics.acquisition?.rate ?? null,
+    observed_coverage: metrics.coverage?.overall_observed ?? null,
+    continuity_coverage: metrics.coverage?.overall_continuity ?? null,
+    mean_iou: metrics.localization?.mean_iou ?? null,
+    id_switches: metrics.identity?.id_switches ?? null,
+    false_track_births: metrics.false_detections?.track_births ?? null,
+    reacquisition_same_id_rate: metrics.reacquisition?.same_id_rate ?? null,
+    latency_p50_ms: metrics.latency?.median ?? null,
+    latency_p99_ms: metrics.latency?.p99 ?? null,
+    perfect: metrics.coverage?.overall_observed === 1 && metrics.localization?.mean_iou === 1 && metrics.identity?.id_switches === 0 && metrics.false_detections?.track_births === 0,
+  };
+}
+
+function publicResultSummary(report) {
+  if (!report) return null;
+  return {
+    outcome: report.outcome ? { status: report.outcome.status, exit_code: report.outcome.exit_code ?? null } : null,
+    benchmark: report.benchmark || null,
+    scores: scoreSummary(report),
+    findings: Array.isArray(report.findings)
+      ? report.findings.map((finding) => ({ finding_id: finding.finding_id, category: finding.category, severity: finding.severity, statement: finding.interpretation?.statement || null }))
+      : [],
+    provenance: {
+      comparison_fingerprint: report.provenance?.comparison_fingerprint || null,
+      resolved_container_image: report.provenance?.resolved_container_image || null,
+    },
+  };
+}
+
+function validateOperatorNote(value) {
+  if (!isObject(value)) return { error: "Request body must be a JSON object." };
+  if (unknownKeys(value, ["verdict", "note"]).length) return { error: "Only verdict and note are accepted." };
+  if (!["unreviewed", "needs_review", "adjudicated", "accepted", "rejected"].includes(value.verdict)) return { error: "verdict is invalid." };
+  const note = cleanText(value.note, "note", 1, 4000);
+  if (note.error) return note;
+  return { value: { verdict: value.verdict, note: note.value } };
+}
+
+function parseCursor(value) {
+  if (!value) return null;
+  const match = value.match(/^(\d+):([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/);
+  return match ? { createdAt: Number(match[1]), id: match[2] } : null;
+}
+
+function encodeCursor(value) {
+  return value ? `${value.createdAt}:${value.id}` : null;
 }
 
 function runnerSubmission(value) {
@@ -388,9 +574,43 @@ export const OPENAPI = {
         responses: { 200: { description: "Public submission status/result" }, 404: { description: "Not found" } },
       },
     },
+    "/api/v1/operator/jobs": {
+      get: {
+        operationId: "listOperatorJobs",
+        security: [{ operatorKey: [] }],
+        parameters: [
+          { name: "status", in: "query", schema: { type: "string", enum: ["queued", "running", "succeeded", "failed"] } },
+          { name: "model", in: "query", schema: { type: "string", maxLength: 100 } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 25 } },
+          { name: "cursor", in: "query", schema: { type: "string" } },
+        ],
+        responses: { 200: { description: "Operator queue page with a stable next cursor" }, 401: { description: "Operator token required" } },
+      },
+    },
+    "/api/v1/operator/jobs/{id}": {
+      get: {
+        operationId: "getOperatorJob",
+        security: [{ operatorKey: [] }],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { 200: { description: "Operator detail and raw bounded report" }, 401: { description: "Operator token required" } },
+      },
+    },
+    "/api/v1/operator/jobs/{id}/audit": {
+      get: { operationId: "getOperatorAudit", security: [{ operatorKey: [] }], responses: { 200: { description: "Review-only anomaly flags and fairness explanation" } } },
+    },
+    "/api/v1/operator/jobs/{id}/evidence": {
+      get: { operationId: "getOperatorEvidence", security: [{ operatorKey: [] }], responses: { 200: { description: "Bounded sampled frame evidence and controlled artifact references" } } },
+    },
+    "/api/v1/operator/jobs/{id}/notes": {
+      get: { operationId: "listOperatorNotes", security: [{ operatorKey: [] }], responses: { 200: { description: "Adjudication trail" } } },
+      post: { operationId: "addOperatorNote", security: [{ operatorKey: [] }], responses: { 201: { description: "Appended operator verdict note" } } },
+    },
   },
   components: {
-    securitySchemes: { submissionKey: { type: "http", scheme: "bearer" } },
+    securitySchemes: {
+      submissionKey: { type: "http", scheme: "bearer" },
+      operatorKey: { type: "http", scheme: "bearer", description: "Separate least-privilege operator credential; never the submission or runner token." },
+    },
     schemas: {
       CreateSubmission: {
         type: "object",

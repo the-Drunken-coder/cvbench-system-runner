@@ -61,6 +61,56 @@ export class D1Store {
     return row ? deserialize(row) : null;
   }
 
+  async listSubmissions({ status, model, limit, cursor = null }) {
+    const clauses = [];
+    const bindings = [];
+    if (status) {
+      clauses.push("status = ?");
+      bindings.push(status);
+    }
+    if (model) {
+      clauses.push("(name LIKE ? OR image LIKE ?)");
+      bindings.push(`%${model}%`, `%${model}%`);
+    }
+    if (cursor) {
+      clauses.push("(created_at < ? OR (created_at = ? AND id < ?))");
+      bindings.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const result = await this.db
+      .prepare(`SELECT * FROM submissions ${where} ORDER BY created_at DESC, id DESC LIMIT ?`)
+      .bind(...bindings, limit + 1)
+      .all();
+    const rows = (result.results || []).map(deserialize);
+    const hasMore = rows.length > limit;
+    const page = rows.slice(0, limit);
+    const last = page.at(-1);
+    return { rows: page, nextCursor: hasMore && last ? { createdAt: last.createdAt, id: last.id } : null };
+  }
+
+  async addOperatorNote({ id, submissionId, verdict, note, createdAt, operatorKeyHash }) {
+    await this.db
+      .prepare(`INSERT INTO operator_notes (id, submission_id, verdict, note, created_at, operator_key_sha256)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind(id, submissionId, verdict, note, createdAt, operatorKeyHash)
+      .run();
+    return { id, submissionId, verdict, note, createdAt };
+  }
+
+  async listOperatorNotes(submissionId) {
+    const result = await this.db
+      .prepare("SELECT id, submission_id, verdict, note, created_at FROM operator_notes WHERE submission_id = ? ORDER BY created_at ASC, id ASC")
+      .bind(submissionId)
+      .all();
+    return (result.results || []).map((row) => ({
+      id: row.id,
+      submissionId: row.submission_id,
+      verdict: row.verdict,
+      note: row.note,
+      createdAt: row.created_at,
+    }));
+  }
+
   async leaseJob({ now, leaseExpiresAt, leaseTokenHash }) {
     await this.requeueExpired(now);
 

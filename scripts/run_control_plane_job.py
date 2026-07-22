@@ -247,9 +247,24 @@ def execute_submission(repository: Path, submission: dict[str, Any], work: Path)
         isolation = report.get("runtime_isolation", {})
         if isolation.get("status") != "verified" or isolation.get("network_mode") != "none":
             raise RuntimeError("benchmark did not verify the required container isolation")
+        report["runner"] = {
+            "commit": os.environ.get("GITHUB_SHA"),
+            "workflow_run_url": _workflow_run_url(),
+            "workflow_name": os.environ.get("GITHUB_WORKFLOW"),
+        }
         return report
     finally:
         cleanup_benchmark_containers(job_id, environment)
+
+
+def _workflow_run_url() -> str | None:
+    server = os.environ.get("GITHUB_SERVER_URL")
+    repository = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    safe_values = (server, repository, run_id)
+    if server and repository and run_id and all("\n" not in value and "\r" not in value for value in safe_values):
+        return f"{server.rstrip('/')}/{repository}/actions/runs/{run_id}"
+    return None
 
 
 def callback_path(submission_id: str) -> str:

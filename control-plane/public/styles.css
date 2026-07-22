@@ -135,3 +135,26 @@ footer > div a { font: 700 .72rem var(--mono); text-transform: uppercase; }
   html { scroll-behavior: auto; }
   .button:hover { transform: none; }
 }
+
+.operator-page { min-height: 100vh; background: var(--ink); color: white; }
+.operator-shell { max-width: 1400px; margin: auto; padding: clamp(2rem, 6vw, 6rem); }
+.operator-shell h1 { font-size: clamp(3rem, 8vw, 7rem); margin: 1rem 0; }
+.operator-shell .hero-copy { color: #c4cdc4; }
+.operator-auth { max-width: 720px; margin: 3rem 0; }
+.operator-auth label, .operator-toolbar label { display: block; font: 700 .72rem var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.operator-auth > div { display: flex; margin-top: .5rem; }
+.operator-auth input { flex: 1; min-width: 0; border: 1px solid white; background: #202820; color: white; padding: .9rem 1rem; }
+.operator-auth small { display: block; color: #aeb5ae; margin-top: .5rem; }
+.operator-toolbar { display: flex; align-items: end; gap: 1rem; margin-bottom: 2rem; }
+.operator-toolbar select { margin-top: .4rem; display: block; padding: .65rem; background: white; }
+.operator-toolbar > label:last-child { margin-left: auto; color: #aeb5ae; text-transform: none; letter-spacing: 0; }
+.operator-grid { display: grid; grid-template-columns: minmax(260px, .55fr) minmax(0, 1.45fr); gap: 2rem; }
+.operator-grid h2 { font-size: 2rem; margin-bottom: 1rem; }
+.job-list { display: grid; gap: .5rem; }
+.job-row { display: grid; gap: .25rem; text-align: left; padding: .9rem; border: 1px solid #394039; background: #171d17; color: white; cursor: pointer; }
+.job-row.selected, .job-row:hover { border-color: var(--acid); }
+.job-row span { color: #aeb5ae; font: .68rem var(--mono); overflow-wrap: anywhere; }
+.operator-grid .status-output { min-height: 420px; color: var(--ink); }
+.operator-grid .status-output h3 { margin-top: 0; }
+.operator-grid .status-output pre { max-height: 680px; }
+@media (max-width: 800px) { .operator-grid { grid-template-columns: 1fr; } .operator-toolbar { align-items: start; flex-wrap: wrap; } .operator-toolbar > label:last-child { margin-left: 0; } }

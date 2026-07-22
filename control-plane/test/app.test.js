@@ -6,6 +6,7 @@ import { MemoryStore } from "./memory-store.js";
 
 const SUBMISSION_KEY = "submission-key-with-enough-entropy";
 const RUNNER_TOKEN = "runner-token-with-enough-entropy";
+const OPERATOR_TOKEN = "operator-token-with-enough-entropy";
 const IMAGE = `ghcr.io/example/tracker@sha256:${"a".repeat(64)}`;
 let app;
 let store;
@@ -16,6 +17,7 @@ beforeEach(() => {
     store,
     submissionKeys: SUBMISSION_KEY,
     runnerToken: RUNNER_TOKEN,
+    operatorToken: OPERATOR_TOKEN,
     maxSubmissionsPerHour: 2,
     leaseSeconds: 3000,
   });
@@ -76,7 +78,7 @@ test("submission create, public read, idempotent replay, lease, and scored resul
   assert.equal(completedResponse.status, 200);
   const completed = await completedResponse.json();
   assert.equal(completed.status, "succeeded");
-  assert.equal(completed.result.metrics.sample_counts.matches, 12);
+  assert.equal(completed.result.scores.sample_counts.matches, 12);
   assert.equal((await result(created.id, { status: "failed", lease_token: leased.lease.token, error: "late" })).status, 409);
 });
 
@@ -99,6 +101,49 @@ test("result callback payloads cannot exceed the advertised budget", async () =>
   });
   assert.equal(response.status, 413);
   assert.equal((await jsonRequest(`/api/v1/submissions/${created.id}`)).status, "running");
+});
+
+test("operator API is separate from public and runner credentials", async () => {
+  const created = await (await submit(validBody(), "operator-job-0001")).json();
+  assert.equal((await request("/api/v1/operator/jobs")).status, 401);
+  assert.equal((await request("/api/v1/operator/jobs", { headers: { authorization: `Bearer ${RUNNER_TOKEN}` } })).status, 401);
+
+  const leased = await (await lease()).json();
+  await result(created.id, { status: "succeeded", lease_token: leased.lease.token, report: scoredReport() });
+  const headers = { authorization: `Bearer ${OPERATOR_TOKEN}` };
+  const list = await (await request("/api/v1/operator/jobs?status=succeeded", { headers })).json();
+  assert.equal(list.schema_version, "cvbench.operator/v1");
+  assert.equal(list.jobs[0].model.image, IMAGE);
+  assert.equal(list.jobs[0].diagnostics.failure_reason, null);
+  const filtered = await (await request("/api/v1/operator/jobs?model=does-not-exist", { headers })).json();
+  assert.equal(filtered.jobs.length, 0);
+  const detail = await (await request(`/api/v1/operator/jobs/${created.id}`, { headers })).json();
+  assert.equal(detail.raw_result.metrics.sample_counts.matches, 12);
+  assert.equal(detail.raw_result.diagnostics.sut_stderr[0], "<script>throw new Error('untrusted')</script>");
+  const audit = await (await request(`/api/v1/operator/jobs/${created.id}/audit`, { headers })).json();
+  assert.equal(audit.automatic_disqualification, false);
+  const note = await (await request(`/api/v1/operator/jobs/${created.id}/notes`, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ verdict: "accepted", note: "<script>untrusted note</script> Baseline evidence reviewed." }),
+  })).json();
+  assert.equal(note.verdict, "accepted");
+  assert.equal((await request(`/api/v1/operator/jobs/${created.id}/notes`, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ verdict: "accepted", note: "x".repeat(10_000) }),
+  })).status, 413);
+  assert.equal((await request(`/api/v1/operator/jobs/${created.id}/notes`, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ verdict: "forged", note: "not allowed" }),
+  })).status, 422);
+  const notes = await (await request(`/api/v1/operator/jobs/${created.id}/notes`, { headers })).json();
+  assert.equal(notes.notes[0].note, "<script>untrusted note</script> Baseline evidence reviewed.");
+  const publicResult = await jsonRequest(`/api/v1/submissions/${created.id}`);
+  assert.equal(publicResult.result.scores.sample_counts.matches, 12);
+  assert.equal(publicResult.result.diagnostics, undefined);
+  assert.equal((await request("/api/v1/operator/jobs?cursor=bad", { headers })).status, 400);
 });
 
 test("hourly limits and payload limits are enforced", async () => {
@@ -181,6 +226,7 @@ function scoredReport() {
     outcome: { status: "completed" },
     metrics: { sample_counts: { matches: 12 }, identity: { id_switches: 0 } },
     runtime_isolation: { status: "verified", network_mode: "none" },
+    diagnostics: { sut_stderr: ["<script>throw new Error('untrusted')</script>"] },
   };
 }
 
