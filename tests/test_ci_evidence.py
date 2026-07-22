@@ -3,8 +3,21 @@ from pathlib import Path
 
 import pytest
 
+from scripts.assert_docker_report import _parse_mode
 from scripts.sanitize_ci_report import sanitize_runs
 from scripts.verify_ci_evidence import _assert_safe, main
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["assert_docker_report.py", "runs"], "synthetic"),
+        (["assert_docker_report.py", "runs", "--real-video"], "real-video"),
+        (["assert_docker_report.py", "runs", "--combined"], "combined"),
+    ],
+)
+def test_docker_report_mode_flags_reach_their_named_contract(argv: list[str], expected: str) -> None:
+    assert _parse_mode(argv) == expected
 
 
 def test_safe_report_and_resources_are_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

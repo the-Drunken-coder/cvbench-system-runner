@@ -5,10 +5,16 @@ import sys
 from pathlib import Path
 
 
+def _parse_mode(argv: list[str]) -> str:
+    if len(argv) == 2:
+        return "synthetic"
+    if len(argv) == 3 and argv[2] in {"--combined", "--real-video"}:
+        return argv[2].removeprefix("--")
+    raise SystemExit("usage: assert_docker_report.py RUNS [--combined|--real-video]")
+
+
 def main() -> None:
-    if len(sys.argv) not in {2, 3} or (len(sys.argv) == 3 and sys.argv[2] not in {"--combined", "--real-video"}):
-        raise SystemExit("usage: assert_docker_report.py RUNS [--combined|--real-video]")
-    mode = sys.argv[2] if len(sys.argv) == 3 else "synthetic"
+    mode = _parse_mode(sys.argv)
     reports = sorted(Path(sys.argv[1]).glob("*/report.json"))
     if len(reports) != 1:
         raise SystemExit(f"expected one Docker report, found {len(reports)}")
