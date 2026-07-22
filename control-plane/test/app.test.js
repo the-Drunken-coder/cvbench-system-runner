@@ -166,6 +166,80 @@ test("operator API is separate from public and runner credentials", async () => 
   assert.equal((await request("/api/v1/operator/jobs?cursor=bad", { headers })).status, 400);
 });
 
+test("any cross-scope credential collision fails closed while distinct scopes remain usable", async () => {
+  const seeded = await (await submit(validBody(), "cross-scope-seed-0001")).json();
+  const scopePairs = [
+    ["submission", "runner"],
+    ["submission", "operatorRead"],
+    ["submission", "adjudicator"],
+    ["runner", "operatorRead"],
+    ["runner", "adjudicator"],
+    ["operatorRead", "adjudicator"],
+  ];
+  for (const [left, right] of scopePairs) {
+    const values = {
+      submission: "submission-only-token",
+      runner: "runner-only-token",
+      operatorRead: "operator-read-only-token",
+      adjudicator: "operator-write-only-token",
+    };
+    values[left] = "shared-cross-scope-token";
+    values[right] = "shared-cross-scope-token";
+    const collision = createApp({
+      store,
+      submissionKeys: values.submission,
+      runnerToken: values.runner,
+      operatorReadKeys: values.operatorRead,
+      operatorAdjudicatorCredentials: { "operator/alice": values.adjudicator },
+    });
+    assert.equal((await requestFor(collision, "/api/v1/submissions", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer shared-cross-scope-token",
+        "content-type": "application/json",
+        "idempotency-key": `collision-${left}-${right}`,
+      },
+      body: JSON.stringify(validBody()),
+    })).status, 401, `${left}/${right} submission scope`);
+    assert.equal((await requestFor(collision, "/api/v1/internal/leases", {
+      method: "POST",
+      headers: { authorization: "Bearer shared-cross-scope-token" },
+    })).status, 401, `${left}/${right} runner scope`);
+    assert.equal((await requestFor(collision, "/api/v1/operator/jobs", {
+      headers: { authorization: "Bearer shared-cross-scope-token" },
+    })).status, 401, `${left}/${right} read scope`);
+    assert.equal((await operatorNoteRequest(collision, seeded.id, "shared-cross-scope-token")).status, 401, `${left}/${right} write scope`);
+  }
+
+  const distinctStore = new MemoryStore();
+  const distinct = createApp({
+    store: distinctStore,
+    submissionKeys: "submission-distinct-token",
+    runnerToken: "runner-distinct-token",
+    operatorReadKeys: "operator-read-distinct-token",
+    operatorAdjudicatorCredentials: { "operator/alice": "operator-write-distinct-token" },
+  });
+  const distinctSubmission = await requestFor(distinct, "/api/v1/submissions", {
+    method: "POST",
+    headers: {
+      authorization: "Bearer submission-distinct-token",
+      "content-type": "application/json",
+      "idempotency-key": "distinct-scopes-0001",
+    },
+    body: JSON.stringify(validBody()),
+  });
+  assert.equal(distinctSubmission.status, 201);
+  const distinctJob = await distinctSubmission.json();
+  assert.equal((await requestFor(distinct, "/api/v1/operator/jobs", {
+    headers: { authorization: "Bearer operator-read-distinct-token" },
+  })).status, 200);
+  assert.equal((await requestFor(distinct, "/api/v1/internal/leases", {
+    method: "POST",
+    headers: { authorization: "Bearer runner-distinct-token" },
+  })).status, 200);
+  assert.equal((await operatorNoteRequest(distinct, distinctJob.id, "operator-write-distinct-token")).status, 201);
+});
+
 test("duplicate review aids are store-wide and never claim unavailable comparisons are clear", async () => {
   const firstCreate = await submit(validBody(), "duplicate-store-wide-01");
   assert.equal(firstCreate.status, 201);
@@ -383,7 +457,11 @@ function scoredReport() {
 }
 
 function request(path, options) {
-  return app.fetch(new Request(`https://cvbench.test${path}`, options));
+  return requestFor(app, path, options);
+}
+
+function requestFor(appInstance, path, options) {
+  return appInstance.fetch(new Request(`https://cvbench.test${path}`, options));
 }
 
 async function jsonRequest(path, options) {

@@ -172,6 +172,28 @@ def test_success_callback_build_failure_is_converted_to_failed(monkeypatch: pyte
     assert request.call_args_list[1].kwargs["body"]["status"] == "failed"
 
 
+def test_transient_success_callback_failure_never_emits_failed_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    submission = {
+        "id": "12345678-1234-4123-8123-123456789abc",
+        "image": IMAGE,
+        "argv": ["python", "-m", "tracker"],
+    }
+    lease = {"submission": submission, "lease": {"token": "b" * 64}}
+    monkeypatch.setenv("CVBENCH_API_BASE_URL", "https://cvbench.test")
+    monkeypatch.setenv("CVBENCH_RUNNER_TOKEN", "runner-token")
+    with (
+        patch(
+            "scripts.run_control_plane_job.api_request",
+            side_effect=[(200, lease), RuntimeError("transient callback failure")],
+        ) as request,
+        patch("scripts.run_control_plane_job.execute_submission", return_value={"outcome": {"status": "completed"}}),
+    ):
+        assert main() == 1
+
+    assert request.call_count == 2
+    assert request.call_args_list[1].kwargs["body"]["status"] == "succeeded"
+
+
 def test_worst_case_stderr_report_fits_callback_budget_and_records_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

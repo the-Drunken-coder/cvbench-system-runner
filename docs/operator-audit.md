@@ -5,7 +5,7 @@ CVBench has one control plane: the Cloudflare Worker, Static Assets, and D1. Sub
 ## Trust boundaries
 
 - Public submission keys can enqueue jobs; public reads expose only bounded summaries.
-- `OPERATOR_READ_API_KEYS` is separate from both submission and runner credentials. `OPERATOR_ADJUDICATOR_CREDENTIALS` is a secret JSON mapping of one credential to one normalized stable actor identity; duplicate normalized actors/tokens and reserved generic identities fail closed, routes compare tokens in constant time, and bearer values never leave memory.
+- `OPERATOR_READ_API_KEYS` is separate from both submission and runner credentials. `OPERATOR_ADJUDICATOR_CREDENTIALS` is a secret JSON mapping of one credential to one normalized stable actor identity; duplicate normalized actors/tokens, reserved generic identities, and any cross-scope bearer overlap fail closed, routes compare tokens in constant time, and bearer values never leave memory.
 - `RUNNER_TOKEN` can lease and callback but cannot read operator routes. Lease tokens are one-use, expiring, and stored only as digests.
 - The runner strips control-plane/GitHub secrets from the benchmark subprocess. Docker has no network, no Docker socket, and only the progressive input socket mount.
 - Raw JSONL, stderr, overlay videos, and other large evidence are not uploaded by the public repository. D1 receives bounded report JSON and the operator API returns bounded samples, integrity hashes, and explicit `raw_evidence_available: false`.

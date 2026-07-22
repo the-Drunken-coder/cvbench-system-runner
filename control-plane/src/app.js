@@ -7,13 +7,23 @@ const IMAGE_PATTERN = /^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?\/)?[a-z0-9]+
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function createApp(options) {
+  const submissionKeys = splitKeys(options.submissionKeys);
+  const runnerToken = String(options.runnerToken || "");
+  const operatorReadKeys = splitKeys(options.operatorReadKeys || options.operatorToken);
+  const operatorAdjudicatorCredentials = parseAdjudicatorCredentials(options.operatorAdjudicatorCredentials);
+  const credentialScopesAreValid = uniqueCredentialScopes({
+    submission: submissionKeys,
+    runner: [runnerToken],
+    operatorRead: operatorReadKeys,
+    adjudicator: operatorAdjudicatorCredentials.map(({ token }) => token),
+  });
   const config = {
     store: options.store,
     assets: options.assets,
-    submissionKeys: splitKeys(options.submissionKeys),
-    runnerToken: String(options.runnerToken || ""),
-    operatorReadKeys: splitKeys(options.operatorReadKeys || options.operatorToken),
-    operatorAdjudicatorCredentials: parseAdjudicatorCredentials(options.operatorAdjudicatorCredentials),
+    submissionKeys: credentialScopesAreValid ? submissionKeys : [],
+    runnerToken: credentialScopesAreValid ? runnerToken : "",
+    operatorReadKeys: credentialScopesAreValid ? operatorReadKeys : [],
+    operatorAdjudicatorCredentials: credentialScopesAreValid ? operatorAdjudicatorCredentials : [],
     maxSubmissionsPerHour: boundedInteger(options.maxSubmissionsPerHour, 20, 1, 1000),
     leaseSeconds: boundedInteger(options.leaseSeconds, 3000, 60, 7200),
   };
@@ -577,6 +587,17 @@ function stableJson(value) {
 
 function splitKeys(value) {
   return String(value || "").split(",").map((key) => key.trim()).filter(Boolean);
+}
+
+function uniqueCredentialScopes(scopes) {
+  const seen = new Set();
+  for (const tokens of Object.values(scopes)) {
+    for (const token of tokens) {
+      if (!token || seen.has(token)) return false;
+      seen.add(token);
+    }
+  }
+  return true;
 }
 
 function boundedInteger(value, fallback, minimum, maximum) {
