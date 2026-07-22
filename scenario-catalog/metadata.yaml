@@ -1,0 +1,112 @@
+schema_version: cvbench.scenario-catalog-metadata/v1
+catalog:
+  version: 1.0.0
+  status: public
+  title: CVBench public scenario catalog
+  description: Exact public calibration media, annotations, scoring boundaries, and baseline evidence for every current CVBench scenario.
+  author: CVBench contributors
+scenarios:
+  synthetic-acquisition:
+    title: First acquisition
+    description: A single synthetic target enters a clean field and must be acquired promptly.
+    failure_modes: [late acquisition, missed entry, unstable initial identity]
+  synthetic-visible-retention:
+    title: Visible retention
+    description: A continuously visible synthetic target tests uninterrupted tracking.
+    failure_modes: [visible dropout, localization drift, premature track termination]
+  synthetic-occlusion-reacquisition:
+    title: Occlusion reacquisition
+    description: A target disappears behind a deterministic occluder and returns.
+    failure_modes: [failed reacquisition, identity switch, false coasting]
+  synthetic-multi-target-pair:
+    title: Two-target tracking
+    description: Two simultaneous targets test independent tracks and duplicate suppression.
+    failure_modes: [track merge, duplicate track, missed target]
+  synthetic-multi-target-identity:
+    title: Multi-target identity
+    description: Four targets exercise association and stable identity under crossing motion.
+    failure_modes: [identity switch, track merge, track fragmentation]
+  synthetic-false-detection:
+    title: Empty ground truth
+    description: A deliberately target-free sequence measures hallucinations; its exhaustive annotation set is empty.
+    failure_modes: [background hallucination, persistent false track, false high confidence]
+  synthetic-resource-stress:
+    title: Resource stress
+    description: Eight simultaneous synthetic targets increase association and processing load.
+    failure_modes: [latency growth, dropped targets, resource saturation]
+  synthetic-occlusion-gap-100ms:
+    title: 100 ms occlusion gap
+    description: A short full occlusion tests continuity at the smallest gap tier.
+    failure_modes: [short-gap identity switch, duplicate reacquisition]
+  synthetic-occlusion-gap-250ms:
+    title: 250 ms occlusion gap
+    description: A quarter-second full occlusion tests temporal memory.
+    failure_modes: [identity switch, slow reacquisition]
+  synthetic-occlusion-gap-500ms:
+    title: 500 ms occlusion gap
+    description: A half-second full occlusion tests association beyond immediate motion.
+    failure_modes: [identity reset, missed return]
+  synthetic-occlusion-gap-1000ms:
+    title: 1 second occlusion gap
+    description: A one-second full occlusion tests durable temporal state.
+    failure_modes: [track expiry, new-identity reacquisition]
+  synthetic-occlusion-gap-2000ms:
+    title: 2 second occlusion gap
+    description: The longest synthetic occlusion tests controlled track retirement and return.
+    failure_modes: [stale coasting, failed reacquisition, identity reuse]
+  synthetic-track-id-churn:
+    title: Track ID churn
+    description: Forty-eight short-lived target births test ID lifecycle integrity over the longest current sequence.
+    failure_modes: [track ID reuse, ID exhaustion, state contamination]
+  rv1-a7f3:
+    title: Pedestrian crowd crossing
+    description: A static pedestrian-area camera with close passers and dense crowd occlusion.
+    failure_modes: [crowd association error, partial-occlusion loss, identity switch]
+  rv1-b2c8:
+    title: Cars driving at night
+    description: A fixed highway camera tests a marked vehicle amid glare and adjacent traffic.
+    failure_modes: [low-light localization loss, glare hallucination, traffic association error]
+  rv1-c3d1:
+    title: Self-driving car demonstration
+    description: A moving-camera highway shot tests rapid scale, viewpoint, and background-motion changes.
+    failure_modes: [scale drift, camera-motion confusion, adjacent-car association error]
+sources:
+  synthetic:
+    title: CVBench deterministic synthetic generator
+    creator: CVBench contributors
+    source_url: https://github.com/the-Drunken-coder/cvbench-system-runner/blob/main/src/cvbench/synthetic.py
+    license: CC0-1.0
+    attribution: No attribution required; provenance retained for reproducibility.
+    transformation: Generated deterministically as exact JPEG frame sequences by cvbench.synthetic.
+  rv1-a7f3:
+    title: Video Codec Test pedestrian area 1080p25.y4m.webm
+    creator: Taurus Media Technik
+    source_url: https://commons.wikimedia.org/wiki/File:Video_Codec_Test_pedestrian_area_1080p25.y4m.webm
+    license: CC0-1.0
+    attribution: Taurus Media Technik; CC0 1.0.
+    transformation: Frames 80–160 sampled every fourth frame, re-encoded as JPEG quality 90, timestamps normalized to 25 fps times the stride, and human-reviewed target, ignore, and ROI annotations added.
+    source_sha256: bfadaa62cccb42db875d50bb842aa0964fbf72040432e4097c1df59e043e0c26
+  rv1-b2c8:
+    title: Cars driving at night.webm
+    creator: Editor (YouTube user Editor)
+    source_url: https://commons.wikimedia.org/wiki/File:Cars_driving_at_night.webm
+    license: CC BY 3.0
+    license_url: https://creativecommons.org/licenses/by/3.0/
+    attribution: “Cars driving at night” by Editor (YouTube user Editor), via Wikimedia Commons, licensed CC BY 3.0.
+    transformation: Frames 320–370 sampled every second frame, re-encoded as JPEG quality 90, timestamps normalized to 25 fps times the stride, and human-reviewed target, ignore, and ROI annotations added by CVBench contributors.
+    source_sha256: 3dfc2c1ae60762e45ea68bc417695cc25a4fde5fcd771d4e3f8e59b0f2f7e9f8
+  rv1-c3d1:
+    title: Self driving cars - EU2016NL.webm
+    creator: EU2016NL
+    source_url: https://commons.wikimedia.org/wiki/File:Self_driving_cars_-_EU2016NL.webm
+    license: CC BY 3.0
+    license_url: https://creativecommons.org/licenses/by/3.0/
+    attribution: “Self driving cars - EU2016NL” by EU2016NL, via Wikimedia Commons, licensed CC BY 3.0.
+    transformation: Frames 300–360 sampled every second frame, re-encoded as JPEG quality 90, timestamps normalized to 25 fps times the stride, and human-reviewed target, ignore, and ROI annotations added by CVBench contributors.
+    source_sha256: 7f0439180dd985eec74823418c521dd8d4092e3cfe653f2cd475b8412328d177
+preparation:
+  identity: cvbench-real-video-prep/v1
+  platform: linux/amd64
+  base_image: python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+  toolchain: Python 3.12; OpenCV 4.13.0.92; NumPy 2.5.1; PyYAML 6.0.3
+  expected_frame_manifest: scenarios/real-video-v1/expected-frame-sha256.txt

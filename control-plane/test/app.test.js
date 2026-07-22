@@ -34,8 +34,14 @@ test("health and machine-readable metadata are public", async () => {
   const contract = await jsonRequest("/api/v1/contract");
   assert.equal(contract.container.network, "disabled");
   assert.match(contract.container.image, /sha256/);
+  assert.match(contract.container.filesystem, /no extra mounts and no Docker socket/);
+  assert.match(contract.benchmark.temporal_support, /multiple processes/);
+  assert.match(contract.submission.terminology, /packaging, reproducibility, and security boundary/);
+  assert.match(contract.submission.compatibility_names.model_version, /system version/);
   const openapi = await jsonRequest("/api/v1/openapi.json");
   assert.equal(openapi.openapi, "3.1.0");
+  assert.match(openapi.info.description, /complete vision system/);
+  assert.match(openapi.components.schemas.CreateSubmission.properties.model_version.description, /submitted system version/);
   assert.ok(openapi.components.securitySchemes.operatorReadKey);
   assert.ok(openapi.components.securitySchemes.operatorAdjudicatorKey);
 });

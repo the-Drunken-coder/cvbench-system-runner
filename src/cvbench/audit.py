@@ -424,7 +424,7 @@ def build_audit_evidence(
         _flag(
             "unread_input",
             "flagged" if unread_input_flagged else "clear",
-            "Frames were delivered but no valid model output was collected."
+            "Frames were delivered but no valid submitted-system output was collected."
             if unread_input_flagged
             else "The run produced output or no frames were delivered.",
             severity="medium",

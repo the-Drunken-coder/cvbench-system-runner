@@ -208,7 +208,7 @@ async function serveAsset(request, assets) {
   const headers = new Headers(response.headers);
   headers.set("x-content-type-options", "nosniff");
   headers.set("referrer-policy", "strict-origin-when-cross-origin");
-  headers.set("content-security-policy", "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
+  headers.set("content-security-policy", "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
@@ -356,7 +356,7 @@ async function operatorAudit(value, store) {
     const comparisons = await store.operatorComparisons();
     const duplicateModel = duplicateStatus(comparisons, "duplicateImages", value.image);
     const duplicateResult = duplicateStatus(comparisons, "duplicateResults", value.resultSha256);
-    flags.push({ id: "duplicate_model_fingerprint", status: duplicateModel === "review" ? "flagged" : duplicateModel, severity: "medium", review_aid_only: true, reason: duplicateModel === "review" ? "Another stored submission uses the same immutable model digest." : `Model comparison status: ${duplicateModel}.` });
+    flags.push({ id: "duplicate_model_fingerprint", status: duplicateModel === "review" ? "flagged" : duplicateModel, severity: "medium", review_aid_only: true, reason: duplicateModel === "review" ? "Another stored submission uses the same immutable system-image digest." : `System-image comparison status: ${duplicateModel}.` });
     flags.push({ id: "duplicate_result_fingerprint", status: duplicateResult === "review" ? "flagged" : duplicateResult, severity: "medium", review_aid_only: true, reason: duplicateResult === "review" ? "Another stored result has the same canonical report fingerprint." : `Result comparison status: ${duplicateResult}.` });
     if (perfect) flags.push({ id: "score_review", status: "review", severity: "medium", review_aid_only: true, reason: "Perfect scores require human review, not automatic rejection." });
   }
@@ -395,7 +395,7 @@ function operatorEvidence(value) {
     raw_evidence_available: report.provenance?.raw_evidence_available === true,
     bounded_audit_evidence_sha256: report.provenance?.bounded_audit_evidence_sha256 || null,
     bounded_audit_evidence_hash_algorithm: report.provenance?.bounded_audit_evidence_hash_algorithm || "sha256(cvbench.canonical-json/v1)",
-    raw_artifact_policy: "Raw ground-truth and model-output artifacts are not uploaded or exposed by this public repository; only bounded authenticated audit evidence and integrity hashes are retained.",
+    raw_artifact_policy: "Raw ground-truth and submitted-system-output artifacts are not uploaded or exposed by this public repository; only bounded authenticated audit evidence and integrity hashes are retained.",
   };
 }
 
@@ -644,14 +644,14 @@ export const CONTRACT = {
     id: "persistent-target-tracking",
     version: "1.0.0",
     measures: ["accuracy", "robustness", "latency", "resource use", "diagnostics"],
-    input: "Progressive timestamped JPEG frames over a Unix-domain socket; models never receive future frames.",
-    temporal_support: "The socket stays open across ordered frames, so models may retain in-memory multi-frame state.",
+    input: "Progressive timestamped JPEG frames over a Unix-domain socket; the system under test never receives future frames.",
+    temporal_support: "The socket stays open across ordered frames. Detector, tracker, temporal-memory, association, filtering, and post-processing pipelines may retain multi-frame state and may use multiple processes.",
   },
   container: {
     image: "Prebuilt OCI image pinned as registry/repository@sha256:<64 lowercase hex characters>.",
     platform: "linux/amd64",
     network: "disabled",
-    filesystem: "container default plus one read/write socket directory mount at /run/cvbench",
+    filesystem: "container default plus one read/write progressive socket-directory mount at /run/cvbench; no extra mounts and no Docker socket",
     user: "unprivileged host-aligned numeric UID/GID",
     environment: { CVBENCH_INPUT_SOCKET: "/run/cvbench/input.sock" },
     readiness: "Print exactly CVBENCH_READY as a stdout line after connecting.",
@@ -662,12 +662,19 @@ export const CONTRACT = {
     accepted: ["image", "argv", "name", "model_version", "contact", "notes"],
     rejected: ["source repositories", "build instructions", "shell command strings", "Docker socket access", "custom environment variables"],
     authentication: "Bearer submission API key plus a unique Idempotency-Key header.",
+    terminology: "The submitted object is a complete system image. One linux/amd64 OCI image is a packaging, reproducibility, and security boundary, not a one-learned-model or one-process assumption.",
+    compatibility_names: {
+      model_version: "Version 1 wire/storage field retained for compatibility; it means system version.",
+      response_model: "Version 1 response object named model retained for compatibility; it describes the submitted system.",
+      internal_modelVersion: "Version 1 implementation/storage compatibility name for system version.",
+      d1_model_version: "Version 1 D1 column retained for compatibility; it stores the submitted system version.",
+    },
   },
 };
 
 export const OPENAPI = {
   openapi: "3.1.0",
-  info: { title: "CVBench Control Plane API", version: "1.0.0", description: "Submit immutable model containers to the public CVBench queue." },
+  info: { title: "CVBench Control Plane API", version: "1.0.0", description: "Submit one immutable linux/amd64 OCI image containing a complete vision system to the public CVBench queue." },
   servers: [{ url: "/" }],
   paths: {
     "/api/v1/health": { get: { operationId: "health", responses: { 200: { description: "Healthy" }, 503: { description: "D1 unavailable" } } } },
@@ -695,7 +702,7 @@ export const OPENAPI = {
         security: [{ operatorReadKey: [] }],
         parameters: [
           { name: "status", in: "query", schema: { type: "string", enum: ["queued", "running", "succeeded", "failed"] } },
-          { name: "model", in: "query", schema: { type: "string", maxLength: 100 } },
+          { name: "model", in: "query", description: "Version 1 compatibility query name; filters by submitted system name.", schema: { type: "string", maxLength: 100 } },
           { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 25 } },
           { name: "cursor", in: "query", schema: { type: "string" } },
         ],
@@ -736,7 +743,7 @@ export const OPENAPI = {
           image: { type: "string", pattern: "@sha256:[a-f0-9]{64}$" },
           argv: { type: "array", minItems: 1, maxItems: 32, items: { type: "string", minLength: 1, maxLength: 256 } },
           name: { type: "string", maxLength: 100 },
-          model_version: { type: "string", maxLength: 100 },
+          model_version: { type: "string", maxLength: 100, description: "Version 1 compatibility field containing the submitted system version." },
           contact: { type: "string", maxLength: 200 },
           notes: { type: "string", maxLength: 1000 },
         },

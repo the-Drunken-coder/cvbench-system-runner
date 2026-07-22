@@ -43,8 +43,10 @@ See [Architecture](docs/architecture.md), [Protocol](docs/protocol.md), [Metrics
 
 The optional real-video tranche is documented in [Real-video tranche 1](docs/real-video-sources.md). It is prepared locally with checksum-verified source imports and keeps raw media outside Git.
 
-## Public control plane
+## Public scenario catalog and control plane
 
-The public submission queue is one Cloudflare Worker with Static Assets and D1. It serves the documentation, submission, and result UI plus `/api/v1/*`. Untrusted model code never runs in Cloudflare: a scheduled or manually dispatched ephemeral GitHub-hosted Linux runner leases one digest-pinned OCI image and executes it through the existing Docker-isolated engine.
+Every scenario referenced by the current benchmark manifests is published at `/scenarios/`: 13 synthetic scenarios and 3 real-video scenarios, with exact benchmark JPEGs, full public annotations, scoring boundaries, provenance, licenses, hashes, and allowlisted first-party baseline summaries. The stable discovery endpoint is `/.well-known/cvbench-scenarios.json`; see [the catalog architecture and build contract](docs/scenario-catalog.md).
 
-See the [control-plane architecture, local commands, API lifecycle, security boundary, and Workers Builds setup](docs/control-plane.md). The [exact control-plane implementation input](docs/CONTROL_PLANE_IMPLEMENTATION_PROMPT.md) is preserved alongside the original product specification.
+The public submission queue is one Cloudflare Worker with Static Assets and D1. It serves the documentation, scenario catalog, submission, and result UI plus `/api/v1/*`. Untrusted submitted-system code never runs in Cloudflare: a scheduled or manually dispatched ephemeral GitHub-hosted Linux runner leases one digest-pinned OCI image and executes it through the existing Docker-isolated engine.
+
+See the [control-plane architecture, local commands, API lifecycle, security boundary, and Workers Builds setup](docs/control-plane.md). The [exact control-plane implementation input](docs/CONTROL_PLANE_IMPLEMENTATION_PROMPT.md) and [exact scenario-catalog implementation input](docs/SCENARIO_CATALOG_IMPLEMENTATION_PROMPT.md) are preserved alongside the original product specification.

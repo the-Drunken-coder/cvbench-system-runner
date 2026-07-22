@@ -1,0 +1,86 @@
+{
+  "schema_version": "cvbench.scenario-baselines/v1",
+  "system": {
+    "id": "cvbench-first-party-reference",
+    "name": "CVBench first-party reference systems",
+    "version": "catalog-v1",
+    "summary": "Allowlisted validation summaries from the bundled deterministic synthetic tracker and classical real-video motion baseline. These are evidence checks, not leaderboard claims."
+  },
+  "scenarios": {
+    "rv1-a7f3": {
+      "status": "public",
+      "system_id": "classical-motion-baseline",
+      "system_name": "Bundled classical motion baseline",
+      "system_version": "real-video-v1",
+      "system_sha256": "98baa39d445e5a96b062adad1e8031f155e22b634c325522ac12f1ce1a5ece16",
+      "validation_status": "completed",
+      "benchmark_id": "real-video-v1",
+      "run_id": "20260722T123041Z-c5f69802",
+      "report_sha256": "17274587663d8e659f3181a1966faba020de8be60df22376e78bd82221fabcd8",
+      "metrics": { "observed_coverage": 0.3888888889, "false_detections": 96, "neutral_ignored_predictions": 36 }
+    },
+    "rv1-b2c8": {
+      "status": "public",
+      "system_id": "classical-motion-baseline",
+      "system_name": "Bundled classical motion baseline",
+      "system_version": "real-video-v1",
+      "system_sha256": "98baa39d445e5a96b062adad1e8031f155e22b634c325522ac12f1ce1a5ece16",
+      "validation_status": "completed",
+      "benchmark_id": "real-video-v1",
+      "run_id": "20260722T123041Z-c5f69802",
+      "report_sha256": "17274587663d8e659f3181a1966faba020de8be60df22376e78bd82221fabcd8",
+      "metrics": { "observed_coverage": 1.0, "false_detections": 88, "neutral_ignored_predictions": 59 }
+    },
+    "rv1-c3d1": {
+      "status": "public",
+      "system_id": "classical-motion-baseline",
+      "system_name": "Bundled classical motion baseline",
+      "system_version": "real-video-v1",
+      "system_sha256": "98baa39d445e5a96b062adad1e8031f155e22b634c325522ac12f1ce1a5ece16",
+      "validation_status": "completed",
+      "benchmark_id": "real-video-v1",
+      "run_id": "20260722T123041Z-c5f69802",
+      "report_sha256": "17274587663d8e659f3181a1966faba020de8be60df22376e78bd82221fabcd8",
+      "metrics": { "observed_coverage": 0.6129032258, "false_detections": 144, "neutral_ignored_predictions": 2 }
+    },
+    "synthetic-acquisition": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": 1.0, "false_detections": 0 }
+    },
+    "synthetic-false-detection": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": "not applicable; no targets by design", "false_detections": 0 }
+    },
+    "synthetic-multi-target-identity": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": 1.0, "false_detections": 0 }
+    },
+    "synthetic-multi-target-pair": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": 1.0, "false_detections": 0 }
+    },
+    "synthetic-occlusion-gap-1000ms": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": 1.0, "false_detections": 0 }
+    },
+    "synthetic-occlusion-gap-100ms": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": 1.0, "false_detections": 0 }
+    },
+    "synthetic-occlusion-gap-2000ms": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": 1.0, "false_detections": 0 }
+    },
+    "synthetic-occlusion-gap-250ms": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": 1.0, "false_detections": 0 }
+    },
+    "synthetic-occlusion-gap-500ms": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": 1.0, "false_detections": 0 }
+    },
+    "synthetic-occlusion-reacquisition": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": 0.7777777778, "false_detections": 0 }
+    },
+    "synthetic-resource-stress": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": 1.0, "false_detections": 0 }
+    },
+    "synthetic-track-id-churn": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "long-running-stability", "run_id": "20260722T125146Z-af4c4ff2", "report_sha256": "865f7c7dbbeab04b53477abba252fcee416a7826ab1f8d7285dbbeb4aeb58379", "metrics": { "observed_coverage": 0.9878296146, "track_id_reuse_events": 0, "track_id_exhaustion_detected": false, "state_contamination_events": 0 }
+    },
+    "synthetic-visible-retention": {
+      "status": "public", "system_id": "example-good-tracker", "system_name": "Bundled deterministic good tracker", "system_version": "catalog-v1", "system_sha256": "a15e3a1934131464270e8701f632daab667ccbf66ea64024c6ef44a91b92b54a", "validation_status": "completed", "benchmark_id": "persistent-target-tracking", "run_id": "20260722T123030Z-9a1611e8", "report_sha256": "7315f43e0b62a97adf5bc7d610bdf958cfb7da5dd7e9034bf34d1bb8f0982c35", "metrics": { "observed_coverage": 1.0, "false_detections": 0 }
+    }
+  }
+}
