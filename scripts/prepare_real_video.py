@@ -33,6 +33,7 @@ TOOLCHAIN = {
     "numpy": "2.5.1",
     "PyYAML": "6.0.3",
 }
+PREPARATION_BASE_IMAGE = "python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de"
 
 SOURCES: dict[str, dict[str, Any]] = {
     "pedestrian-area": {
@@ -109,7 +110,12 @@ CLIPS: tuple[dict[str, Any], ...] = (
             "19": [[210, 140, 600, 1040]],
             "20": [[260, 130, 760, 1040]],
         },
-        "ignore_regions": ["full_frame"],
+        "ignore_regions": [
+            {"id": "left-foreground", "bbox": [0, 180, 135, 930], "frames": list(range(0, 9))},
+            {"id": "doorway-man", "bbox": [1730, 280, 1900, 850], "frames": list(range(0, 18))},
+            {"id": "back-woman", "bbox": [1120, 300, 1290, 720], "frames": list(range(0, 10))},
+            {"id": "white-shirt-man", "bbox": [770, 250, 960, 850], "frames": list(range(0, 6))},
+        ],
         "keyframes": [
             {"source_frame": 80, "bbox": [230, 220, 450, 820]},
             {"source_frame": 100, "bbox": [513, 204, 733, 804]},
@@ -133,7 +139,14 @@ CLIPS: tuple[dict[str, Any], ...] = (
         "class_id": "target",
         "target_id": "t-01",
         "occlusion_frames": [],
-        "ignore_regions": ["full_frame"],
+        "ignore_regions": [
+            {"id": "left-traffic", "bbox": [320, 400, 455, 520], "frames": "all"},
+            {"id": "middle-traffic", "bbox": [680, 420, 820, 515], "frames": "all"},
+            {"id": "far-middle-traffic", "bbox": [850, 430, 1000, 570], "frames": "all"},
+            {"id": "right-traffic", "bbox": [1150, 450, 1340, 590], "frames": "all"},
+            {"id": "far-right-traffic", "bbox": [1500, 450, 1720, 600], "frames": "all"},
+            {"id": "foreground-right-traffic", "bbox": [1040, 760, 1370, 1030], "frames": "all"},
+        ],
         "keyframes": [
             {"source_frame": 320, "bbox": [460, 520, 660, 740]},
             {"source_frame": 330, "bbox": [476, 536, 676, 756]},
@@ -157,7 +170,10 @@ CLIPS: tuple[dict[str, Any], ...] = (
         "class_id": "target",
         "target_id": "t-01",
         "occlusion_frames": [],
-        "ignore_regions": ["full_frame"],
+        "ignore_regions": [
+            {"id": "right-background-car", "bbox": [1560, 450, 1710, 600], "frames": list(range(0, 20))},
+            {"id": "late-right-background-car", "bbox": [1750, 390, 1920, 620], "frames": list(range(20, 31))},
+        ],
         "keyframes": [
             {"source_frame": 300, "bbox": [900, 430, 1550, 830]},
             {"source_frame": 320, "bbox": [820, 410, 1470, 810]},
@@ -186,6 +202,31 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _verify_expected_frame_manifest(output: Path) -> None:
+    expected_path = ROOT / "scenarios" / "real-video-v1" / "expected-frame-sha256.txt"
+    expected: dict[str, str] = {}
+    for line in expected_path.read_text().splitlines():
+        digest, relative = line.split("  ", 1)
+        expected[relative] = digest
+    actual = {
+        f"{clip['id']}/frames/frame-{frame_index:04d}.jpg": _sha256(
+            output / clip["id"] / "frames" / f"frame-{frame_index:04d}.jpg"
+        )
+        for clip in CLIPS
+        for frame_index in range(
+            sum(
+                1
+                for row in (output / clip["id"] / "ground_truth.jsonl").read_text().splitlines()
+                if row and not json.loads(row).get("ignore", False)
+            )
+        )
+    }
+    if actual != expected or len(actual) != 78:
+        raise RuntimeError(
+            f"prepared JPEG manifest mismatch: expected {len(expected)} entries, got {len(actual)}"
+        )
 
 
 def _verify_toolchain() -> None:
@@ -249,6 +290,20 @@ def _interpolate_box(keyframes: list[dict[str, Any]], source_frame: int) -> list
     return [float(v) for v in keyframes[-1]["bbox"]]
 
 
+def _boxes_overlap(left: list[float], right: list[float]) -> bool:
+    return min(left[2], right[2]) > max(left[0], right[0]) and min(left[3], right[3]) > max(left[1], right[1])
+
+
+def _active_ignore_regions(clip: dict[str, Any], frame_index: int) -> list[dict[str, Any]]:
+    regions = []
+    for region in clip.get("ignore_regions", []):
+        active_frames = region.get("frames", "all")
+        if active_frames != "all" and frame_index not in active_frames:
+            continue
+        regions.append(region)
+    return regions
+
+
 def _decode_clip(source_path: Path, clip: dict[str, Any], output: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     frames_path = output / "frames"
     frames_path.mkdir(parents=True, exist_ok=True)
@@ -289,6 +344,9 @@ def _decode_clip(source_path: Path, clip: dict[str, Any], output: Path) -> tuple
                 annotation.pop("bbox_xyxy", None)
             selected.append(annotation)
             for ignore_index, ignore_box in enumerate(clip.get("ignore_boxes", {}).get(str(frame_index), []), 1):
+                ignore_box = [float(v) for v in ignore_box]
+                if annotation.get("bbox_xyxy") and _boxes_overlap(annotation["bbox_xyxy"], ignore_box):
+                    raise RuntimeError(f"ignore box overlaps target in {clip['id']} frame {frame_index}")
                 selected.append(
                     {
                         "target_id": f"ignore-{frame_index:02d}-{ignore_index:02d}",
@@ -299,19 +357,24 @@ def _decode_clip(source_path: Path, clip: dict[str, Any], output: Path) -> tuple
                         "visibility_fraction": 1.0,
                         "occlusion": "none",
                         "class_id": clip["class_id"],
-                        "bbox_xyxy": [float(v) for v in ignore_box],
+                        "bbox_xyxy": ignore_box,
                         "ignore": True,
+                        "ignore_region": True,
+                        "ignore_region_id": f"manual-{frame_index:02d}-{ignore_index:02d}",
                         "source_frame_index": source_frame,
                     }
                 )
-            for region_index, region in enumerate(clip.get("ignore_regions", []), 1):
-                if region == "full_frame":
-                    region_box = [0.0, 0.0, float(image.shape[1]), float(image.shape[0])]
-                else:
-                    region_box = [float(value) for value in region["bbox"]]
+            for region in _active_ignore_regions(clip, frame_index):
+                region_box = [float(value) for value in region["bbox"]]
+                frame_area = float(image.shape[1] * image.shape[0])
+                region_area = (region_box[2] - region_box[0]) * (region_box[3] - region_box[1])
+                if region_area / frame_area > 0.25:
+                    raise RuntimeError(f"ignore region is not narrow in {clip['id']} frame {frame_index}")
+                if annotation.get("bbox_xyxy") and _boxes_overlap(annotation["bbox_xyxy"], region_box):
+                    raise RuntimeError(f"ignore region overlaps target in {clip['id']} frame {frame_index}")
                 selected.append(
                     {
-                        "target_id": f"ignore-region-{frame_index:02d}-{region_index:02d}",
+                        "target_id": f"ignore-{region['id']}-{frame_index:02d}",
                         "sequence_id": clip["sequence_id"],
                         "source_timestamp_ns": frame_index * clip["stride"] * FPS_NS,
                         "on_screen": True,
@@ -322,6 +385,7 @@ def _decode_clip(source_path: Path, clip: dict[str, Any], output: Path) -> tuple
                         "bbox_xyxy": region_box,
                         "ignore": True,
                         "ignore_region": True,
+                        "ignore_region_id": region["id"],
                         "source_frame_index": source_frame,
                     }
                 )
@@ -392,6 +456,50 @@ def _write_crowd_review_overlay(rows: list[dict[str, Any]], output: Path) -> Non
     cv2.imwrite(str(review_dir / "crowd-frames-16-20-overlay.jpg"), cv2.vconcat(panels), [cv2.IMWRITE_JPEG_QUALITY, 92])
 
 
+def _write_review_contact_sheet(clip: dict[str, Any], rows: list[dict[str, Any]], output: Path) -> None:
+    review_dir = ROOT / "scenarios" / "real-video-v1" / clip["id"] / "review"
+    review_dir.mkdir(parents=True, exist_ok=True)
+    data_root = output / clip["id"] / "frames"
+    target_rows = [row for row in rows if not row.get("ignore", False)]
+    panels = []
+    for frame_index, target_row in enumerate(target_rows):
+        image = cv2.imread(str(data_root / f"frame-{frame_index:04d}.jpg"))
+        if image is None:
+            raise RuntimeError(f"missing review frame {clip['id']}:{frame_index}")
+        timestamp = target_row["source_timestamp_ns"]
+        frame_rows = [row for row in rows if row["source_timestamp_ns"] == timestamp]
+        for row in frame_rows:
+            if not row.get("bbox_xyxy"):
+                continue
+            box = [int(value) for value in row["bbox_xyxy"]]
+            color = (0, 180, 255) if row.get("ignore") else (0, 0, 255)
+            cv2.rectangle(image, (box[0], box[1]), (box[2], box[3]), color, 5)
+            label = "IGNORE" if row.get("ignore") else "TARGET"
+            cv2.putText(image, label, (box[0] + 8, max(34, box[1] - 10)), cv2.FONT_HERSHEY_SIMPLEX, 1.1, color, 3)
+        cv2.putText(
+            image,
+            f"{clip['id']} output frame {frame_index}",
+            (28, 52),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.4,
+            (255, 255, 255),
+            4,
+        )
+        panels.append(cv2.resize(image, (480, 270), interpolation=cv2.INTER_AREA))
+    columns = 5
+    rows_of_panels = []
+    for start in range(0, len(panels), columns):
+        row = panels[start : start + columns]
+        while len(row) < columns:
+            row.append(255 * (panels[0] * 0))
+        rows_of_panels.append(cv2.hconcat(row))
+    cv2.imwrite(
+        str(review_dir / f"{clip['id']}-contact-sheet.jpg"),
+        cv2.vconcat(rows_of_panels),
+        [cv2.IMWRITE_JPEG_QUALITY, 92],
+    )
+
+
 def _write_artifact_manifest(output: Path) -> None:
     entries: list[str] = []
     for path in sorted(item for item in output.rglob("*") if item.is_file() and item.name != "artifacts.sha256"):
@@ -415,7 +523,14 @@ def prepare(output: Path) -> list[Path]:
     sources_path = output / "sources"
     for source in SOURCES.values():
         _download(source, sources_path / source["filename"])
-    provenance: dict[str, Any] = {"schema_version": "cvbench.real-video-provenance/v1", "clips": []}
+    provenance: dict[str, Any] = {
+        "schema_version": "cvbench.real-video-provenance/v1",
+        "preparation_toolchain": {
+            "base_image": PREPARATION_BASE_IMAGE,
+            "requirements_lock_sha256": _sha256(ROOT / "requirements-real-video.lock"),
+        },
+        "clips": [],
+    }
     for clip in CLIPS:
         source = SOURCES[clip["source"]]
         clip_output = output / clip["id"]
@@ -432,6 +547,7 @@ def prepare(output: Path) -> list[Path]:
         )
         if clip["id"] == "rv1-a7f3":
             _write_crowd_review_overlay(rows, output)
+        _write_review_contact_sheet(clip, rows, output)
         provenance["clips"].append(
             {
                 "scenario_id": clip["id"],
@@ -450,8 +566,8 @@ def prepare(output: Path) -> list[Path]:
                     "only in this local provenance record"
                 ),
                 "ignore_semantics": (
-                    "every selected frame has a broad full-frame ignore region for non-target content; "
-                    "the crowd also retains manually reviewed local ignore boxes at output frames 16-20. "
+                    "selected frames carry only narrow manually reviewed ignore boxes around visible "
+                    "non-target objects; genuine background remains scoreable. "
                     "Scoreable targets match first, then unmatched predictions overlapping ignore rows "
                     "at the locked benchmark threshold are neutral"
                 ),
@@ -462,16 +578,25 @@ def prepare(output: Path) -> list[Path]:
     )
     _write_artifact_manifest(output)
     verify_artifacts(output)
+    _verify_expected_frame_manifest(output)
     return [output / clip["id"] / "scenario.yaml" for clip in CLIPS]
 
 
 def main() -> int:
+    global ROOT
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--verify-only", action="store_true")
+    parser.add_argument("--repo-root", type=Path, default=ROOT)
     args = parser.parse_args()
+    if os.environ.get("CVBENCH_PREP_CONTAINER") != "1":
+        raise SystemExit(
+            "native host preparation is unsupported; use scripts/prepare_real_video_container.sh"
+        )
+    ROOT = args.repo_root.resolve()
     if args.verify_only:
         verify_artifacts(args.output.resolve())
+        _verify_expected_frame_manifest(args.output.resolve())
         print(args.output.resolve() / "artifacts.sha256")
         return 0
     paths = prepare(args.output)

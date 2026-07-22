@@ -8,22 +8,22 @@
   },
   "runs": {
     "real": {
-      "run_id": "20260722T031959Z-0bd534fd",
+      "run_id": "20260722T040911Z-143f8b24",
       "report": "real-video-evidence/real-baseline-report.json",
-      "report_sha256": "a6162143213aecb19223e18c316892060f316c88cdb0029109376c7911d86b95",
-      "benchmark_fingerprint": "b7d70b4246e9ce53cb1a6b95a09c80b3f98824b174fcf163850916a9f2af4faf",
+      "report_sha256": "8daaaab0ba93d8daf77191d5f1df7123b903626a772713bb9991e4116384a1c4",
+      "benchmark_fingerprint": "37078541783eecf66f42ad40175804f05695b7bdfdb5e8d70c60099ca8d3e1ea",
       "status": "completed",
       "delivered_frames": 78,
       "output_records": 1436,
       "matched_samples": 51,
-      "neutral_ignored_predictions": 573,
+      "neutral_ignored_predictions": 90,
       "acquisition_rate": 1.0,
       "overall_observed_coverage": 0.6021505376,
       "overall_continuity": 0.7634408602,
       "mean_iou": 0.2908117113,
       "id_switches": 13,
-      "false_detections": 0,
-      "latency_p99_ms": 37.1857376,
+      "false_detections": 483,
+      "latency_p99_ms": 37.43393805,
       "coverage_by_scenario": {
         "real_camera_motion_scale": 0.5806451613,
         "real_crowding_occlusion": 0.3333333333,
@@ -31,9 +31,9 @@
       }
     },
     "synthetic_same_sut": {
-      "run_id": "20260722T032007Z-d91ad223",
+      "run_id": "20260722T040920Z-a7aeeda6",
       "report": "real-video-evidence/synthetic-same-sut-report.json",
-      "report_sha256": "227b337fea56a316561a7c47949aba97470d7dcf0644a97b268d2d658f066875",
+      "report_sha256": "a2442a1b1a57a359bf2c0aba4317edcdbd2a0f6f7aa813b7bf7c59a3f66eb147",
       "benchmark_fingerprint": "08205802398fa9dffa29f10fab3ce24bc8976e2eadea7975d09626f7c6a58587",
       "status": "completed",
       "delivered_frames": 185,
@@ -56,7 +56,7 @@
     "interpretation": [
       "This is a same-SUT behavior contrast, not a statistically comparable score delta.",
       "The real clips expose identity switches and incomplete coverage while the same detector fails to acquire the synthetic target contract.",
-      "Full-frame ignore regions make the non-target area neutral rather than a false-positive denominator; crowding and camera motion remain the real-tranche stressors."
+      "Narrow reviewed ignore boxes neutralize only covered non-target objects; background hallucinations outside those boxes and duplicate target predictions remain scored penalties."
     ]
   }
 }

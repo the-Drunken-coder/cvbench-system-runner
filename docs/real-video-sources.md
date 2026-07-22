@@ -17,10 +17,12 @@ the importer preserves the source page and attribution in `provenance.json`.
 The CC0 file does not require attribution, but the source credit is retained
 for provenance. The source media is not fetched implicitly by the benchmark.
 The exact preparation dependencies are pinned in `requirements-real-video.lock`:
-Python 3.12, OpenCV 4.13.0.92, NumPy 2.5.1, and PyYAML 6.0.3. The importer
-writes and verifies `data/real-video-v1/artifacts.sha256`; verify an existing
-pack without decoding again with `python3 scripts/prepare_real_video.py
---output data/real-video-v1 --verify-only`.
+Python 3.12, OpenCV 4.13.0.92, NumPy 2.5.1, PyYAML 6.0.3, and psutil 7.2.2.
+Preparation runs only inside the digest-addressed image built from
+`examples/Dockerfile.real-video-prep`; native host decoding is unsupported. The
+canonical 78-JPEG manifest is checked in at
+`scenarios/real-video-v1/expected-frame-sha256.txt`, and the corpus fingerprint
+is checked in at `scenarios/real-video-v1/corpus-fingerprint.txt`.
 
 ## Preparation
 
@@ -31,7 +33,9 @@ and writes scenario manifests plus ground truth below the ignored
 `data/real-video-v1/` directory.
 
 ```bash
-python3 scripts/prepare_real_video.py --output data/real-video-v1
+docker build -f examples/Dockerfile.real-video-prep -t cvbench-real-video-prep:v1 .
+scripts/prepare_real_video_container.sh --output data/real-video-v1
+scripts/prepare_real_video_container.sh --output data/real-video-v1
 cvbench validate --benchmark benchmarks/real-video-v1.yaml \
   --system systems/real-video-baseline-local.yaml
 ```
@@ -51,9 +55,11 @@ SUT.
 | `rv1-c3d1` | Amsterdam frames 300–360, every 2nd frame | moving camera, rapid target scale change, and background motion |
 
 The boxes are human-reviewed keyframes with deterministic linear interpolation
-between anchors. Crowd output frames 16–20 were manually reannotated after
-visual inspection; the reviewable deterministic overlay is checked in at
-`scenarios/real-video-v1/rv1-a7f3/review/crowd-frames-16-20-overlay.jpg`.
+between anchors. Non-target people/cars are covered by small reviewed ignore
+boxes that never intersect the target; genuine background remains scoreable.
+Crowd output frames 16–20 were manually reannotated after visual inspection.
+Reviewable deterministic contact sheets are checked in for all three clips at
+`scenarios/real-video-v1/*/review/`.
 The importer keeps original source-frame indices only in the local provenance
 record; they are not put in frame metadata or ground truth sent to the SUT.
 Public scenario IDs and calibration clips are recognizable and cannot provide
@@ -69,7 +75,7 @@ progressive socket stream and has no source path, annotation path, query box,
 or future-frame access. Run it with:
 
 ```bash
-python3 scripts/prepare_real_video.py --output data/real-video-v1
+scripts/prepare_real_video_container.sh --output data/real-video-v1
 cvbench run --benchmark benchmarks/real-video-v1.yaml \
   --system systems/real-video-baseline-local.yaml \
   --output reports/real-video-v1

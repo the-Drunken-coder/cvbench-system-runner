@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import socket
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -51,6 +53,12 @@ def test_real_video_catalog_is_opaque_and_checksum_pinned() -> None:
         not any(label in clip["id"] for label in ("person", "car", "crowd", "night", "motion"))
         for clip in CLIPS
     )
+    assert all(
+        region.get("frames") != "all" or region.get("bbox")
+        for clip in CLIPS
+        for region in clip["ignore_regions"]
+    )
+    assert "full_frame" not in json.dumps(CLIPS)
 
 
 def test_keyframe_interpolation_is_deterministic() -> None:
@@ -72,6 +80,7 @@ def test_all_real_clips_have_ignore_coverage_and_crowd_frames_are_locked() -> No
         target_timestamps = {row["source_timestamp_ns"] for row in rows if not row.get("ignore")}
         ignored_timestamps = {row["source_timestamp_ns"] for row in rows if row.get("ignore_region")}
         assert target_timestamps <= ignored_timestamps
+        assert all(row.get("ignore_region_id") for row in rows if row.get("ignore_region"))
     crowd_rows = [
         json.loads(line)
         for line in (ROOT / "scenarios/real-video-v1/rv1-a7f3/ground_truth.jsonl").read_text().splitlines()
@@ -83,6 +92,25 @@ def test_all_real_clips_have_ignore_coverage_and_crowd_frames_are_locked() -> No
     assert by_frame[18]["eligible_for_detection"] is False
     assert by_frame[19]["eligible_for_detection"] is False
     assert by_frame[20]["on_screen"] is False
+
+
+def test_canonical_frame_manifest_has_exactly_78_hashes_and_prep_is_container_only() -> None:
+    expected = ROOT / "scenarios/real-video-v1/expected-frame-sha256.txt"
+    assert len(expected.read_text().splitlines()) == 78
+    result = subprocess.run(
+        [sys.executable, "scripts/prepare_real_video.py", "--verify-only", "--output", "data/real-video-v1"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "native host preparation is unsupported" in result.stderr + result.stdout
+
+
+def test_prep_toolchain_uses_digest_addressed_base_image() -> None:
+    dockerfile = (ROOT / "examples/Dockerfile.real-video-prep").read_text()
+    assert "FROM python:3.12-slim@sha256:" in dockerfile
+    assert "scripts/prepare_real_video_container.sh" in (ROOT / "docs/real-video-sources.md").read_text()
 
 
 def test_source_checksum_verification_checks_content(tmp_path: Path) -> None:

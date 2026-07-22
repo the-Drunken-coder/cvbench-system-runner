@@ -106,6 +106,32 @@ def test_duplicate_track_counts_only_extra_unmatched_track() -> None:
     assert metrics["identity"]["track_splits"] == 1
 
 
+def test_background_hallucination_outside_ignore_is_false() -> None:
+    target = gt(0, box=[10, 10, 20, 20])
+    ignored = gt(0, target="ignore-object", box=[30, 30, 40, 40])
+    ignored["ignore"] = True
+    records = [
+        output(0, track="target", box=[10, 10, 20, 20]),
+        output(0, track="background-hallucination", box=[100, 100, 110, 110]),
+    ]
+    metrics, _ = calculate_metrics([target, ignored], records, Thresholds())
+    assert metrics["false_detections"]["detections"] == 1
+    assert metrics["false_detections"]["neutral_ignored_predictions"] == 0
+
+
+def test_duplicate_target_prediction_is_duplicate_and_split_with_narrow_ignore() -> None:
+    target = gt(0, box=[10, 10, 20, 20])
+    ignored = gt(0, target="ignore-object", box=[30, 30, 40, 40])
+    ignored["ignore"] = True
+    records = [
+        output(0, track="target", box=[10, 10, 20, 20]),
+        output(0, track="duplicate-target", box=[11, 10, 21, 20]),
+    ]
+    metrics, _ = calculate_metrics([target, ignored], records, Thresholds())
+    assert metrics["identity"]["duplicate_tracks"] == 1
+    assert metrics["identity"]["track_splits"] == 1
+
+
 def test_false_track_duration_is_exactly_two_seconds() -> None:
     ground_truth = [gt(0, box=[100, 100, 110, 110]), gt(1_000_000_000, box=[100, 100, 110, 110])]
     records = [output(0, track="false", box=[0, 0, 10, 10]), output(1_000_000_000, track="false", box=[0, 0, 10, 10])]

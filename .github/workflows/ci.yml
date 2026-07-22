@@ -60,7 +60,12 @@ jobs:
       - name: Prepare and score the isolated real-video tranche
         run: |
           python -m pip install -r requirements-real-video.lock
-          python scripts/prepare_real_video.py --output data/real-video-v1
+          docker build -f examples/Dockerfile.real-video-prep -t cvbench-real-video-prep:v1 .
+          scripts/prepare_real_video_container.sh --output data/real-video-v1
+          cp data/real-video-v1/artifacts.sha256 /tmp/real-video-artifacts-run1.sha256
+          scripts/prepare_real_video_container.sh --output data/real-video-v1
+          cmp -s /tmp/real-video-artifacts-run1.sha256 data/real-video-v1/artifacts.sha256
+          test "$(wc -l < scenarios/real-video-v1/expected-frame-sha256.txt)" -eq 78
           docker build -f examples/Dockerfile.real-video-baseline -t cvbench-real-video-baseline:v1 .
           cvbench run --benchmark benchmarks/real-video-v1.yaml --system systems/real-video-baseline-docker.yaml --output real-video-docker-runs
           python scripts/assert_docker_report.py real-video-docker-runs --real-video
