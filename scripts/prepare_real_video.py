@@ -109,6 +109,7 @@ CLIPS: tuple[dict[str, Any], ...] = (
             "19": [[210, 140, 600, 1040]],
             "20": [[260, 130, 760, 1040]],
         },
+        "ignore_regions": ["full_frame"],
         "keyframes": [
             {"source_frame": 80, "bbox": [230, 220, 450, 820]},
             {"source_frame": 100, "bbox": [513, 204, 733, 804]},
@@ -132,6 +133,7 @@ CLIPS: tuple[dict[str, Any], ...] = (
         "class_id": "target",
         "target_id": "t-01",
         "occlusion_frames": [],
+        "ignore_regions": ["full_frame"],
         "keyframes": [
             {"source_frame": 320, "bbox": [460, 520, 660, 740]},
             {"source_frame": 330, "bbox": [476, 536, 676, 756]},
@@ -155,6 +157,7 @@ CLIPS: tuple[dict[str, Any], ...] = (
         "class_id": "target",
         "target_id": "t-01",
         "occlusion_frames": [],
+        "ignore_regions": ["full_frame"],
         "keyframes": [
             {"source_frame": 300, "bbox": [900, 430, 1550, 830]},
             {"source_frame": 320, "bbox": [820, 410, 1470, 810]},
@@ -301,6 +304,27 @@ def _decode_clip(source_path: Path, clip: dict[str, Any], output: Path) -> tuple
                         "source_frame_index": source_frame,
                     }
                 )
+            for region_index, region in enumerate(clip.get("ignore_regions", []), 1):
+                if region == "full_frame":
+                    region_box = [0.0, 0.0, float(image.shape[1]), float(image.shape[0])]
+                else:
+                    region_box = [float(value) for value in region["bbox"]]
+                selected.append(
+                    {
+                        "target_id": f"ignore-region-{frame_index:02d}-{region_index:02d}",
+                        "sequence_id": clip["sequence_id"],
+                        "source_timestamp_ns": frame_index * clip["stride"] * FPS_NS,
+                        "on_screen": True,
+                        "eligible_for_detection": False,
+                        "visibility_fraction": 1.0,
+                        "occlusion": "none",
+                        "class_id": clip["class_id"],
+                        "bbox_xyxy": region_box,
+                        "ignore": True,
+                        "ignore_region": True,
+                        "source_frame_index": source_frame,
+                    }
+                )
         source_frame += 1
     cap.release()
     if not selected:
@@ -426,9 +450,10 @@ def prepare(output: Path) -> list[Path]:
                     "only in this local provenance record"
                 ),
                 "ignore_semantics": (
-                    "ignore rows mark visible but non-scoreable crowd objects; scoreable targets match "
-                    "first, then unmatched predictions overlapping ignore boxes at the locked benchmark "
-                    "threshold are neutral"
+                    "every selected frame has a broad full-frame ignore region for non-target content; "
+                    "the crowd also retains manually reviewed local ignore boxes at output frames 16-20. "
+                    "Scoreable targets match first, then unmatched predictions overlapping ignore rows "
+                    "at the locked benchmark threshold are neutral"
                 ),
             }
         )

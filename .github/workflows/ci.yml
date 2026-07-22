@@ -64,5 +64,15 @@ jobs:
           docker build -f examples/Dockerfile.real-video-baseline -t cvbench-real-video-baseline:v1 .
           cvbench run --benchmark benchmarks/real-video-v1.yaml --system systems/real-video-baseline-docker.yaml --output real-video-docker-runs
           python scripts/assert_docker_report.py real-video-docker-runs --real-video
+          python scripts/verify_ci_evidence.py real-video-docker-runs data/real-video-v1/artifacts.sha256
+      - name: Upload safe real-video Docker evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-video-docker-evidence
+          if-no-files-found: error
+          path: |
+            real-video-docker-runs/*/report.json
+            real-video-docker-runs/*/resources.csv
+            data/real-video-v1/artifacts.sha256
       - name: Assert no real-video container remains
         run: test -z "$(docker ps -aq --filter ancestor=cvbench-real-video-baseline:v1)"

@@ -1,4 +1,5 @@
 from cvbench.config import Thresholds
+from cvbench.matching import intersection_over_prediction_area
 from cvbench.metrics import calculate_metrics, percentile
 from tests.helpers import gt, output
 
@@ -188,6 +189,36 @@ def test_ignore_annotations_neutralize_unmatched_predictions_after_target_matchi
     assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
     assert metrics["false_detections"]["detections"] == 0
     assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
+
+
+def test_contained_small_prediction_is_neutral_inside_broad_ignore_region() -> None:
+    ignored = gt(0, target="ignore-region", box=[0, 0, 100, 100])
+    ignored["ignore"] = True
+    ignored["ignore_region"] = True
+    metrics, _ = calculate_metrics(
+        [ignored], [output(0, track="unlabeled", box=[10, 10, 20, 20])], Thresholds()
+    )
+    assert intersection_over_prediction_area([10, 10, 20, 20], [0, 0, 100, 100]) == 1
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["false_detections"]["detections"] == 0
+
+
+def test_neutral_predictions_do_not_create_identity_penalties() -> None:
+    target = gt(0, box=[10, 10, 20, 20])
+    ignored = gt(0, target="ignore-region", box=[0, 0, 100, 100])
+    ignored["ignore"] = True
+    ignored["ignore_region"] = True
+    records = [
+        output(0, track="real", box=[10, 10, 20, 20]),
+        output(0, track="neutral", box=[50, 50, 60, 60]),
+        output(100_000_000, track="real", box=[10, 10, 20, 20]),
+    ]
+    metrics, _ = calculate_metrics([target, ignored, gt(100_000_000)], records, Thresholds())
+    assert metrics["sample_counts"]["neutral_ignored_predictions"] == 1
+    assert metrics["identity"]["duplicate_tracks"] == 0
+    assert metrics["identity"]["track_splits"] == 0
+    assert metrics["identity"]["id_switches"] == 0
+    assert metrics["long_running_stability"]["unique_track_ids"] == 1
 
 
 def test_eof_uses_median_cadence_and_half_open_intervals() -> None:

@@ -8,22 +8,22 @@
   },
   "runs": {
     "real": {
-      "run_id": "20260722T021804Z-d215729a",
+      "run_id": "20260722T031959Z-0bd534fd",
       "report": "real-video-evidence/real-baseline-report.json",
-      "report_sha256": "6060ae5ceec244391f615715145baf1759c681c2ef45b61067fb97bd3dca3d46",
-      "benchmark_fingerprint": "535c19864339cf030f28ce97db0b2f7140af00900d8166e90d4e31af8f425750",
+      "report_sha256": "a6162143213aecb19223e18c316892060f316c88cdb0029109376c7911d86b95",
+      "benchmark_fingerprint": "b7d70b4246e9ce53cb1a6b95a09c80b3f98824b174fcf163850916a9f2af4faf",
       "status": "completed",
       "delivered_frames": 78,
       "output_records": 1436,
       "matched_samples": 51,
-      "neutral_ignored_predictions": 1,
+      "neutral_ignored_predictions": 573,
       "acquisition_rate": 1.0,
       "overall_observed_coverage": 0.6021505376,
       "overall_continuity": 0.7634408602,
       "mean_iou": 0.2908117113,
       "id_switches": 13,
-      "false_detections": 572,
-      "latency_p99_ms": 163.7413706,
+      "false_detections": 0,
+      "latency_p99_ms": 37.1857376,
       "coverage_by_scenario": {
         "real_camera_motion_scale": 0.5806451613,
         "real_crowding_occlusion": 0.3333333333,
@@ -31,10 +31,10 @@
       }
     },
     "synthetic_same_sut": {
-      "run_id": "20260722T021804Z-043a2575",
+      "run_id": "20260722T032007Z-d91ad223",
       "report": "real-video-evidence/synthetic-same-sut-report.json",
-      "report_sha256": "9a9970f3cec2e37171af19fcc4f3af761cc3f9789b70879ddca155a559bb6b55",
-      "benchmark_fingerprint": "f672d5e98ec36c6bcdf91c2df8dfc5a898142e0094b4cc357a1547e8a6c438dd",
+      "report_sha256": "227b337fea56a316561a7c47949aba97470d7dcf0644a97b268d2d658f066875",
+      "benchmark_fingerprint": "08205802398fa9dffa29f10fab3ce24bc8976e2eadea7975d09626f7c6a58587",
       "status": "completed",
       "delivered_frames": 185,
       "output_records": 143,
@@ -46,17 +46,17 @@
       "mean_iou": null,
       "id_switches": 0,
       "false_detections": 105,
-      "latency_p99_ms": 99.3546395
+      "latency_p99_ms": 117.29564186
     }
   },
   "comparison": {
     "same_sut_revision": true,
     "comparable": false,
-    "reason": "benchmark fingerprints differ; compare_reports correctly returns inconclusive rather than a delta",
+      "reason": "benchmark fingerprints differ; compare_reports correctly returns inconclusive rather than a delta",
     "interpretation": [
       "This is a same-SUT behavior contrast, not a statistically comparable score delta.",
-      "The real clips expose substantial motion-detector false output and identity switches while the same detector fails to acquire the synthetic target contract.",
-      "Crowding and camera motion remain the real-tranche stressors; one crowd prediction was neutralized by an ignore annotation and is excluded from false-detection denominators."
+      "The real clips expose identity switches and incomplete coverage while the same detector fails to acquire the synthetic target contract.",
+      "Full-frame ignore regions make the non-target area neutral rather than a false-positive denominator; crowding and camera motion remain the real-tranche stressors."
     ]
   }
 }

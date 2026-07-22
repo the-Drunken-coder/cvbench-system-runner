@@ -43,21 +43,36 @@ def _sha256(path: Path) -> str:
 
 
 def _comparison_fingerprint(benchmark: BenchmarkConfig, scenarios: list[Scenario]) -> tuple[str, dict[str, Any]]:
+    scenario_inputs = []
+    for scenario in scenarios:
+        manifest = next(path for path in benchmark.scenarios if path.parent == scenario.root)
+        frames = sorted(
+            scenario.frames,
+            key=lambda frame: (frame.frame_index, frame.relative_timestamp_ns, frame.path.name),
+        )
+        scenario_inputs.append(
+            {
+                "id": scenario.id,
+                "manifest_sha256": _sha256(manifest),
+                "ground_truth_sha256": _sha256(scenario.root / "ground_truth.jsonl"),
+                "frame_sha256": [
+                    {
+                        "frame_index": frame.frame_index,
+                        "source_timestamp_ns": frame.relative_timestamp_ns,
+                        "sha256": _sha256(frame.path),
+                    }
+                    for frame in frames
+                ],
+            }
+        )
+    scenario_inputs.sort(key=lambda item: (item["id"], item["manifest_sha256"], item["ground_truth_sha256"]))
     inputs = {
         "benchmark_id": benchmark.id,
         "benchmark_version": benchmark.version,
         "input_mode": benchmark.input_mode,
         "playback_rate": benchmark.playback_rate,
         "thresholds": asdict(benchmark.thresholds),
-        "scenarios": [
-            {
-                "id": scenario.id,
-                "manifest_sha256": _sha256(next(path for path in benchmark.scenarios if path.parent == scenario.root)),
-                "ground_truth_sha256": _sha256(scenario.root / "ground_truth.jsonl"),
-                "frame_sha256": [_sha256(frame.path) for frame in scenario.frames],
-            }
-            for scenario in scenarios
-        ],
+        "scenarios": scenario_inputs,
     }
     encoded = json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest(), inputs

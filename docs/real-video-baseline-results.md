@@ -12,11 +12,11 @@ The same `classical-motion-baseline` revision and system configuration were run 
 | Overall continuity | 0.7634 | 0.0000 |
 | Mean IoU | 0.2908 | n/a |
 | ID switches | 13 | 0 |
-| False detections | 572 | 105 |
-| Neutral ignored predictions | 1 | 0 |
-| Latency p99 | 163.74 ms | 99.35 ms |
+| False detections | 0 | 105 |
+| Neutral ignored predictions | 573 | 0 |
+| Latency p99 | 37.19 ms | 117.30 ms |
 
-The benchmark fingerprints differ, so this is deliberately marked non-comparable; the runner's comparison gate returns inconclusive rather than inventing score deltas. The behavior contrast is still useful: real footage exposes many foreground false tracks and identity switches, while this deliberately simple motion detector fails to acquire the synthetic contract. The real crowd and camera-motion scenarios are the weakest real cases; the low-light clip achieved full target coverage but still contributed heavy false output.
+The benchmark fingerprints differ, so this is deliberately marked non-comparable; the runner's comparison gate returns inconclusive rather than inventing score deltas. The behavior contrast is still useful: real footage exposes identity switches and incomplete coverage, while this deliberately simple motion detector fails to acquire the synthetic contract. Full-frame ignore regions neutralize non-target predictions, so they are excluded from false-detection and identity denominators; the real crowd and camera-motion scenarios remain the weakest real cases.
 
 Preparation and verification:
 

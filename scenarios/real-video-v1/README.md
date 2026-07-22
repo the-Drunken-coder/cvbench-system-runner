@@ -10,4 +10,7 @@ media, prepared frames, and annotations remain ignored. The model container
 receives only the owner-only frame socket; repository paths, media, and
 ground truth are not mounted. The checked-in crowd overlay at
 `rv1-a7f3/review/crowd-frames-16-20-overlay.jpg` is the manual QA record
-for the corrected target annotations.
+for the corrected target annotations. Each selected frame contains a broad
+`ignore_region` full-frame annotation for non-target content; scoreable target
+matches are resolved first, and only then are unmatched predictions neutralized
+using intersection-over-prediction-area.

@@ -15,6 +15,7 @@ from cvbench.runner import _deliver_scenarios, _load_unique_scenarios
 from cvbench.scenario import load_scenario
 from scripts.prepare_real_video import (
     CLIPS,
+    FPS_NS,
     SOURCES,
     _interpolate_box,
     _sha1,
@@ -60,6 +61,28 @@ def test_keyframe_interpolation_is_deterministic() -> None:
     assert _interpolate_box(keyframes, 10) == [0.0, 10.0, 20.0, 30.0]
     assert _interpolate_box(keyframes, 15) == [5.0, 15.0, 25.0, 35.0]
     assert _interpolate_box(keyframes, 20) == [10.0, 20.0, 30.0, 40.0]
+
+
+def test_all_real_clips_have_ignore_coverage_and_crowd_frames_are_locked() -> None:
+    for clip in CLIPS:
+        rows = [
+            json.loads(line)
+            for line in (ROOT / "scenarios/real-video-v1" / clip["id"] / "ground_truth.jsonl").read_text().splitlines()
+        ]
+        target_timestamps = {row["source_timestamp_ns"] for row in rows if not row.get("ignore")}
+        ignored_timestamps = {row["source_timestamp_ns"] for row in rows if row.get("ignore_region")}
+        assert target_timestamps <= ignored_timestamps
+    crowd_rows = [
+        json.loads(line)
+        for line in (ROOT / "scenarios/real-video-v1/rv1-a7f3/ground_truth.jsonl").read_text().splitlines()
+        if not json.loads(line).get("ignore")
+    ]
+    by_frame = {row["source_timestamp_ns"] // (4 * FPS_NS): row for row in crowd_rows}
+    assert by_frame[16]["bbox_xyxy"] == [1300, 170, 1535, 850]
+    assert by_frame[17]["bbox_xyxy"] == [1435, 155, 1665, 850]
+    assert by_frame[18]["eligible_for_detection"] is False
+    assert by_frame[19]["eligible_for_detection"] is False
+    assert by_frame[20]["on_screen"] is False
 
 
 def test_source_checksum_verification_checks_content(tmp_path: Path) -> None:

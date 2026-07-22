@@ -170,6 +170,21 @@ def calculate_metrics(
     fault_events = fault_events or {}
     outputs = [item.system_record for item in collected]
     observed_matches, matches, unmatched = match_records_by_support(ground_truth, outputs, thresholds)
+    neutral_output_ids = {
+        record["_neutral_output_identity"]
+        for record in unmatched
+        if record.get("neutral_ignored")
+    }
+    scored_unmatched = [
+        record
+        for record in unmatched
+        if not record.get("neutral_ignored")
+    ]
+    scored_outputs = [
+        record
+        for record in outputs
+        if id(record) not in neutral_output_ids
+    ]
     ground_truth_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
     for gt in ground_truth:
         if gt.get("ignore", False):
@@ -365,7 +380,7 @@ def calculate_metrics(
             previous_timestamp = match.source_timestamp_ns
     overlapping_by_frame_target: dict[tuple[str, int, str], set[str]] = defaultdict(set)
     duplicate_ids_by_target: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for output in unmatched:
+    for output in scored_unmatched:
         if output.get("event") not in TRACK_OBSERVATION_EVENTS:
             continue
         frame_key = (output["sequence_id"], output["source_timestamp_ns"])
@@ -390,7 +405,7 @@ def calculate_metrics(
         }
     )
     merges = 0
-    for output in outputs:
+    for output in scored_outputs:
         if output.get("event") not in TRACK_OBSERVATION_EVENTS:
             continue
         frame_key = (output["sequence_id"], output["source_timestamp_ns"])
@@ -756,14 +771,12 @@ def calculate_metrics(
     reacquisition["after_feed_interruption_rate"] = interruption.get("observed_recovery_rate")
     reacquisition["after_visible_detector_dropout_rate"] = blackout.get("observed_recovery_rate")
 
-    track_records = [
-        record for record in outputs if record.get("event") in TRACK_EVENTS
-    ]
+    track_records = [record for record in scored_outputs if record.get("event") in TRACK_EVENTS]
     sequences_by_track: dict[str, set[str]] = defaultdict(set)
     for record in track_records:
         sequences_by_track[str(record["track_id"])].add(str(record["sequence_id"]))
     contaminated_ids = sorted(track_id for track_id, sequences in sequences_by_track.items() if len(sequences) > 1)
-    lifecycle = _track_id_lifecycle(outputs, observed_matches)
+    lifecycle = _track_id_lifecycle(track_records, observed_matches)
     sequence_order = list(dict.fromkeys(row["sequence_id"] for row in ground_truth))
     midpoint = max(1, len(sequence_order) // 2)
     first_sequences, second_sequences = set(sequence_order[:midpoint]), set(sequence_order[midpoint:])
