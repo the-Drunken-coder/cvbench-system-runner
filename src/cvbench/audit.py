@@ -432,7 +432,7 @@ def build_audit_evidence(
         _flag(
             "annotation_source_path_access",
             "not_observed",
-            "The runner does not expose annotation paths to the model.",
+            "The runner does not expose annotation paths to the submitted system under test (SUT).",
         ),
         _flag(
             "network_isolation",

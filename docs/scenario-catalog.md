@@ -13,6 +13,7 @@ All current data can be tuned to or memorized. Private run ordering and runtime 
 - `/scenario-catalog/v1/assets/sha256/{sha256}.jpg` contains an immutable exact benchmark frame.
 
 Indexes and stable detail documents revalidate. Content-addressed media and manifests use a one-year immutable browser cache policy.
+Unknown catalog JSON and JPEG paths return honest `404` responses with machine-appropriate MIME types and no immutable cache. Human navigation keeps `/scenarios/` as its stable entry point and uses the site's explicit `404.html` for unknown pages.
 
 ## Deterministic allowlisted build
 
@@ -20,12 +21,11 @@ From `control-plane/`:
 
 ```bash
 npm ci
-npm run build
 ```
 
-The build writes only to `control-plane/dist`. It derives mechanical fields from the three current benchmark manifests and their referenced scenario manifests. `scenario-catalog/metadata.yaml` is deliberately limited to titles, descriptions, failure modes, source attribution, and transformation notes. `scenario-catalog/baselines.json` is a small first-party allowlist; raw run reports are not copied into the site.
+The `postinstall` build writes only to `control-plane/dist`. It derives mechanical fields from the three current benchmark manifests and their referenced scenario manifests. `scenario-catalog/metadata.yaml` is deliberately limited to titles, descriptions, failure modes, source attribution, and transformation notes. `scenario-catalog/baselines.json` binds each scenario to one of three committed, sanitized evidence manifests. The builder hashes those sources, reconciles every derived summary, and publishes only their allowlisted fields; raw run reports are not copied into the site.
 
-The build rejects a benchmark/catalog set mismatch, non-public status, path traversal, symlinks, undeclared source files or extensions, malformed or out-of-frame geometry, non-contiguous frames, sequence/timestamp mismatch, JPEG dimension mismatch, hash mismatch, and private-artifact filename patterns. The committed 78-frame real-video media directory must exactly equal `scenarios/real-video-v1/expected-frame-sha256.txt`; synthetic media is read from the benchmark scenario directories. Identical frame bytes share one content-addressed asset.
+The build rejects a benchmark/catalog set mismatch, non-public status, unknown or private-looking source fields, path traversal, a symlink in any allowlisted path component, undeclared source files or extensions, malformed or out-of-frame geometry, non-contiguous frames, sequence/timestamp mismatch, JPEG dimension mismatch, hash mismatch, and private-artifact filename patterns. It completes this preflight before replacing output, and accepts only `control-plane/dist` or a direct `dist-test-*` directory. The committed 78-frame real-video media directory must exactly equal `scenarios/real-video-v1/expected-frame-sha256.txt`; synthetic media is read from the benchmark scenario directories. Identical frame bytes share one content-addressed asset.
 
 Limits enforced by the build are:
 
@@ -45,7 +45,7 @@ The viewer creates all untrusted text with `textContent` and numeric SVG attribu
 
 ## Scoring disclosure
 
-Current scoring is class-aware. Synthetic annotations are exhaustive, and `synthetic-false-detection` deliberately has no targets. Real annotations are targeted and non-exhaustive: never infer that every visible real-world object is annotated. Real predictions wholly outside the fixed ROI are out of scope. Within scope, target matching precedes ignore matching, `ignore_region` requires at least 50% prediction-area coverage, ordinary ignore matching requires IoU greater than 0.5, and background hallucinations inside the ROI plus duplicate target predictions remain penalized.
+Current scoring is class-aware. Synthetic annotations are exhaustive, and `synthetic-false-detection` deliberately has no targets. Real annotations are targeted and non-exhaustive: never infer that every visible real-world object is annotated. Real predictions wholly outside the fixed ROI are out of scope. Within scope, target matching precedes ignore matching, `ignore_region` requires at least 50% prediction-area coverage, ordinary ignore matching requires IoU greater than or equal to 0.5, and background hallucinations inside the ROI plus duplicate target predictions remain penalized.
 
 ## Cloudflare Static Assets basis
 

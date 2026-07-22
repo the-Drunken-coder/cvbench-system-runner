@@ -205,6 +205,27 @@ async function route(request, config) {
 async function serveAsset(request, assets) {
   if (!assets || !["GET", "HEAD"].includes(request.method)) return problem(404, "not_found", "Not found.");
   const response = await assets.fetch(request);
+  const kind = catalogAssetKind(new URL(request.url).pathname);
+  const contentType = response.headers.get("content-type") || "";
+  const poisonedSuccess = response.status === 200 && (kind === "json" ? !contentType.includes("json") : !contentType.startsWith("image/jpeg"));
+  if (kind && (response.status === 404 || poisonedSuccess)) {
+    const missing = kind === "json"
+      ? problem(404, "not_found", "Catalog resource not found.")
+      : new Response(null, { status: 404, headers: { "cache-control": "no-store", "content-type": "image/jpeg" } });
+    return secureAssetResponse(missing);
+  }
+  return secureAssetResponse(response);
+}
+
+function catalogAssetKind(pathname) {
+  if (pathname === "/.well-known/cvbench-scenarios.json" || /^\/scenario-catalog\/v1\/[^?#]*\.json$/.test(pathname)) {
+    return "json";
+  }
+  if (/^\/scenario-catalog\/v1\/assets\/sha256\/[^/]+\.jpg$/.test(pathname)) return "jpeg";
+  return null;
+}
+
+function secureAssetResponse(response) {
   const headers = new Headers(response.headers);
   headers.set("x-content-type-options", "nosniff");
   headers.set("referrer-policy", "strict-origin-when-cross-origin");

@@ -11,10 +11,14 @@
     "db:migrate:local": "wrangler d1 migrations apply cvbench-control-plane --local",
     "db:migrate:remote": "wrangler d1 migrations apply cvbench-control-plane --remote",
     "test": "node --test test/*.test.js",
-    "test:d1": "node scripts/d1-lifecycle.mjs"
+    "test:d1": "node scripts/d1-lifecycle.mjs",
+    "test:preview": "node scripts/test-preview-routes.mjs",
+    "test:production-install": "node scripts/test-production-install.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.8.3"
   },
   "devDependencies": {
-    "wrangler": "4.112.0",
-    "yaml": "^2.8.3"
+    "wrangler": "4.112.0"
   }
 }

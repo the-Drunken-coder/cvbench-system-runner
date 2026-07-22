@@ -9,7 +9,18 @@ import { fileURLToPath } from "node:url";
 
 import { parse as parseYaml } from "yaml";
 
-import { assertedRegularFile, outputEvidence, publishFrame, validateBox } from "../scripts/build-scenario-catalog.mjs";
+import {
+  allowedObject,
+  assertSafeOutput,
+  assertedRegularFile,
+  buildCatalog,
+  loadBaselineEvidence,
+  outputEvidence,
+  publishFrame,
+  sanitizeAnnotation,
+  sanitizeFault,
+  validateBox,
+} from "../scripts/build-scenario-catalog.mjs";
 
 const CONTROL_PLANE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ROOT = path.resolve(CONTROL_PLANE, "..");
@@ -32,12 +43,16 @@ async function filesBelow(root) {
 }
 
 function build(output) {
-  const result = spawnSync(process.execPath, ["scripts/build-scenario-catalog.mjs", "--output", output], {
+  const result = runBuild(output);
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  return JSON.parse(result.stdout.trim());
+}
+
+function runBuild(output) {
+  return spawnSync(process.execPath, ["scripts/build-scenario-catalog.mjs", "--output", output], {
     cwd: CONTROL_PLANE,
     encoding: "utf8",
   });
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  return JSON.parse(result.stdout.trim());
 }
 
 test("two clean catalog builds are byte-identical and within budgets", async (context) => {
@@ -135,9 +150,12 @@ test("licenses, annotation scope, scoring rules, and track churn evidence are ex
   assert.equal(baseline.metrics.track_id_reuse_events, 0);
   assert.equal(baseline.metrics.track_id_exhaustion_detected, false);
   assert.equal(baseline.metrics.state_contamination_events, 0);
+  assert.equal(baseline.source_evidence.id, "track-id-churn");
+  const evidenceSource = await readFile(path.join(ROOT, "scenario-catalog/evidence/track-id-churn.json"));
+  assert.equal(baseline.source_evidence.sha256, sha256(evidenceSource));
   assert.equal(churn.annotations.scoring.target_matching_precedes_ignore_matching, true);
   assert.equal(churn.annotations.scoring.ignore_region_match, ">= 50% prediction-area coverage");
-  assert.equal(churn.annotations.scoring.ordinary_ignore_match, "IoU > 0.5");
+  assert.equal(churn.annotations.scoring.ordinary_ignore_match, "IoU >= 0.5");
 });
 
 test("catalog safety helpers reject traversal, symlinks, malformed geometry, hash mismatch, and private artifacts", async (context) => {
@@ -153,6 +171,12 @@ test("catalog safety helpers reject traversal, symlinks, malformed geometry, has
   const linked = path.join(root, "linked.jpg");
   await symlink(regular, linked);
   await assert.rejects(assertedRegularFile(linked, root), /symlink is not publishable/);
+  const realDirectory = path.join(root, "real-directory");
+  await mkdir(realDirectory);
+  await writeFile(path.join(realDirectory, "nested.jpg"), "nested");
+  const linkedDirectory = path.join(root, "linked-directory");
+  await symlink(realDirectory, linkedDirectory);
+  await assert.rejects(assertedRegularFile(path.join(linkedDirectory, "nested.jpg"), root), /symlink is not publishable/);
   assert.throws(() => validateBox([0, 0, 11, 10], 10, 10, "box"), /outside/);
   assert.throws(() => validateBox([0, Number.NaN, 5, 5], 10, 10, "box"), /finite/);
   const published = new Set();
@@ -164,6 +188,107 @@ test("catalog safety helpers reject traversal, symlinks, malformed geometry, has
   await rm(path.join(output, "credentials.json"));
   await writeFile(path.join(output, "safe-name.json"), '{"contact":"private@example.invalid"}');
   await assert.rejects(outputEvidence(output), /private artifact content/);
+
+  const manifest = { id: "canary", sequence_id: "sequence", frames: [{ source_timestamp_ns: 0, width: 10, height: 10 }] };
+  const annotation = {
+    bbox_xyxy: [0, 0, 5, 5],
+    class_id: "target",
+    eligible_for_detection: true,
+    occlusion: "none",
+    on_screen: true,
+    sequence_id: "sequence",
+    source_timestamp_ns: 0,
+    target_id: "target-1",
+    visibility_fraction: 1,
+  };
+  assert.throws(() => sanitizeAnnotation({ ...annotation, undeclared: "canary" }, manifest, 0), /undeclared field undeclared/);
+  assert.throws(() => sanitizeAnnotation({ ...annotation, metadata: { api_key: "canary" } }, manifest, 0), /private-looking field api_key/);
+  assert.throws(() => sanitizeAnnotation({ ...annotation, local_path: "/private/canary" }, manifest, 0), /private-looking field local_path/);
+  assert.throws(() => sanitizeFault({ type: "blackout", api_key: "canary" }, "canary", 0), /private-looking field api_key/);
+  assert.throws(() => allowedObject({ safe: { local_path: "canary" } }, new Set(["safe"]), "source record"), /private-looking field local_path/);
+});
+
+test("baseline evidence is hashed, allowlisted, and summary-bound", async (context) => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "cvbench-evidence-test-"));
+  context.after(async () => rm(temporary, { recursive: true, force: true }));
+  await mkdir(path.join(temporary, "evidence"));
+  const evidence = {
+    schema_version: "cvbench.sanitized-baseline-evidence/v1",
+    id: "canary",
+    status: "public",
+    system: { id: "sut", name: "Sanitized SUT", version: "v1", sha256: "a".repeat(64) },
+    validation_status: "completed",
+    benchmark_id: "benchmark",
+    run_id: "run",
+    report_sha256: "b".repeat(64),
+    scenarios: { scenario: { observed_coverage: 1, false_detections: 0 } },
+  };
+  const evidenceBody = Buffer.from(`${JSON.stringify(evidence)}\n`);
+  await writeFile(path.join(temporary, "evidence/canary.json"), evidenceBody);
+  const indexPath = path.join(temporary, "baselines.json");
+  const writeIndex = async (digest) => writeFile(indexPath, JSON.stringify({
+    schema_version: "cvbench.scenario-baseline-index/v1",
+    evidence_sources: { canary: { path: "evidence/canary.json", sha256: digest } },
+    scenarios: { scenario: { evidence_id: "canary" } },
+  }));
+  await writeIndex(sha256(evidenceBody));
+  const loaded = await loadBaselineEvidence(indexPath, temporary, ["scenario"]);
+  assert.equal(loaded.scenario.source_evidence.sha256, sha256(evidenceBody));
+  assert.deepEqual(loaded.scenario.metrics, evidence.scenarios.scenario);
+  await writeIndex("0".repeat(64));
+  await assert.rejects(loadBaselineEvidence(indexPath, temporary, ["scenario"]), /baseline evidence hash mismatch/);
+  evidence.system.api_key = "canary";
+  const poisonedBody = Buffer.from(`${JSON.stringify(evidence)}\n`);
+  await writeFile(path.join(temporary, "evidence/canary.json"), poisonedBody);
+  await writeIndex(sha256(poisonedBody));
+  await assert.rejects(loadBaselineEvidence(indexPath, temporary, ["scenario"]), /private-looking field api_key/);
+});
+
+test("destructive output targets fail before source markers are touched", async () => {
+  const protectedTargets = [
+    [ROOT, path.join(ROOT, "README.md")],
+    [CONTROL_PLANE, path.join(CONTROL_PLANE, "package.json")],
+    [path.join(CONTROL_PLANE, "public"), path.join(CONTROL_PLANE, "public/index.html")],
+    [path.join(CONTROL_PLANE, "public/nested"), path.join(CONTROL_PLANE, "public/index.html")],
+    [path.join(CONTROL_PLANE, "src"), path.join(CONTROL_PLANE, "src/app.js")],
+    [path.join(CONTROL_PLANE, "scripts"), path.join(CONTROL_PLANE, "scripts/build-scenario-catalog.mjs")],
+    [path.join(CONTROL_PLANE, "migrations"), path.join(CONTROL_PLANE, "migrations/0001_initial.sql")],
+  ];
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "cvbench-output-canary-"));
+  const outside = path.join(temporary, "outside");
+  await mkdir(outside);
+  const outsideMarker = path.join(outside, "marker.txt");
+  await writeFile(outsideMarker, "survives");
+  protectedTargets.push([outside, outsideMarker]);
+  try {
+    for (const [target, marker] of protectedTargets) {
+      const before = await readFile(marker);
+      const result = runBuild(target);
+      assert.notEqual(result.status, 0, target);
+      assert.match(result.stderr, /output must be/);
+      assert.deepEqual(await readFile(marker), before, target);
+    }
+    assert.doesNotThrow(() => assertSafeOutput(path.join(CONTROL_PLANE, "dist")));
+    assert.doesNotThrow(() => assertSafeOutput(path.join(CONTROL_PLANE, "dist-test-safe")));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("unknown and private-looking source fields fail preflight before output replacement", async (context) => {
+  const output = path.join(CONTROL_PLANE, "dist-test-preflight-canary");
+  context.after(async () => rm(output, { recursive: true, force: true }));
+  await mkdir(output);
+  const marker = path.join(output, "marker.txt");
+  await writeFile(marker, "preflight marker");
+  const metadata = parseYaml(await readFile(path.join(ROOT, "scenario-catalog/metadata.yaml"), "utf8"));
+  metadata.scenarios["synthetic-acquisition"].api_key = "must-never-publish";
+  await assert.rejects(buildCatalog(output, { metadataSource: metadata }), /private-looking field api_key/);
+  assert.equal(await readFile(marker, "utf8"), "preflight marker");
+  delete metadata.scenarios["synthetic-acquisition"].api_key;
+  metadata.scenarios["synthetic-acquisition"].undeclared = "must-never-publish";
+  await assert.rejects(buildCatalog(output, { metadataSource: metadata }), /undeclared field undeclared/);
+  assert.equal(await readFile(marker, "utf8"), "preflight marker");
 });
 
 test("public surfaces use safe DOM rendering, strict CSP, and corrected system terminology", async () => {
@@ -187,6 +312,7 @@ test("public surfaces use safe DOM rendering, strict CSP, and corrected system t
     "control-plane/public/operator.js",
     "control-plane/public/scenario-app.js",
     "control-plane/src/app.js",
+    "src/cvbench/audit.py",
   ];
   const banned = [
     /the system is the model/i,
@@ -194,6 +320,7 @@ test("public surfaces use safe DOM rendering, strict CSP, and corrected system t
     /submit your model/i,
     /model containers?/i,
     /model-submission interface/i,
+    /annotation paths to the model/i,
   ];
   for (const relative of currentSurfaces) {
     const source = await readFile(path.join(ROOT, relative), "utf8");

@@ -39,7 +39,6 @@ Node.js 20+ is required. Docker is not needed for the Worker, static site, D1 mi
 ```bash
 cd control-plane
 npm ci
-npm run build
 npm test
 npx wrangler d1 migrations apply cvbench-control-plane --local
 npx wrangler dev
@@ -64,7 +63,7 @@ curl -sS http://localhost:8787/api/v1/openapi.json
 
 `npm run build` deterministically creates the allowlisted Static Assets tree in `control-plane/dist`, including the complete public scenario catalog. `npm test` exercises the catalog build plus a complete in-memory HTTP lifecycle: authenticated creation, idempotent replay, public read, lease, scored result callback, terminal-state rejection, failure callback, rate limit, payload limit, and lease expiry. It uses a safe baseline system-image reference and a representative scored CVBench report; it does not execute Docker.
 
-`npm ci` also invokes this build through the package's `postinstall` hook. That keeps the connected Worker's existing `npm ci` build setting valid; an explicit `npm run build` remains useful for local regeneration and as a readable build step in new environments.
+`npm ci` also invokes this build through the package's `postinstall` hook, and the build-time YAML parser is a production dependency so `npm ci --omit=dev` follows the same contract. An explicit `npm run build` remains useful only for local regeneration after source edits.
 
 With `wrangler dev` running and a real scored baseline `report.json`, the same lifecycle can be checked against local D1:
 
@@ -94,7 +93,7 @@ In the Cloudflare dashboard:
 
 1. Create or connect a Worker to `the-Drunken-coder/cvbench-system-runner`.
 2. Set the root directory to `/control-plane`.
-3. Set the build command to `npm ci && npm run build`.
+3. Set the build command to `npm ci`; `postinstall` performs the one deterministic catalog build.
 4. Set the deploy command to `npx wrangler deploy`.
 5. Set the production branch to `main`. Leave branch builds enabled so pull-request branches receive preview versions.
 6. Allow Wrangler to provision the D1 binding named `DB` from `wrangler.jsonc`; the narrowly scoped database name is `cvbench-control-plane`.

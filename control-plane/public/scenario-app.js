@@ -1,4 +1,7 @@
+import { createLatestScenarioLoader, exactFrameFailureMessage } from "/scenario-loader.js";
+
 const SVG_NS = "http://www.w3.org/2000/svg";
+const detailLoader = createLatestScenarioLoader();
 const state = {
   catalog: null,
   detail: null,
@@ -41,8 +44,8 @@ function setCatalogStatus(message, error = false) {
   output.classList.toggle("error", error);
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url, { headers: { accept: "application/json" } });
+async function fetchJson(url, signal) {
+  const response = await fetch(url, { headers: { accept: "application/json" }, signal });
   if (!response.ok) throw new Error(`Could not load ${url} (${response.status}).`);
   return response.json();
 }
@@ -172,7 +175,7 @@ async function digestHex(buffer) {
 async function verifyMedia(frame, generation, announce = true) {
   if (state.verifiedMedia.has(frame.media.url)) return true;
   const response = await fetch(frame.media.url, { cache: "force-cache" });
-  if (!response.ok) throw new Error(`Exact frame is missing (${response.status}).`);
+  if (!response.ok) throw new Error(exactFrameFailureMessage(response.status));
   const body = await response.arrayBuffer();
   const digest = await digestHex(body);
   if (digest !== frame.media.sha256) throw new Error(`Exact frame failed its published SHA-256 check.`);
@@ -335,6 +338,7 @@ function renderDetailFacts() {
   appendDefinition(baseline, "Status", state.baseline.validation_status);
   appendDefinition(baseline, "Run", state.baseline.run_id);
   appendDefinition(baseline, "Report hash", `sha256:${state.baseline.report_sha256}`);
+  appendDefinition(baseline, "Sanitized evidence", `${state.baseline.source_evidence.id} · sha256:${state.baseline.source_evidence.sha256}`);
   for (const [name, value] of Object.entries(state.baseline.metrics)) appendDefinition(baseline, name.replaceAll("_", " "), value);
 
   const links = byId("manifest-links");
@@ -357,29 +361,36 @@ async function loadDetail(id) {
   stopPlayback();
   setCatalogStatus(`Loading ${id}…`);
   const summary = state.catalog.scenarios.find((scenario) => scenario.id === id);
-  if (!summary) throw new Error(`Unknown public scenario: ${id}.`);
-  const detail = await fetchJson(summary.detail.url);
-  const [frames, annotations, baseline] = await Promise.all([
-    fetchJson(detail.media.frame_manifest.url),
-    fetchJson(detail.annotations.annotation_manifest.url),
-    fetchJson(detail.baseline.manifest.url),
-  ]);
-  if (frames.scenario_id !== id || annotations.scenario_id !== id || baseline.scenario_id !== id) throw new Error("Scenario manifest identity mismatch.");
-  if (frames.frames.length !== annotations.frames.length) throw new Error("Frame and annotation manifest lengths differ.");
-  state.detail = detail;
-  state.frames = frames;
-  state.annotations = annotations;
-  state.baseline = baseline;
-  state.selected = 0;
-  byId("detail-kicker").textContent = `${detail.pack.id} · ${detail.status} · ${detail.id}`;
-  byId("detail-title").textContent = detail.title;
-  byId("detail-description").textContent = detail.description;
-  byId("frame-scrubber").max = String(frames.frames.length - 1);
-  byId("scenario-detail").hidden = false;
-  renderDetailFacts();
-  await showFrame(0, false);
-  setCatalogStatus(`${state.catalog.scenario_count} current scenarios are public.`);
-  byId("scenario-detail").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  if (!summary) {
+    detailLoader.cancel();
+    throw new Error(`Unknown public scenario: ${id}.`);
+  }
+  await detailLoader.load(id, async (signal) => {
+    const detail = await fetchJson(summary.detail.url, signal);
+    const [frames, annotations, baseline] = await Promise.all([
+      fetchJson(detail.media.frame_manifest.url, signal),
+      fetchJson(detail.annotations.annotation_manifest.url, signal),
+      fetchJson(detail.baseline.manifest.url, signal),
+    ]);
+    if (detail.id !== id || frames.scenario_id !== id || annotations.scenario_id !== id || baseline.scenario_id !== id) throw new Error("Scenario manifest identity mismatch.");
+    if (frames.frames.length !== annotations.frames.length) throw new Error("Frame and annotation manifest lengths differ.");
+    return { annotations, baseline, detail, frames };
+  }, detailFromLocation, ({ annotations, baseline, detail, frames }) => {
+    state.detail = detail;
+    state.frames = frames;
+    state.annotations = annotations;
+    state.baseline = baseline;
+    state.selected = 0;
+    byId("detail-kicker").textContent = `${detail.pack.id} · ${detail.status} · ${detail.id}`;
+    byId("detail-title").textContent = detail.title;
+    byId("detail-description").textContent = detail.description;
+    byId("frame-scrubber").max = String(frames.frames.length - 1);
+    byId("scenario-detail").hidden = false;
+    renderDetailFacts();
+    void showFrame(0, false);
+    setCatalogStatus(`${state.catalog.scenario_count} current scenarios are public.`);
+    byId("scenario-detail").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  });
 }
 
 function detailFromLocation() {
@@ -416,8 +427,12 @@ byId("frame-viewer").addEventListener("keydown", (event) => {
 });
 window.addEventListener("popstate", () => {
   const selected = detailFromLocation();
-  if (selected) void loadDetail(selected);
-  else byId("scenario-detail").hidden = true;
+  if (selected) void loadDetail(selected).catch((error) => setCatalogStatus(error.message, true));
+  else {
+    detailLoader.cancel();
+    stopPlayback();
+    byId("scenario-detail").hidden = true;
+  }
 });
 
 void init();

@@ -46,6 +46,53 @@ test("health and machine-readable metadata are public", async () => {
   assert.ok(openapi.components.securitySchemes.operatorAdjudicatorKey);
 });
 
+test("catalog assets keep honest status, MIME, and cache semantics", async () => {
+  const knownFrame = `${"a".repeat(64)}.jpg`;
+  const assetApp = createApp({
+    store,
+    submissionKeys: SUBMISSION_KEY,
+    runnerToken: RUNNER_TOKEN,
+    operatorReadKeys: OPERATOR_READ_TOKEN,
+    operatorAdjudicatorCredentials: { "operator/alice": OPERATOR_WRITE_TOKEN },
+    assets: {
+      async fetch(assetRequest) {
+        const pathname = new URL(assetRequest.url).pathname;
+        if (pathname === "/scenario-catalog/v1/catalog.json") {
+          if (assetRequest.headers.has("if-none-match")) return new Response(null, { status: 304, headers: { etag: '"catalog"' } });
+          return new Response('{"scenario_count":16}', { headers: { "cache-control": "public, max-age=0, must-revalidate", "content-type": "application/json; charset=utf-8", etag: '"catalog"' } });
+        }
+        if (pathname === `/scenario-catalog/v1/assets/sha256/${knownFrame}`) {
+          return new Response("jpeg", { headers: { "cache-control": "public, max-age=31556952, immutable", "content-type": "image/jpeg" } });
+        }
+        return new Response("<!doctype html><title>not found</title>", {
+          status: 404,
+          headers: { "cache-control": "public, max-age=31556952, immutable", "content-type": "text/html; charset=utf-8" },
+        });
+      },
+    },
+  });
+  const catalog = await requestFor(assetApp, "/scenario-catalog/v1/catalog.json");
+  assert.equal(catalog.status, 200);
+  assert.match(catalog.headers.get("content-type"), /application\/json/);
+  const revalidated = await requestFor(assetApp, "/scenario-catalog/v1/catalog.json", { headers: { "if-none-match": '"catalog"' } });
+  assert.equal(revalidated.status, 304);
+  const frame = await requestFor(assetApp, `/scenario-catalog/v1/assets/sha256/${knownFrame}`);
+  assert.equal(frame.status, 200);
+  assert.equal(frame.headers.get("content-type"), "image/jpeg");
+  assert.match(frame.headers.get("cache-control"), /immutable/);
+
+  const missingJson = await requestFor(assetApp, "/scenario-catalog/v1/scenarios/not-present.json");
+  assert.equal(missingJson.status, 404);
+  assert.match(missingJson.headers.get("content-type"), /application\/json/);
+  assert.doesNotMatch(missingJson.headers.get("cache-control"), /immutable/);
+  assert.equal((await missingJson.json()).error.code, "not_found");
+  const missingFrame = await requestFor(assetApp, `/scenario-catalog/v1/assets/sha256/${"b".repeat(64)}.jpg`);
+  assert.equal(missingFrame.status, 404);
+  assert.equal(missingFrame.headers.get("content-type"), "image/jpeg");
+  assert.doesNotMatch(missingFrame.headers.get("cache-control"), /immutable/);
+  assert.equal(await missingFrame.text(), "");
+});
+
 test("submission requires authentication and strict immutable input", async () => {
   assert.equal((await submit(validBody(), "idem-key-0001", "wrong")).status, 401);
   assert.equal((await submit({ ...validBody(), image: "ghcr.io/example/tracker:latest" }, "idem-key-0001")).status, 422);
