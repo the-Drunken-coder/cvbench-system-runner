@@ -123,25 +123,63 @@ function jobs(name) {
   };
 }
 
+function installRequestQueue(harness) {
+  const requests = [];
+  harness.context.fetch = (url, init) => new Promise((resolve, reject) => {
+    requests.push({ url, init, resolve, reject, claimed: false });
+  });
+  return requests;
+}
+
+function takeQueuedRequest(requests, predicate) {
+  const request = requests.find((candidate) => !candidate.claimed && predicate(candidate));
+  assert.ok(request, "expected queued request was not found");
+  request.claimed = true;
+  return request;
+}
+
+async function waitForQueuedRequest(requests, predicate) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const request = requests.find((candidate) => !candidate.claimed && predicate(candidate));
+    if (request) {
+      request.claimed = true;
+      return request;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.fail("expected queued request was not created");
+}
+
+function isListRequest(request) {
+  return request.url.startsWith("/api/v1/operator/jobs?");
+}
+
+function isDetailRequest(request, id) {
+  return request.url === `/api/v1/operator/jobs/${encodeURIComponent(id)}`;
+}
+
 test("operator console discards stale list and detail responses", async () => {
   const harness = makeHarness();
   harness.hooks.setTokens("read-token", "write-token");
-  const pending = [];
-  harness.context.fetch = () => new Promise((resolve) => pending.push(resolve));
+  const requests = installRequestQueue(harness);
 
   const staleList = harness.hooks.loadJobs({ reset: true });
   const currentList = harness.hooks.loadJobs({ reset: true });
-  pending[1](response(jobs("new")));
+  const staleListRequest = takeQueuedRequest(requests, isListRequest);
+  const currentListRequest = takeQueuedRequest(requests, isListRequest);
+  currentListRequest.resolve(response(jobs("new")));
   await currentList;
-  pending[0](response(jobs("old")));
+  staleListRequest.resolve(response(jobs("old")));
   await staleList;
   assert.match(harness.elements.get("job-list").children[0].children[0].textContent, /^new/);
 
   const staleDetail = harness.hooks.selectJob("old-job");
   const currentDetail = harness.hooks.selectJob("new-job");
-  pending[3](response({ job: { model: { name: "new" }, status: "succeeded" } }));
+  const staleDetailRequest = takeQueuedRequest(requests, (request) => isDetailRequest(request, "old-job"));
+  const currentDetailRequest = takeQueuedRequest(requests, (request) => isDetailRequest(request, "new-job"));
+  currentDetailRequest.resolve(response({ job: { model: { name: "new" }, status: "succeeded" } }));
   await currentDetail;
-  pending[2](response({ job: { model: { name: "old" }, status: "failed" } }));
+  staleDetailRequest.resolve(response({ job: { model: { name: "old" }, status: "failed" } }));
   await staleDetail;
   assert.match(harness.elements.get("job-detail").children[0].textContent, /^new/);
 });
@@ -149,20 +187,20 @@ test("operator console discards stale list and detail responses", async () => {
 test("detail selection does not invalidate a current list response", async () => {
   const harness = makeHarness();
   harness.hooks.setTokens("read-token", "write-token");
-  const pending = [];
-  harness.context.fetch = () => new Promise((resolve) => pending.push(resolve));
+  const requests = installRequestQueue(harness);
 
   const listRequest = harness.hooks.loadJobs({ reset: true });
   const detailRequest = harness.hooks.selectJob("selected-job");
-  pending[1](response({ job: { model: { name: "selected" }, status: "running" } }));
+  const listFetch = takeQueuedRequest(requests, isListRequest);
+  const detailFetch = takeQueuedRequest(requests, (request) => isDetailRequest(request, "selected-job"));
+  detailFetch.resolve(response({ job: { model: { name: "selected" }, status: "running" } }));
   await detailRequest;
-  pending[0](response({
+  listFetch.resolve(response({
     next_cursor: "cursor-after-list",
     jobs: [{ id: "listed-job", status: "queued", model: { name: "listed", version: "1" }, queue: { attempt: 2 } }],
   }));
-  await new Promise((resolve) => setImmediate(resolve));
-  const refreshedDetail = pending[2];
-  refreshedDetail(response({ job: { model: { name: "selected" }, status: "running" } }));
+  const refreshedDetail = await waitForQueuedRequest(requests, (request) => isDetailRequest(request, "selected-job"));
+  refreshedDetail.resolve(response({ job: { model: { name: "selected" }, status: "running" } }));
   await listRequest;
 
   assert.equal(harness.elements.get("job-list").children.length, 1);

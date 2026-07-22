@@ -71,13 +71,31 @@ def _enforce_audit_budget(evidence: dict[str, Any]) -> dict[str, Any]:
 
     bounded = _bound_strings(evidence)
     budget = {"max_bytes": AUDIT_EVIDENCE_MAX_BYTES, "truncated": bounded != evidence}
+    omitted = {
+        "frame_samples": 0,
+        "records_in_omitted_frames": {"ground_truth": 0, "predictions": 0, "matches": 0},
+        "other_items": 0,
+    }
     evidence = bounded
     evidence["serialized_byte_budget"] = budget
+    evidence["budget_omitted"] = omitted
+
+    def omit_frames(samples: list[dict[str, Any]]) -> None:
+        omitted["frame_samples"] += len(samples)
+        for sample in samples:
+            for field in ("ground_truth", "predictions", "matches"):
+                omitted["records_in_omitted_frames"][field] += len(sample.get(field, [])) + sample.get(
+                    f"{field}_omitted", 0
+                )
 
     def reduce_first_available() -> bool:
         frame_samples = evidence.get("frame_samples")
         if isinstance(frame_samples, list) and len(frame_samples) > 1:
-            evidence["frame_samples"] = _halve_list(frame_samples)
+            retained = _halve_list(frame_samples)
+            head = (len(retained) + 1) // 2
+            tail = len(retained) // 2
+            omit_frames(frame_samples[head : len(frame_samples) - tail])
+            evidence["frame_samples"] = retained
             evidence["sampled_frame_count"] = len(evidence["frame_samples"])
             return True
         if isinstance(frame_samples, list):
@@ -85,7 +103,9 @@ def _enforce_audit_budget(evidence: dict[str, Any]) -> dict[str, Any]:
                 for field in ("ground_truth", "predictions", "matches"):
                     values = sample.get(field)
                     if isinstance(values, list) and len(values) > 1:
-                        sample[field] = _halve_list(values)
+                        retained = _halve_list(values)
+                        sample[field] = retained
+                        sample[f"{field}_omitted"] += len(values) - len(retained)
                         return True
         for path in (
             ("false_track_segments",),
@@ -97,7 +117,9 @@ def _enforce_audit_budget(evidence: dict[str, Any]) -> dict[str, Any]:
                 current = current.get(part) if isinstance(current, dict) else None
             values = current.get(path[-1]) if isinstance(current, dict) else None
             if isinstance(values, list) and len(values) > 1:
-                current[path[-1]] = _halve_list(values)
+                retained = _halve_list(values)
+                current[path[-1]] = retained
+                omitted["other_items"] += len(values) - len(retained)
                 return True
         return False
 
@@ -106,7 +128,19 @@ def _enforce_audit_budget(evidence: dict[str, Any]) -> dict[str, Any]:
 
     if _serialized_bytes(evidence) > AUDIT_EVIDENCE_MAX_BYTES:
         budget["truncated"] = True
+        omit_frames(evidence["frame_samples"])
         evidence["frame_samples"] = []
+        for path in (
+            ("false_track_segments",),
+            ("occlusion_and_reacquisition", "reacquisition_events"),
+            ("resources_and_isolation", "resources", "over_time"),
+        ):
+            current: Any = evidence
+            for part in path[:-1]:
+                current = current.get(part) if isinstance(current, dict) else None
+            values = current.get(path[-1]) if isinstance(current, dict) else None
+            if isinstance(values, list):
+                omitted["other_items"] += len(values)
         evidence["false_track_segments"] = []
         evidence["resources_and_isolation"] = {"truncated": True}
         evidence["occlusion_and_reacquisition"] = {"truncated": True}
@@ -125,6 +159,7 @@ def _enforce_audit_budget(evidence: dict[str, Any]) -> dict[str, Any]:
             "source_frame_count": evidence.get("source_frame_count", 0),
             "false_track_segments": [],
             "serialized_byte_budget": {"max_bytes": AUDIT_EVIDENCE_MAX_BYTES, "truncated": True},
+            "budget_omitted": omitted,
         }
     return evidence
 
@@ -180,6 +215,7 @@ def build_audit_evidence(
                 "external_latency_ms": (item.collector_received_timestamp_ns - timestamp) / 1_000_000,
             }
             predictions.append(prediction)
+        predictions_omitted = max(0, len(output_by_frame.get(key, [])) - len(predictions))
         frame_matches = matches_by_frame.get(key, [])
         ground_truth_explanations = []
         for row in gt_by_frame[key][:MAX_TARGETS_PER_FRAME]:
@@ -233,6 +269,7 @@ def build_audit_evidence(
                 "ground_truth": ground_truth_explanations,
                 "ground_truth_omitted": max(0, len(gt_by_frame[key]) - len(ground_truth_explanations)),
                 "predictions": predictions,
+                "predictions_omitted": predictions_omitted,
                 "matches": [
                     {
                         "target_id": match.target_id,

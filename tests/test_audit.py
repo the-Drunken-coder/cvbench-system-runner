@@ -158,3 +158,15 @@ def test_non_ascii_full_sample_grid_uses_wire_byte_budget() -> None:
     assert evidence["source_frame_count"] == 64
     assert evidence["serialized_byte_budget"]["truncated"] is True
     assert len(serialized_json_bytes(evidence)) <= AUDIT_EVIDENCE_MAX_BYTES
+    omitted = evidence["budget_omitted"]
+    retained_frames = evidence["frame_samples"]
+    assert omitted["frame_samples"] + len(retained_frames) == 64
+    assert omitted["records_in_omitted_frames"]["ground_truth"] + sum(
+        len(sample["ground_truth"]) + sample["ground_truth_omitted"] for sample in retained_frames
+    ) == 64
+    assert omitted["records_in_omitted_frames"]["predictions"] + sum(
+        len(sample["predictions"]) + sample["predictions_omitted"] for sample in retained_frames
+    ) == 64 * 16
+    assert omitted["records_in_omitted_frames"]["matches"] + sum(
+        len(sample["matches"]) + sample["matches_omitted"] for sample in retained_frames
+    ) == 64
