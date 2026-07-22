@@ -3,6 +3,11 @@ import { readFile } from "node:fs/promises";
 const baseUrl = required("CVBENCH_API_BASE_URL").replace(/\/$/, "");
 const submissionKey = required("CVBENCH_API_KEY");
 const runnerToken = required("CVBENCH_RUNNER_TOKEN");
+const operatorReadToken = required("CVBENCH_OPERATOR_READ_TOKEN");
+const operatorWriteToken = required("CVBENCH_OPERATOR_WRITE_TOKEN");
+const operatorSecondWriteToken = required("CVBENCH_OPERATOR_SECOND_WRITE_TOKEN");
+const expectedActorId = required("CVBENCH_OPERATOR_ACTOR_ID");
+const expectedSecondActorId = required("CVBENCH_OPERATOR_SECOND_ACTOR_ID");
 const report = JSON.parse(await readFile(required("CVBENCH_REPORT_PATH"), "utf8"));
 const digest = "b".repeat(64);
 const idempotencyKey = `safe-baseline-${crypto.randomUUID()}`;
@@ -63,13 +68,43 @@ const publicResponse = await fetch(`${baseUrl}/api/v1/submissions/${created.id}`
 assert(publicResponse.status === 200, `public read returned ${publicResponse.status}`);
 const completed = await publicResponse.json();
 assert(completed.status === "succeeded", "submission did not reach succeeded");
-assert(completed.result.metrics.sample_counts.matches > 0, "public result lost scored matches");
+assert(completed.result.scores.sample_counts.matches > 0, "public result lost scored matches");
+
+const operatorHeaders = { authorization: `Bearer ${operatorReadToken}` };
+const operatorResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/audit`, { headers: operatorHeaders });
+await assertStatus(operatorResponse, 200, "operator audit");
+const audit = await operatorResponse.json();
+assert(audit.automatic_disqualification === false, "audit flags must not disqualify automatically");
+const evidenceResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/evidence`, { headers: operatorHeaders });
+await assertStatus(evidenceResponse, 200, "operator evidence");
+const evidence = await evidenceResponse.json();
+assert(evidence.audit_evidence?.schema_version === "cvbench.audit/v1", "audit evidence was not retrieved");
+const noteResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/notes`, {
+  method: "POST",
+  headers: { authorization: `Bearer ${operatorWriteToken}`, "content-type": "application/json" },
+  body: JSON.stringify({ verdict: "accepted", note: "D1 lifecycle audit evidence retrieved." }),
+});
+await assertStatus(noteResponse, 201, "operator adjudication note");
+const note = await noteResponse.json();
+assert(note.actorId === expectedActorId, "operator note has the wrong actor attribution");
+const secondNoteResponse = await fetch(`${baseUrl}/api/v1/operator/jobs/${created.id}/notes`, {
+  method: "POST",
+  headers: { authorization: `Bearer ${operatorSecondWriteToken}`, "content-type": "application/json" },
+  body: JSON.stringify({ verdict: "needs_review", note: "Second actor attribution proof." }),
+});
+await assertStatus(secondNoteResponse, 201, "second operator adjudication note");
+const secondNote = await secondNoteResponse.json();
+assert(secondNote.actorId === expectedSecondActorId, "second operator note has the wrong actor attribution");
+assert(note.actorId !== secondNote.actorId, "adjudicator credentials must map to distinct actors");
 
 console.log(JSON.stringify({
   submission_id: completed.id,
   status: completed.status,
-  matched_samples: completed.result.metrics.sample_counts.matches,
+  matched_samples: completed.result.scores.sample_counts.matches,
   benchmark_outcome: completed.result.outcome.status,
+  audit_schema: evidence.audit_evidence.schema_version,
+  flagged_review_aids: audit.flags.filter((flag) => flag.status === "flagged").map((flag) => flag.id),
+  actor_ids: [note.actorId, secondNote.actorId],
 }));
 
 function required(name) {

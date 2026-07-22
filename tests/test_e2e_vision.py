@@ -104,3 +104,6 @@ def test_good_tracker_decodes_novel_shifted_images(tmp_path: Path) -> None:
     assert report["metrics"]["sample_counts"]["matches"] == 6
     assert report["feed"]["duplicate_frames"] == 1
     assert report["feed"]["delayed_frames"] == 1
+    assert report["provenance"]["raw_evidence_available"] is False
+    assert report["provenance"]["bounded_audit_evidence_sha256"] is None
+    assert "authoritative after Worker JSON parsing" in report["provenance"]["bounded_audit_evidence_hash_algorithm"]

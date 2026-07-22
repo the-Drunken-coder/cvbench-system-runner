@@ -15,6 +15,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from cvbench.audit import AUDIT_EVIDENCE_MAX_BYTES
+from cvbench.json_contract import serialized_json_bytes
+
 IMAGE_PATTERN = re.compile(
     r"^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?/)?"
     r"[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$"
@@ -35,7 +38,7 @@ MAX_CALLBACK_BYTES = 1024 * 1024
 
 
 def callback_payload_bytes(body: dict[str, Any]) -> bytes:
-    return json.dumps(body, separators=(",", ":")).encode()
+    return serialized_json_bytes(body)
 
 
 def api_request(
@@ -102,6 +105,9 @@ def validate_lease(lease: dict[str, Any]) -> tuple[dict[str, Any], str, int]:
 
 
 def build_success_callback(report: dict[str, Any], lease_token: str, max_bytes: int) -> dict[str, Any]:
+    audit_evidence = report.get("audit_evidence")
+    if audit_evidence is not None and len(serialized_json_bytes(audit_evidence)) > AUDIT_EVIDENCE_MAX_BYTES:
+        raise ValueError("audit_evidence exceeds the serialized evidence budget")
     body = {"status": "succeeded", "lease_token": lease_token, "report": report}
     if len(callback_payload_bytes(body)) <= max_bytes:
         return body
@@ -247,9 +253,24 @@ def execute_submission(repository: Path, submission: dict[str, Any], work: Path)
         isolation = report.get("runtime_isolation", {})
         if isolation.get("status") != "verified" or isolation.get("network_mode") != "none":
             raise RuntimeError("benchmark did not verify the required container isolation")
+        report["runner"] = {
+            "commit": os.environ.get("GITHUB_SHA"),
+            "workflow_run_url": _workflow_run_url(),
+            "workflow_name": os.environ.get("GITHUB_WORKFLOW"),
+        }
         return report
     finally:
         cleanup_benchmark_containers(job_id, environment)
+
+
+def _workflow_run_url() -> str | None:
+    server = os.environ.get("GITHUB_SERVER_URL")
+    repository = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    safe_values = (server, repository, run_id)
+    if server and repository and run_id and all("\n" not in value and "\r" not in value for value in safe_values):
+        return f"{server.rstrip('/')}/{repository}/actions/runs/{run_id}"
+    return None
 
 
 def callback_path(submission_id: str) -> str:
@@ -275,6 +296,7 @@ def main() -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="cvbench-job-") as temporary:
             report = execute_submission(repository, submission, Path(temporary))
+        success_body = build_success_callback(report, lease_token, max_result_bytes)
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"[:2000]
         try:
@@ -288,12 +310,11 @@ def main() -> int:
             print(f"Result callback also failed: {callback_error}", file=sys.stderr)
         print(f"CVBench submission {submission['id']} failed: {error}", file=sys.stderr)
         return 1
-    api_request(
-        base_url,
-        runner_token,
-        path,
-        body=build_success_callback(report, lease_token, max_result_bytes),
-    )
+    try:
+        api_request(base_url, runner_token, path, body=success_body)
+    except Exception as exc:
+        print(f"Success callback for CVBench submission {submission['id']} failed: {exc}", file=sys.stderr)
+        return 1
     print(f"Completed CVBench submission {submission['id']}.")
     return 0
 

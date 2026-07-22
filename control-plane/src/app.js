@@ -1,15 +1,29 @@
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const MAX_SUBMISSION_BYTES = 16 * 1024;
 const MAX_RESULT_BYTES = 1024 * 1024;
+const MAX_OPERATOR_NOTE_BYTES = 8 * 1024;
+const VALID_JOB_STATUSES = new Set(["queued", "running", "succeeded", "failed"]);
 const IMAGE_PATTERN = /^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?\/)?[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$/;
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 export function createApp(options) {
+  const submissionKeys = splitKeys(options.submissionKeys);
+  const runnerToken = String(options.runnerToken || "");
+  const operatorReadKeys = splitKeys(options.operatorReadKeys || options.operatorToken);
+  const operatorAdjudicatorCredentials = parseAdjudicatorCredentials(options.operatorAdjudicatorCredentials);
+  const credentialScopesAreValid = uniqueCredentialScopes({
+    submission: submissionKeys,
+    runner: [runnerToken],
+    operatorRead: operatorReadKeys,
+    adjudicator: operatorAdjudicatorCredentials.map(({ token }) => token),
+  });
   const config = {
     store: options.store,
     assets: options.assets,
-    submissionKeys: splitKeys(options.submissionKeys),
-    runnerToken: String(options.runnerToken || ""),
+    submissionKeys: credentialScopesAreValid ? submissionKeys : [],
+    runnerToken: credentialScopesAreValid ? runnerToken : "",
+    operatorReadKeys: credentialScopesAreValid ? operatorReadKeys : [],
+    operatorAdjudicatorCredentials: credentialScopesAreValid ? operatorAdjudicatorCredentials : [],
     maxSubmissionsPerHour: boundedInteger(options.maxSubmissionsPerHour, 20, 1, 1000),
     leaseSeconds: boundedInteger(options.leaseSeconds, 3000, 60, 7200),
   };
@@ -116,11 +130,13 @@ async function route(request, config) {
     if (parsed.error) return parsed.error;
     const validation = validateResult(parsed.value);
     if (validation.error) return problem(422, "invalid_result", validation.error);
+    const report = validation.value.report ? await authoritativeReport(validation.value.report) : null;
     const completed = await config.store.completeJob({
       id: resultMatch[1],
       leaseTokenHash: await sha256(validation.value.leaseToken),
       status: validation.value.status,
-      report: validation.value.report,
+      report,
+      resultSha256: report ? await sha256(canonicalJson(report)) : null,
       error: validation.value.error,
       now: unixTime(),
     });
@@ -133,6 +149,54 @@ async function route(request, config) {
     if (!(await authorized(bearerToken(request), [config.runnerToken]))) return unauthorized("runner token");
     const requeued = await config.store.requeueExpired(unixTime());
     return json({ requeued });
+  }
+
+  const operatorMatch = url.pathname.match(/^\/api\/v1\/operator\/jobs(?:\/([^/]+)(?:\/(audit|evidence|notes))?)?$/);
+  if (operatorMatch) {
+    const id = operatorMatch[1];
+    const subresource = operatorMatch[2];
+    const write = request.method === "POST" && subresource === "notes";
+    const token = bearerToken(request);
+    const actorId = write ? await actorForCredential(token, config.operatorAdjudicatorCredentials) : null;
+    if (write ? !actorId : !(await authorized(token, config.operatorReadKeys))) {
+      return unauthorized(write ? "adjudicator credential" : "operator read token");
+    }
+    if (!id) {
+      if (request.method !== "GET") return problem(405, "method_not_allowed", "Only GET is supported for the operator job list.");
+      const status = url.searchParams.get("status") || "";
+      const model = url.searchParams.get("model") || "";
+      const limit = boundedInteger(url.searchParams.get("limit"), 25, 1, 100);
+      if (status && !VALID_JOB_STATUSES.has(status)) return problem(400, "invalid_status", "status must be queued, running, succeeded, or failed.");
+      const cursor = parseCursor(url.searchParams.get("cursor"));
+      if (url.searchParams.has("cursor") && !cursor) return problem(400, "invalid_cursor", "cursor must be a timestamp and UUID returned by the operator list.");
+      const page = await config.store.listSubmissions({ status, model, limit, cursor });
+      const comparisons = await config.store.operatorComparisons();
+      return json({ schema_version: "cvbench.operator/v1", jobs: page.rows.map((row) => operatorSummary(row, comparisons)), next_cursor: encodeCursor(page.nextCursor), comparison: comparisonSummary(comparisons) });
+    }
+    if (!ID_PATTERN.test(id)) return problem(404, "not_found", "Job not found.");
+    const row = await config.store.getSubmission(id);
+    if (!row) return problem(404, "not_found", "Job not found.");
+    if (request.method === "GET" && !subresource) return json(await operatorDetail(row, config.store));
+    if (request.method === "GET" && subresource === "audit") return json(await operatorAudit(row, config.store));
+    if (request.method === "GET" && subresource === "evidence") return json(operatorEvidence(row));
+    if (request.method === "GET" && subresource === "notes") return json({ schema_version: "cvbench.operator/v1", notes: await config.store.listOperatorNotes(id) });
+    if (request.method === "POST" && subresource === "notes") {
+      const parsed = await readJson(request, MAX_OPERATOR_NOTE_BYTES);
+      if (parsed.error) return parsed.error;
+      const validation = validateOperatorNote(parsed.value);
+      if (validation.error) return problem(422, "invalid_operator_note", validation.error);
+      const note = await config.store.addOperatorNote({
+        id: crypto.randomUUID(),
+        submissionId: id,
+        verdict: validation.value.verdict,
+        note: validation.value.note,
+        createdAt: unixTime(),
+        operatorKeyHash: await sha256(token),
+        actorId,
+      });
+      return json(note, 201);
+    }
+    return problem(405, "method_not_allowed", "Unsupported operator job operation.");
   }
 
   return problem(404, "not_found", "API route not found.");
@@ -205,19 +269,226 @@ function validateResult(value) {
   };
 }
 
+async function authoritativeReport(report) {
+  const auditEvidence = isObject(report.audit_evidence) ? report.audit_evidence : null;
+  return {
+    ...report,
+    provenance: {
+      ...(isObject(report.provenance) ? report.provenance : {}),
+      raw_evidence_available: false,
+      bounded_audit_evidence_sha256: auditEvidence ? await sha256(canonicalJson(auditEvidence)) : null,
+      bounded_audit_evidence_hash_algorithm: "sha256(cvbench.canonical-json/v1)",
+    },
+  };
+}
+
 function publicSubmission(value) {
   return {
     id: value.id,
     status: value.status,
     model: { name: value.name, version: value.modelVersion, image: value.image, argv: value.argv },
     attempt: value.attempt,
-    result: value.result,
+    result: publicResultSummary(value.result),
     error: value.error,
     created_at: iso(value.createdAt),
     updated_at: iso(value.updatedAt),
     started_at: iso(value.startedAt),
     completed_at: iso(value.completedAt),
   };
+}
+
+function operatorSummary(value, comparisons = null) {
+  const report = value.result;
+  const provenance = report?.provenance || {};
+  const runner = report?.runner || report?.control_plane?.runner || {};
+  const audit = report?.audit_evidence;
+  const duplicateModel = duplicateStatus(comparisons, "duplicateImages", value.image);
+  const duplicateResult = duplicateStatus(comparisons, "duplicateResults", value.resultSha256);
+  return {
+    id: value.id,
+    status: value.status,
+    model: { name: value.name, version: value.modelVersion, image: value.image, argv: value.argv },
+    queue: {
+      attempt: value.attempt,
+      retries: Math.max(0, value.attempt - 1),
+      created_at: iso(value.createdAt),
+      updated_at: iso(value.updatedAt),
+      started_at: iso(value.startedAt),
+      completed_at: iso(value.completedAt),
+      lease_expires_at: iso(value.leaseExpiresAt),
+    },
+    provenance: {
+      benchmark: report?.benchmark || { id: "persistent-target-tracking", version: "1.0.0" },
+      scenario_manifests: provenance.scenario_manifests || [],
+      comparison_fingerprint: provenance.comparison_fingerprint || null,
+      runner_commit: runner.commit || null,
+    },
+    checks: { workflow_run_url: runner.workflow_run_url || null, check_links: runner.check_links || [] },
+    scores: scoreSummary(report),
+    diagnostics: {
+      failure_reason: value.error || report?.outcome?.errors?.[0] || null,
+      finding_count: Array.isArray(report?.findings) ? report.findings.length : 0,
+      audit_flag_count: Array.isArray(audit?.flags) ? audit.flags.filter((flag) => flag.status === "flagged").length : 0,
+      duplicate_model_fingerprint: duplicateModel,
+      duplicate_result_fingerprint: duplicateResult,
+      comparison_scope: comparisons?.scope || "unknown",
+    },
+    result_available: Boolean(report),
+  };
+}
+
+async function operatorDetail(value, store) {
+  const comparisons = await store.operatorComparisons();
+  return {
+    schema_version: "cvbench.operator/v1",
+    job: operatorSummary(value, comparisons),
+    raw_result: value.result,
+    notes: await store.listOperatorNotes(value.id),
+  };
+}
+
+async function operatorAudit(value, store) {
+  const report = value.result;
+  const evidence = report?.audit_evidence || null;
+  const flags = evidence?.flags ? [...evidence.flags] : [{ id: "run_pending", status: "pending", review_aid_only: true, reason: "No result has been recorded." }];
+  if (report) {
+    const perfect = scoreSummary(report).perfect;
+    const comparisons = await store.operatorComparisons();
+    const duplicateModel = duplicateStatus(comparisons, "duplicateImages", value.image);
+    const duplicateResult = duplicateStatus(comparisons, "duplicateResults", value.resultSha256);
+    flags.push({ id: "duplicate_model_fingerprint", status: duplicateModel === "review" ? "flagged" : duplicateModel, severity: "medium", review_aid_only: true, reason: duplicateModel === "review" ? "Another stored submission uses the same immutable model digest." : `Model comparison status: ${duplicateModel}.` });
+    flags.push({ id: "duplicate_result_fingerprint", status: duplicateResult === "review" ? "flagged" : duplicateResult, severity: "medium", review_aid_only: true, reason: duplicateResult === "review" ? "Another stored result has the same canonical report fingerprint." : `Result comparison status: ${duplicateResult}.` });
+    if (perfect) flags.push({ id: "score_review", status: "review", severity: "medium", review_aid_only: true, reason: "Perfect scores require human review, not automatic rejection." });
+  }
+  return {
+    schema_version: "cvbench.audit/v1",
+    disposition: "review_aid_only",
+    automatic_disqualification: false,
+    job_id: value.id,
+    flags,
+    score_components: scoreSummary(report),
+    fairness: {
+      counted_from: "deterministic frame/target matching",
+      explainable_evidence: Boolean(evidence?.frame_samples?.length),
+      adjudication: `/api/v1/operator/jobs/${value.id}/notes`,
+    },
+  };
+}
+
+function duplicateStatus(comparisons, field, value) {
+  if (!comparisons || !value) return "unknown";
+  if (comparisons[field].has(value)) return "review";
+  return comparisons.truncated ? "unknown" : "clear";
+}
+
+function comparisonSummary(comparisons) {
+  return { scope: comparisons.scope, truncated: comparisons.truncated };
+}
+
+function operatorEvidence(value) {
+  const report = value.result || {};
+  return {
+    schema_version: "cvbench.audit/v1",
+    job_id: value.id,
+    audit_evidence: report.audit_evidence || null,
+    artifacts: [],
+    raw_evidence_available: report.provenance?.raw_evidence_available === true,
+    bounded_audit_evidence_sha256: report.provenance?.bounded_audit_evidence_sha256 || null,
+    bounded_audit_evidence_hash_algorithm: report.provenance?.bounded_audit_evidence_hash_algorithm || "sha256(cvbench.canonical-json/v1)",
+    raw_artifact_policy: "Raw ground-truth and model-output artifacts are not uploaded or exposed by this public repository; only bounded authenticated audit evidence and integrity hashes are retained.",
+  };
+}
+
+function scoreSummary(report) {
+  const metrics = report?.metrics || {};
+  const sampleCounts = metrics.sample_counts || {};
+  return {
+    sample_counts: sampleCounts,
+    acquisition_rate: metrics.acquisition?.rate ?? null,
+    observed_coverage: metrics.coverage?.overall_observed ?? null,
+    continuity_coverage: metrics.coverage?.overall_continuity ?? null,
+    mean_iou: metrics.localization?.mean_iou ?? null,
+    id_switches: metrics.identity?.id_switches ?? null,
+    false_track_births: metrics.false_detections?.track_births ?? null,
+    reacquisition_same_id_rate: metrics.reacquisition?.same_id_rate ?? null,
+    latency_p50_ms: metrics.latency?.median ?? null,
+    latency_p99_ms: metrics.latency?.p99 ?? null,
+    perfect: metrics.coverage?.overall_observed === 1 && metrics.localization?.mean_iou === 1 && metrics.identity?.id_switches === 0 && metrics.false_detections?.track_births === 0,
+  };
+}
+
+function publicResultSummary(report) {
+  if (!report) return null;
+  return {
+    outcome: report.outcome ? { status: report.outcome.status, exit_code: report.outcome.exit_code ?? null } : null,
+    benchmark: report.benchmark || null,
+    scores: scoreSummary(report),
+    findings: Array.isArray(report.findings)
+      ? report.findings.map((finding) => ({ finding_id: finding.finding_id, category: finding.category, severity: finding.severity, statement: finding.interpretation?.statement || null }))
+      : [],
+    provenance: {
+      comparison_fingerprint: report.provenance?.comparison_fingerprint || null,
+      resolved_container_image: report.provenance?.resolved_container_image || null,
+    },
+  };
+}
+
+function validateOperatorNote(value) {
+  if (!isObject(value)) return { error: "Request body must be a JSON object." };
+  if (unknownKeys(value, ["verdict", "note"]).length) return { error: "Only verdict and note are accepted." };
+  if (!["unreviewed", "needs_review", "adjudicated", "accepted", "rejected"].includes(value.verdict)) return { error: "verdict is invalid." };
+  const note = cleanText(value.note, "note", 1, 4000);
+  if (note.error) return note;
+  return { value: { verdict: value.verdict, note: note.value } };
+}
+
+function cleanActorId(value) {
+  const actor = String(value || "unattributed-operator").trim().toLowerCase();
+  return /^[A-Za-z0-9._:@/-]{1,100}$/.test(actor) && !/^(?:unattributed|legacy)(?:[._:@/-]|$)/i.test(actor) ? actor : null;
+}
+
+function parseAdjudicatorCredentials(value) {
+  let parsed = value;
+  if (typeof value === "string") {
+    try {
+      if (hasDuplicateJsonKeys(value)) return [];
+      parsed = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  if (!isObject(parsed) || Array.isArray(parsed)) return [];
+  const seenActors = new Set();
+  const seenTokens = new Set();
+  const credentials = [];
+  for (const [actorId, token] of Object.entries(parsed)) {
+    const cleanActor = cleanActorId(actorId);
+    if (!cleanActor || seenActors.has(cleanActor) || typeof token !== "string" || token.length === 0 || seenTokens.has(token)) return [];
+    seenActors.add(cleanActor);
+    seenTokens.add(token);
+    credentials.push({ actorId: cleanActor, token });
+  }
+  return credentials;
+}
+
+function hasDuplicateJsonKeys(value) {
+  const seen = new Set();
+  for (const match of value.matchAll(/"((?:\\.|[^"\\])*)"\s*:/g)) {
+    const key = JSON.parse(`"${match[1]}"`);
+    if (seen.has(key)) return true;
+    seen.add(key);
+  }
+  return false;
+}
+
+function parseCursor(value) {
+  if (!value) return null;
+  const match = value.match(/^(\d+):([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/);
+  return match ? { createdAt: Number(match[1]), id: match[2] } : null;
+}
+
+function encodeCursor(value) {
+  return value ? `${value.createdAt}:${value.id}` : null;
 }
 
 function runnerSubmission(value) {
@@ -255,6 +526,21 @@ async function authorized(candidate, expectedTokens) {
   return match === 1;
 }
 
+async function actorForCredential(candidate, credentials) {
+  if (!candidate || credentials.length === 0) return null;
+  const candidateDigest = await digest(candidate);
+  let actorId = null;
+  let matches = 0;
+  for (const credential of credentials) {
+    const expectedDigest = await digest(credential.token || "invalid-placeholder");
+    if (constantTimeEqual(candidateDigest, expectedDigest)) {
+      matches += 1;
+      actorId = credential.actorId;
+    }
+  }
+  return matches === 1 ? actorId : null;
+}
+
 function constantTimeEqual(left, right) {
   let difference = left.length ^ right.length;
   const length = Math.max(left.length, right.length);
@@ -289,14 +575,29 @@ function optionalText(value, name, maximum) {
   return cleanText(value, name, 1, maximum);
 }
 
-function stableJson(value) {
+export function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (isObject(value)) return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
   return JSON.stringify(value);
 }
 
+function stableJson(value) {
+  return canonicalJson(value);
+}
+
 function splitKeys(value) {
   return String(value || "").split(",").map((key) => key.trim()).filter(Boolean);
+}
+
+function uniqueCredentialScopes(scopes) {
+  const seen = new Set();
+  for (const tokens of Object.values(scopes)) {
+    for (const token of tokens) {
+      if (!token || seen.has(token)) return false;
+      seen.add(token);
+    }
+  }
+  return true;
 }
 
 function boundedInteger(value, fallback, minimum, maximum) {
@@ -388,9 +689,44 @@ export const OPENAPI = {
         responses: { 200: { description: "Public submission status/result" }, 404: { description: "Not found" } },
       },
     },
+    "/api/v1/operator/jobs": {
+      get: {
+        operationId: "listOperatorJobs",
+        security: [{ operatorReadKey: [] }],
+        parameters: [
+          { name: "status", in: "query", schema: { type: "string", enum: ["queued", "running", "succeeded", "failed"] } },
+          { name: "model", in: "query", schema: { type: "string", maxLength: 100 } },
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100, default: 25 } },
+          { name: "cursor", in: "query", schema: { type: "string" } },
+        ],
+        responses: { 200: { description: "Operator queue page with a stable next cursor" }, 401: { description: "Operator token required" } },
+      },
+    },
+    "/api/v1/operator/jobs/{id}": {
+      get: {
+        operationId: "getOperatorJob",
+        security: [{ operatorReadKey: [] }],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        responses: { 200: { description: "Operator detail and raw bounded report" }, 401: { description: "Operator token required" } },
+      },
+    },
+    "/api/v1/operator/jobs/{id}/audit": {
+      get: { operationId: "getOperatorAudit", security: [{ operatorReadKey: [] }], responses: { 200: { description: "Review-only anomaly flags and fairness explanation" } } },
+    },
+    "/api/v1/operator/jobs/{id}/evidence": {
+      get: { operationId: "getOperatorEvidence", security: [{ operatorReadKey: [] }], responses: { 200: { description: "Bounded sampled frame evidence, integrity hash, and explicit raw-evidence availability" } } },
+    },
+    "/api/v1/operator/jobs/{id}/notes": {
+      get: { operationId: "listOperatorNotes", security: [{ operatorReadKey: [] }], responses: { 200: { description: "Adjudication trail" } } },
+      post: { operationId: "addOperatorNote", security: [{ operatorAdjudicatorKey: [] }], responses: { 201: { description: "Appended operator verdict note with configured actor attribution" } } },
+    },
   },
   components: {
-    securitySchemes: { submissionKey: { type: "http", scheme: "bearer" } },
+    securitySchemes: {
+      submissionKey: { type: "http", scheme: "bearer" },
+      operatorReadKey: { type: "http", scheme: "bearer", description: "Least-privilege operator read credential; never the submission, adjudicator, or runner token." },
+      operatorAdjudicatorKey: { type: "http", scheme: "bearer", description: "Credential mapped to one stable actor identity; it cannot read operator routes and is never exposed or stored as a bearer value." },
+    },
     schemas: {
       CreateSubmission: {
         type: "object",

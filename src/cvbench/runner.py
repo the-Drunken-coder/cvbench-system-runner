@@ -16,6 +16,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from .audit import build_audit_evidence
 from .collector import OutputCollector
 from .comparison import compare_reports
 from .config import BenchmarkConfig, load_benchmark, load_system
@@ -488,6 +489,20 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             "Statistical comparison confidence is sample-count based; confidence intervals are not inferred.",
         ],
     }
+    report["audit_evidence"] = build_audit_evidence(
+        ground_truth,
+        collected,
+        matches,
+        metrics,
+        feed_counters,
+        resource_data,
+        report["runtime_isolation"],
+    )
+    report["provenance"]["raw_evidence_available"] = False
+    report["provenance"]["bounded_audit_evidence_sha256"] = None
+    report["provenance"]["bounded_audit_evidence_hash_algorithm"] = (
+        "sha256(cvbench.canonical-json/v1); authoritative after Worker JSON parsing"
+    )
     if benchmark.baseline_report:
         baseline = json.loads(benchmark.baseline_report.read_text())
         report["comparison"] = compare_reports(baseline, report)
