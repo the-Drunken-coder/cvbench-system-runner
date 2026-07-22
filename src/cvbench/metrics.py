@@ -645,6 +645,8 @@ def calculate_metrics(
     )
     group_data: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     for gt in ground_truth:
+        if gt.get("ignore", False):
+            continue
         if not gt["on_screen"] or not gt["eligible_for_detection"]:
             continue
         count = count_by_frame[(gt["sequence_id"], gt["source_timestamp_ns"])]

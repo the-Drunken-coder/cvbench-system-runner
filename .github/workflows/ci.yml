@@ -80,4 +80,5 @@ jobs:
             real-video-docker-runs/*/resources.csv
             data/real-video-v1/artifacts.sha256
       - name: Assert no real-video container remains
+        if: ${{ always() && !cancelled() }}
         run: test -z "$(docker ps -aq --filter ancestor=cvbench-real-video-baseline:v1)"

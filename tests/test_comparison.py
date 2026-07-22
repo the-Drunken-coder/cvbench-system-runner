@@ -4,7 +4,7 @@ from pathlib import Path
 
 from cvbench.comparison import compare_reports
 from cvbench.config import load_benchmark
-from cvbench.runner import _comparison_fingerprint, _load_unique_scenarios
+from cvbench.runner import _comparison_fingerprint, _load_unique_scenarios, _portable_path
 from cvbench.scenario import load_scenario
 
 ROOT = Path(__file__).parents[1]
@@ -38,14 +38,15 @@ def test_incompatible_scenario_comparison_is_inconclusive() -> None:
 def test_comparison_fingerprint_is_independent_of_private_delivery_order() -> None:
     benchmark = load_benchmark(ROOT / "benchmarks/persistent-target-tracking.yaml")
     scenarios = [load_scenario(path) for path in benchmark.scenarios]
-    shuffled = list(scenarios)
-    random.Random(7).shuffle(shuffled)
     first_fingerprint, first_inputs = _comparison_fingerprint(benchmark, scenarios)
-    second_fingerprint, second_inputs = _comparison_fingerprint(benchmark, shuffled)
-    assert first_fingerprint == second_fingerprint
-    assert first_inputs == second_inputs
+    for seed in range(8):
+        shuffled = list(scenarios)
+        random.Random(seed).shuffle(shuffled)
+        second_fingerprint, second_inputs = _comparison_fingerprint(benchmark, shuffled)
+        assert second_fingerprint == first_fingerprint
+        assert second_inputs == first_inputs
 
-    changed_corpus = [replace(shuffled[0], id=f"{shuffled[0].id}-changed"), *shuffled[1:]]
+    changed_corpus = [replace(scenarios[0], id=f"{scenarios[0].id}-changed"), *scenarios[1:]]
     changed_config = replace(benchmark, version="changed")
     assert _comparison_fingerprint(benchmark, changed_corpus)[0] != first_fingerprint
     assert _comparison_fingerprint(changed_config, shuffled)[0] != first_fingerprint
@@ -56,3 +57,21 @@ def test_run_scoped_order_still_has_stable_comparison_fingerprint() -> None:
     first = _load_unique_scenarios(benchmark.scenarios, "run-a-11111111")
     second = _load_unique_scenarios(benchmark.scenarios, "run-b-22222222")
     assert _comparison_fingerprint(benchmark, first)[0] == _comparison_fingerprint(benchmark, second)[0]
+
+
+def test_configured_order_seed_is_honored_and_fingerprinted() -> None:
+    benchmark = load_benchmark(ROOT / "benchmarks/persistent-target-tracking.yaml")
+    configured = replace(benchmark, evaluation_order_seed=17)
+    first = _load_unique_scenarios(configured.scenarios, "run-a-11111111", configured.evaluation_order_seed)
+    second = _load_unique_scenarios(configured.scenarios, "run-b-22222222", configured.evaluation_order_seed)
+    assert [scenario.id for scenario in first] == [scenario.id for scenario in second]
+    first_fingerprint, inputs = _comparison_fingerprint(configured, first)
+    fallback_fingerprint, fallback_inputs = _comparison_fingerprint(benchmark, first)
+    assert first_fingerprint != fallback_fingerprint
+    assert inputs["evaluation_order"] == {"mode": "configured_seed", "seed": 17}
+    assert fallback_inputs["evaluation_order"] == {"mode": "private_per_run_fallback", "seed": None}
+
+
+def test_published_provenance_paths_are_portable() -> None:
+    assert _portable_path(Path("/Users/alice/worktree/scenarios/rv1/scenario.yaml")) == "scenarios/rv1/scenario.yaml"
+    assert _portable_path(Path("/private/tmp/run-output")) == "run-output"

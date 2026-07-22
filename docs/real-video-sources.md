@@ -36,10 +36,18 @@ and writes scenario manifests plus ground truth below the ignored
 ```bash
 docker build -f examples/Dockerfile.real-video-prep -t cvbench-real-video-prep:v1 .
 scripts/prepare_real_video_container.sh --output data/real-video-v1
+cp data/real-video-v1/artifacts.sha256 /tmp/cvbench-real-video-prep-run1.sha256
 scripts/prepare_real_video_container.sh --output data/real-video-v1
+cmp -s /tmp/cvbench-real-video-prep-run1.sha256 data/real-video-v1/artifacts.sha256
 cvbench validate --benchmark benchmarks/real-video-v1.yaml \
   --system systems/real-video-baseline-local.yaml
 ```
+
+The second preparation is the deterministic comparison: the same
+digest-addressed Linux container, source checksums, clip configuration,
+decoder, and JPEG encoder must reproduce the canonical artifact manifest
+byte-for-byte. `cmp` is the comparison; the command is intentionally repeated
+only to verify that result. Native host preparation is unsupported.
 
 The preparation transform is fixed: decoded frame ordinals are selected using
 the source-frame ranges and strides in the importer, output JPEG quality is
@@ -113,6 +121,9 @@ python3 scripts/assert_docker_report.py reports/real-video-v1-docker --real-vide
 ```
 
 Each run directory contains the scored `report.json` and `report.html`, plus
-collector-side output and matching decisions. The benchmark uses a private
-per-run evaluation order and run-scoped sequence IDs. The public manifest is
-calibration material and is intentionally not described as secret.
+collector-side output and matching decisions. With no configured
+`evaluation_order_seed`, the runner uses and reports a private run-derived
+order (`private_per_run_fallback`); a configured string or integer seed instead
+selects and reports `configured_seed`. The effective mode and seed are part of
+the comparison fingerprint. Both modes use run-scoped sequence IDs. The public
+manifest is calibration material and is intentionally not described as secret.

@@ -217,6 +217,16 @@ def test_ignore_annotations_neutralize_unmatched_predictions_after_target_matchi
     assert metrics["false_detections"]["neutral_ignored_predictions"] == 1
 
 
+def test_ignored_ground_truth_rows_are_not_in_multi_target_denominator() -> None:
+    target = gt(0, target="target", box=[0, 0, 10, 10])
+    ignored = gt(0, target="unlabeled", box=[20, 20, 40, 40])
+    ignored["ignore"] = True
+    metrics, _ = calculate_metrics(
+        [target, ignored], [output(0, track="target", box=[0, 0, 10, 10])], Thresholds()
+    )
+    assert metrics["multi_target"] == {"1": {"matched": 1, "eligible": 1, "coverage": 1.0}}
+
+
 def test_contained_small_prediction_is_neutral_inside_broad_ignore_region() -> None:
     ignored = gt(0, target="ignore-region", box=[0, 0, 100, 100])
     ignored["ignore"] = True

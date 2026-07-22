@@ -24,9 +24,10 @@ thresholds:
   out_of_bounds: reject
   class_agnostic: false
 
-# The seed keeps ordering reproducible while preventing a SUT from relying on
-# the public manifest order. Sequence IDs are opaque and do not name labels.
-# Evaluation order is shuffled privately per run; this public manifest is not a secret.
+# No evaluation_order_seed is configured here: the runner deliberately uses a
+# private run-derived order and reports private_per_run_fallback. Sequence IDs
+# are run-scoped and do not name labels; this public manifest is calibration
+# material, not a secrecy guarantee.
 
 scenarios:
   - ../scenarios/real-video-v1/rv1-a7f3/scenario.yaml

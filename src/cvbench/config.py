@@ -198,7 +198,9 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
     resources = _mapping(data, "resources")
     baseline = data.get("baseline_report")
     evaluation_order_seed = data.get("evaluation_order_seed")
-    if evaluation_order_seed is not None and not isinstance(evaluation_order_seed, (str, int)):
+    if evaluation_order_seed is not None and (
+        not isinstance(evaluation_order_seed, (str, int)) or isinstance(evaluation_order_seed, bool)
+    ):
         raise ConfigurationError("evaluation_order_seed must be a string or integer")
     max_output_records = _integer(data.get("max_output_records", 100_000), "max_output_records", minimum=1)
     max_output_line_bytes = _integer(

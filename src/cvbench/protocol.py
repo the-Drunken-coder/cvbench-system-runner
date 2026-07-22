@@ -108,6 +108,18 @@ def validate_ground_truth(record: Any) -> dict[str, Any]:
     ignore = record.get("ignore", False)
     if not isinstance(ignore, bool):
         raise ProtocolError("ignore must be boolean")
+    ignore_region = record.get("ignore_region", False)
+    if not isinstance(ignore_region, bool):
+        raise ProtocolError("ignore_region must be boolean")
+    ignore_region_id = record.get("ignore_region_id")
+    if ignore_region and not ignore:
+        raise ProtocolError("ignore_region requires ignore=true")
+    if ignore_region and (not isinstance(ignore_region_id, str) or not ignore_region_id):
+        raise ProtocolError("ignore_region requires a non-empty ignore_region_id")
+    if ignore_region_id is not None and not isinstance(ignore_region_id, str):
+        raise ProtocolError("ignore_region_id must be a string")
+    if ignore_region_id is not None and not ignore_region:
+        raise ProtocolError("ignore_region_id requires ignore_region=true")
     visibility = float(record["visibility_fraction"])
     if not math.isfinite(visibility) or not 0 <= visibility <= 1:
         raise ProtocolError("visibility_fraction must be between zero and one")
@@ -115,6 +127,7 @@ def validate_ground_truth(record: Any) -> dict[str, Any]:
         raise ProtocolError("invalid occlusion state")
     clean = dict(record)
     clean["ignore"] = ignore
+    clean["ignore_region"] = ignore_region
     if record["on_screen"]:
         clean["bbox_xyxy"] = validate_bbox(record.get("bbox_xyxy"))
     elif record.get("bbox_xyxy") is not None:

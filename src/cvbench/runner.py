@@ -42,6 +42,15 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _portable_path(path: Path) -> str:
+    """Render repository paths without publishing host usernames or worktree roots."""
+    parts = path.resolve().parts
+    for anchor in ("benchmarks", "systems", "scenarios", "data"):
+        if anchor in parts:
+            return Path(*parts[parts.index(anchor) :]).as_posix()
+    return path.name or "<path>"
+
+
 def _comparison_fingerprint(benchmark: BenchmarkConfig, scenarios: list[Scenario]) -> tuple[str, dict[str, Any]]:
     scenario_inputs = []
     for scenario in scenarios:
@@ -72,6 +81,10 @@ def _comparison_fingerprint(benchmark: BenchmarkConfig, scenarios: list[Scenario
         "input_mode": benchmark.input_mode,
         "playback_rate": benchmark.playback_rate,
         "thresholds": asdict(benchmark.thresholds),
+        "evaluation_order": {
+            "mode": "configured_seed" if benchmark.evaluation_order_seed is not None else "private_per_run_fallback",
+            "seed": benchmark.evaluation_order_seed,
+        },
         "scenarios": scenario_inputs,
     }
     encoded = json.dumps(inputs, sort_keys=True, separators=(",", ":")).encode()
@@ -252,11 +265,17 @@ def _wait_for_readiness(collector: OutputCollector, runtime: StartedRuntime, tim
     return collector.ready.is_set()
 
 
-def _load_unique_scenarios(paths: tuple[Path, ...], run_id: str) -> list[Scenario]:
+def _load_unique_scenarios(
+    paths: tuple[Path, ...], run_id: str, evaluation_order_seed: str | int | None = None
+) -> list[Scenario]:
     scenarios: list[Scenario] = []
     seen: dict[str, int] = {}
     ordered_paths = list(paths)
-    random.Random(hashlib.sha256(run_id.encode()).digest()).shuffle(ordered_paths)
+    if evaluation_order_seed is None:
+        order_material = f"private-per-run:{run_id}"
+    else:
+        order_material = f"configured:{type(evaluation_order_seed).__name__}:{evaluation_order_seed}"
+    random.Random(hashlib.sha256(order_material.encode()).digest()).shuffle(ordered_paths)
     for path in ordered_paths:
         scenario = load_scenario(path)
         sequence = scenario.frames[0].sequence_id
@@ -308,7 +327,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     benchmark = load_benchmark(benchmark_path)
     system = load_system(system_path)
     run_id = _run_id()
-    scenarios = _load_unique_scenarios(benchmark.scenarios, run_id)
+    scenarios = _load_unique_scenarios(benchmark.scenarios, run_id, benchmark.evaluation_order_seed)
     run_dir = Path(output_root).resolve() / run_id
     run_dir.mkdir(parents=True)
     socket_dir = Path(tempfile.mkdtemp(prefix="cvb-", dir="/tmp"))
@@ -486,7 +505,9 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         outcome.errors.append(f"SUT emitted {system_error_count} system_error record(s)")
     findings = generate_findings(metrics, asdict(outcome), resource_data, collector_errors)
     comparison_fingerprint, comparison_inputs = _comparison_fingerprint(benchmark, scenarios)
-    command = f"cvbench run --benchmark {benchmark.path} --system {system.path} --output {Path(output_root).resolve()}"
+    benchmark_display_path = _portable_path(benchmark.path)
+    system_display_path = _portable_path(system.path)
+    command = f"cvbench run --benchmark {benchmark_display_path} --system {system_display_path} --output <run-output>"
     report: dict[str, Any] = {
         "schema_version": "cvbench.report/v1",
         "run_id": run_dir.name,
@@ -509,11 +530,11 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         "findings": findings,
         "comparison": [],
         "provenance": {
-            "benchmark_path": str(benchmark.path),
+            "benchmark_path": benchmark_display_path,
             "benchmark_sha256": _sha256(benchmark.path),
-            "system_path": str(system.path),
+            "system_path": system_display_path,
             "system_sha256": _sha256(system.path),
-            "scenario_manifests": [str(path) for path in benchmark.scenarios],
+            "scenario_manifests": [_portable_path(path) for path in benchmark.scenarios],
             "resolved_container_image": outcome.resolved_image,
             "resolved_container_image_id": runtime.resolved_image_id if runtime else None,
             "executed_container_image_id": (
@@ -533,7 +554,13 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             "comparison_inputs": comparison_inputs,
             "evaluation_order": {
                 "scenario_ids": [scenario.id for scenario in scenarios],
-                "private_per_run": True,
+                "mode": (
+                    "configured_seed"
+                    if benchmark.evaluation_order_seed is not None
+                    else "private_per_run_fallback"
+                ),
+                "seed": benchmark.evaluation_order_seed,
+                "private_per_run": benchmark.evaluation_order_seed is None,
                 "run_scoped_sequence_ids": True,
                 "public_calibration_note": (
                     "Scenario manifests and calibration clips are public and recognizable; this ordering and "

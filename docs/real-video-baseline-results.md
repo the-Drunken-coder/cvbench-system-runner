@@ -4,7 +4,7 @@ The same `classical-motion-baseline` revision and system configuration were run 
 
 | Metric | Real video | Synthetic, same SUT |
 | --- | ---: | ---: |
-| Delivered frames | 78 | 185 |
+| Delivered frames | 78 | 186 |
 | Output records | 947 | 143 |
 | Matched samples | 53 | 0 |
 | Acquisition rate | 1.0000 | 0.0000 |
@@ -16,7 +16,7 @@ The same `classical-motion-baseline` revision and system configuration were run 
 | Neutral ignored predictions | 97 | 0 |
 | Latency p99 | 22.15 ms | 90.55 ms |
 
-The real run was `20260722T064009Z-a223e33f` with report SHA-256 `5829d72c94043fc6dcf9d27b77d871d5053da487ef44e8b7af33735297d96f40`; the synthetic run was `20260722T064018Z-4b7a61c2` with report SHA-256 `0f0e648f62541fcdb13552656584f53fc2f8c10148f529cdbaf142bb64030470`. The benchmark fingerprints differ (`f36540e5a0038dfe873462a86cb540e28f52ca80b3db8a74884b776be9e06b5d` real versus `08205802398fa9dffa29f10fab3ce24bc8976e2eadea7975d09626f7c6a58587` synthetic), so this is deliberately marked non-comparable; the runner's comparison gate returns inconclusive rather than inventing score deltas. The behavior contrast is still useful: real footage exposes identity switches, incomplete coverage, and background hallucinations inside genuine negative-background space, while this deliberately simple motion detector fails to acquire the synthetic contract. Duplicate target predictions remain identity penalties; legitimate non-target objects are neutral only inside the fixed reviewed ROI and its narrow per-frame ignore boxes, including the trailing Prius in moving-camera frames 20–30.
+The real run was `20260722T073706Z-0ded35c4` with report SHA-256 `b5e2c64b2513f262b52daec169c11a700f1a0353ebfc4ba6fdd6b9fa9b92d64a`; the synthetic run was `20260722T073714Z-3d1386fb` with report SHA-256 `9a9f1749999198c142505734da985e2c72d7e3d080a934d162f3ea40ef8cc07c`. The benchmark fingerprints differ (`d3e01fbea9b045742e244ed7224b957e9b762116ace5a88f6825bbce6053e0da` real versus `1b963ea2421899b6572dca17ad07b6532c73d3c591e331bcb464597e3f8faa37` synthetic), so this is deliberately marked non-comparable; the runner's comparison gate returns inconclusive rather than inventing score deltas. The behavior contrast is still useful: real footage exposes identity switches, incomplete coverage, and background hallucinations inside genuine negative-background space, while this deliberately simple motion detector fails to acquire the synthetic contract. Duplicate target predictions remain identity penalties; legitimate non-target objects are neutral only inside the fixed reviewed ROI and its narrow per-frame ignore boxes, including the trailing Prius in moving-camera frames 20–30.
 
 Preparation and verification:
 

@@ -25,7 +25,6 @@ import cv2
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT / "data" / "real-video-v1"
 FPS_NS = 40_000_000
 TOOLCHAIN = {
     "python_major_minor": "3.12",
@@ -346,15 +345,18 @@ def _download(source: dict[str, Any], destination: Path) -> None:
             return
         except RuntimeError:
             pass
+    partial = destination.with_name(f".{destination.name}.part")
     for attempt in range(5):
         request = urllib.request.Request(
             source["url"],
             headers={"User-Agent": "CVBench-real-video-prep/1.0", "Accept-Encoding": "identity"},
         )
         try:
-            with urllib.request.urlopen(request, timeout=120) as response, destination.open("wb") as output:
+            partial.unlink(missing_ok=True)
+            with urllib.request.urlopen(request, timeout=120) as response, partial.open("wb") as output:
                 shutil.copyfileobj(response, output, length=1024 * 1024)
-            _verify_source_checksum(destination, source)
+            _verify_source_checksum(partial, source)
+            partial.replace(destination)
             return
         except urllib.error.HTTPError as exc:
             if exc.code != 429 or attempt == 4:
@@ -362,6 +364,16 @@ def _download(source: dict[str, Any], destination: Path) -> None:
             retry_after = exc.headers.get("Retry-After")
             delay = int(retry_after) if retry_after and retry_after.isdigit() else 2**attempt
             time.sleep(min(60, max(1, delay)))
+        except (urllib.error.URLError, TimeoutError, OSError):
+            if attempt == 4:
+                raise
+            time.sleep(min(60, 2**attempt))
+        finally:
+            partial.unlink(missing_ok=True)
+
+
+def _resolve_output(repo_root: Path, output: Path | None) -> Path:
+    return (output or (repo_root / "data" / "real-video-v1")).resolve()
 
 
 def _interpolate_box(keyframes: list[dict[str, Any]], source_frame: int) -> list[float]:
@@ -647,7 +659,7 @@ def prepare(output: Path) -> list[Path]:
             checked_in_manifest,
             clip,
             rows,
-            asset_root=clip_output,
+            asset_root=ROOT / "data" / "real-video-v1" / clip["id"],
         )
         if clip["id"] == "rv1-a7f3":
             _write_crowd_review_overlay(rows, output)
@@ -691,7 +703,7 @@ def prepare(output: Path) -> list[Path]:
 def main() -> int:
     global ROOT
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--verify-only", action="store_true")
     parser.add_argument("--repo-root", type=Path, default=ROOT)
     args = parser.parse_args()
@@ -700,12 +712,13 @@ def main() -> int:
             "native host preparation is unsupported; use scripts/prepare_real_video_container.sh"
         )
     ROOT = args.repo_root.resolve()
+    output = _resolve_output(ROOT, args.output)
     if args.verify_only:
-        verify_artifacts(args.output.resolve())
-        _verify_expected_frame_manifest(args.output.resolve())
-        print(args.output.resolve() / "artifacts.sha256")
+        verify_artifacts(output)
+        _verify_expected_frame_manifest(output)
+        print(output / "artifacts.sha256")
         return 0
-    paths = prepare(args.output)
+    paths = prepare(output)
     for path in paths:
         print(path)
     return 0

@@ -80,6 +80,25 @@ def test_ground_truth_validation() -> None:
         validate_ground_truth(invalid)
 
 
+@pytest.mark.parametrize(
+    "record",
+    [
+        {**gt(100), "ignore_region": True, "ignore": False, "ignore_region_id": "region"},
+        {**gt(100), "ignore": True, "ignore_region": True},
+        {**gt(100), "ignore": True, "ignore_region": True, "ignore_region_id": ""},
+        {**gt(100), "ignore": True, "ignore_region_id": "region"},
+    ],
+)
+def test_ignore_region_conditionals_are_enforced(record: dict[str, object]) -> None:
+    with pytest.raises(ProtocolError):
+        validate_ground_truth(record)
+
+
+def test_ignore_region_is_valid_only_with_ignore_and_identifier() -> None:
+    record = {**gt(100), "ignore": True, "ignore_region": True, "ignore_region_id": "region"}
+    assert validate_ground_truth(record)["ignore_region_id"] == "region"
+
+
 def test_reacquisition_event_is_in_the_track_contract() -> None:
     record = output(123).system_record
     record["event"] = "track_reacquired"

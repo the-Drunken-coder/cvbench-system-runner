@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
 import json
 import socket
 import subprocess
 import sys
 import threading
+import time
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -21,10 +24,13 @@ from scripts.prepare_real_video import (
     CLIPS,
     FPS_NS,
     SOURCES,
+    _download,
     _interpolate_box,
+    _resolve_output,
     _sha1,
     _sha256,
     _verify_source_checksum,
+    _write_manifest,
     verify_artifacts,
 )
 from tests.helpers import gt, output
@@ -338,6 +344,92 @@ def test_source_checksum_verification_checks_content(tmp_path: Path) -> None:
     copied.write_bytes(copied.read_bytes() + b"tamper")
     with pytest.raises(RuntimeError, match="checksum mismatch"):
         _verify_source_checksum(copied, source)
+
+
+def test_download_retries_bounded_transient_failures_but_not_integrity_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"downloaded fixture\n"
+    fixture = tmp_path / "fixture.bin"
+    fixture.write_bytes(payload)
+    source = {"url": "https://example.invalid/fixture.bin", "sha1": _sha1(fixture), "sha256": _sha256(fixture)}
+    attempts = 0
+
+    def transient_then_success(*_args: object, **_kwargs: object) -> io.BytesIO:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise urllib.error.URLError("temporary DNS failure")
+        if attempts == 2:
+            raise TimeoutError("temporary timeout")
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr("scripts.prepare_real_video.urllib.request.urlopen", transient_then_success)
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    destination = tmp_path / "out" / "fixture.bin"
+    _download(source, destination)
+    assert destination.read_bytes() == payload
+    assert attempts == 3
+
+    attempts = 0
+
+    def rate_limited_then_success(*_args: object, **_kwargs: object) -> io.BytesIO:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise urllib.error.HTTPError(
+                source["url"], 429, "rate limited", {"Retry-After": "0"}, None
+            )
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr("scripts.prepare_real_video.urllib.request.urlopen", rate_limited_then_success)
+    _download(source, tmp_path / "rate-limited.bin")
+    assert attempts == 2
+
+    attempts = 0
+
+    def bad_content(*_args: object, **_kwargs: object) -> io.BytesIO:
+        nonlocal attempts
+        attempts += 1
+        return io.BytesIO(b"not the pinned source")
+
+    monkeypatch.setattr("scripts.prepare_real_video.urllib.request.urlopen", bad_content)
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        _download(source, tmp_path / "bad.bin")
+    assert attempts == 1
+
+
+def test_default_preparation_output_is_resolved_after_repo_root() -> None:
+    repo_root = Path("/container/repository")
+    assert _resolve_output(repo_root, None) == repo_root / "data/real-video-v1"
+    assert _resolve_output(repo_root, Path("custom-output")) == Path("custom-output").resolve()
+
+
+def test_custom_preparation_output_keeps_checked_in_manifest_paths_canonical(tmp_path: Path) -> None:
+    rows = [
+        {
+            "target_id": "target",
+            "sequence_id": "sequence",
+            "source_timestamp_ns": 0,
+            "on_screen": True,
+            "eligible_for_detection": True,
+            "visibility_fraction": 1.0,
+            "occlusion": "none",
+            "class_id": "target",
+            "bbox_xyxy": [10, 10, 20, 20],
+        }
+    ]
+    checked_in = tmp_path / "scenarios/real-video-v1/rv1-a7f3"
+    checked_in.mkdir(parents=True)
+    _write_manifest(
+        checked_in,
+        CLIPS[0],
+        rows,
+        asset_root=tmp_path / "data/real-video-v1/rv1-a7f3",
+    )
+    manifest = yaml.safe_load((checked_in / "scenario.yaml").read_text())
+    assert manifest["ground_truth"] == "../../../data/real-video-v1/rv1-a7f3/ground_truth.jsonl"
+    assert manifest["frames"][0]["path"] == "../../../data/real-video-v1/rv1-a7f3/frames/frame-0000.jpg"
 
 
 def test_artifact_manifest_verifies_actual_bytes(tmp_path: Path) -> None:
