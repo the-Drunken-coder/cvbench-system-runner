@@ -48,13 +48,13 @@ with sock, sock.makefile("rb") as stream:
             continue
         assert first_frame is not None
         lines = [_record(first_frame, "buffered-a")]
-        if mode == "malformed-before":
+        if mode in {"malformed-before", "malformed-immediate-clean-exit"}:
             lines.append("{malformed-before-boundary")
         lines.append(_record(first_frame, "buffered-b"))
         sys.stdout.write("\n".join(lines) + "\n")
         sys.stdout.flush()
         sock.shutdown(socket.SHUT_WR)
-        if mode == "immediate-clean-exit":
+        if mode in {"immediate-clean-exit", "malformed-immediate-clean-exit"}:
             break
         time.sleep(0.12)
         sys.stdout.write(_record(first_frame, "late") + "\n{malformed-late\n")

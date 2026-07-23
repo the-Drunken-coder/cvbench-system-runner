@@ -1,3 +1,4 @@
+import copy
 import json
 import sys
 import threading
@@ -9,6 +10,8 @@ import yaml
 
 import cvbench.runner as runner_module
 from cvbench.collector import OutputCollector
+from cvbench.comparison import compare_reports
+from cvbench.reporting import validate_report
 from cvbench.runner import run_benchmark
 from cvbench.synthetic import generate_synthetic_pack
 
@@ -23,6 +26,7 @@ def _definitions(
     output_limits: dict[str, int] | None = None,
     environment: dict[str, str] | None = None,
     max_run_seconds: float = 5,
+    replay_profile: str = "accelerated-test-100x",
 ) -> tuple[Path, Path]:
     manifests = generate_synthetic_pack(tmp_path / "pack")
     benchmark = {
@@ -32,7 +36,7 @@ def _definitions(
         "input": {
             "mode": "online_replay",
             "protocol": "frame_socket_v1",
-            "replay_profile": "accelerated-test-100x",
+            "replay_profile": replay_profile,
         },
         "thresholds": {"minimum_match_iou": 0.3, "max_match_center_error_px": 20},
         "scenarios": [str(manifests[0])],
@@ -73,6 +77,7 @@ def _report(
     output_limits: dict[str, int] | None = None,
     environment: dict[str, str] | None = None,
     max_run_seconds: float = 5,
+    replay_profile: str = "accelerated-test-100x",
 ) -> dict:
     benchmark, system = _definitions(
         tmp_path,
@@ -82,9 +87,47 @@ def _report(
         output_limits,
         environment,
         max_run_seconds,
+        replay_profile,
     )
     artifacts = run_benchmark(benchmark, system, tmp_path / "runs")
     return json.loads(artifacts.report_json.read_text())
+
+
+def _emulate_authoritative_docker_accounting(monkeypatch) -> None:
+    original_build = runner_module.build_leaderboard_semantics
+
+    def build_with_authoritative_resources(**kwargs):
+        resources = kwargs["resources"]
+        resources.update(
+            {
+                "authoritative": True,
+                "accounting_availability": {
+                    "external_cgroup_v2": True,
+                    "final_cumulative_cpu_sample": True,
+                    "cpu_time": True,
+                    "cpu_percent": True,
+                    "peak_ram": True,
+                    "disk_io": True,
+                },
+            }
+        )
+        for key in (
+            "cpu_time_seconds",
+            "average_cpu_percent",
+            "peak_cpu_percent",
+            "peak_ram_bytes",
+            "disk_read_bytes",
+            "disk_write_bytes",
+        ):
+            resources.setdefault(key, 0)
+        kwargs["runtime_type"] = "docker"
+        return original_build(**kwargs)
+
+    monkeypatch.setattr(
+        runner_module,
+        "build_leaderboard_semantics",
+        build_with_authoritative_resources,
+    )
 
 
 def test_sut_crash_is_reported(tmp_path: Path) -> None:
@@ -240,6 +283,57 @@ def test_immediate_clean_exit_without_boundary_ack_fails_and_cleans_up(
     assert report["timing"]["durations"]["drain_seconds"] <= 0.1
     pid = int((tmp_path / "sut.pid").read_text())
     assert not psutil.pid_exists(pid)
+
+
+def test_clean_exit_malformed_boundary_is_failed_and_leaderboard_ineligible(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _emulate_authoritative_docker_accounting(monkeypatch)
+    report = _report(
+        tmp_path,
+        "sut_half_close_output.py",
+        environment={"CVBENCH_HALF_CLOSE_MODE": "malformed-immediate-clean-exit"},
+        replay_profile="native",
+    )
+
+    validate_report(report)
+    assert report["outcome"]["status"] == "failed"
+    assert len(report["diagnostics"]["collector_errors"]) == 1
+    assert report["leaderboard"]["eligible"] is False
+    assert "run did not complete" in report["leaderboard"]["disqualifications"]
+    assert report["leaderboard"]["ranking_method"] == "pareto"
+    assert report["leaderboard"]["composite_score"] is None
+
+    baseline = copy.deepcopy(report)
+    baseline["outcome"]["status"] = "completed"
+    baseline["leaderboard"]["eligible"] = True
+    baseline["leaderboard"]["disqualifications"] = []
+    comparisons = compare_reports(baseline, report)
+    assert comparisons
+    assert all(item["direction"] == "inconclusive" for item in comparisons)
+    assert all("both reports must be eligible" in item["reason"] for item in comparisons)
+
+
+def test_clean_exit_valid_boundary_remains_eligible_and_schema_valid(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _emulate_authoritative_docker_accounting(monkeypatch)
+    report = _report(
+        tmp_path,
+        "sut_half_close_output.py",
+        environment={"CVBENCH_HALF_CLOSE_MODE": "immediate-clean-exit"},
+        replay_profile="native",
+    )
+
+    validate_report(report)
+    assert report["outcome"]["status"] == "completed"
+    assert report["diagnostics"]["collector_errors"] == []
+    assert report["leaderboard"]["eligible"] is True
+    comparisons = {
+        item["metric"]: item
+        for item in compare_reports(copy.deepcopy(report), report)
+    }
+    assert comparisons["acquisition.rate"]["direction"] == "unchanged"
 
 
 def test_malformed_before_half_close_is_reported_but_late_lines_are_not_scored(

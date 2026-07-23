@@ -743,6 +743,14 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     feed_counters["input_queue_depth_available"] = timing_data["delivery"][
         "input_queue_depth_available"
     ]
+    outcome.errors.extend(collector_errors)
+    system_error_count = sum(
+        item.system_record.get("event") == "system_error" for item in collected
+    )
+    if collector_errors or system_error_count:
+        outcome.status = "failed"
+    if system_error_count:
+        outcome.errors.append(f"SUT emitted {system_error_count} system_error record(s)")
     leaderboard = build_leaderboard_semantics(
         benchmark=benchmark,
         timing=timing_data,
@@ -781,12 +789,6 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         )
     )
     (run_dir / "ground-truth.jsonl").write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in ground_truth))
-    outcome.errors.extend(collector_errors)
-    system_error_count = sum(item.system_record.get("event") == "system_error" for item in collected)
-    if collector_errors or system_error_count:
-        outcome.status = "failed"
-    if system_error_count:
-        outcome.errors.append(f"SUT emitted {system_error_count} system_error record(s)")
     findings = generate_findings(metrics, asdict(outcome), resource_data, collector_errors)
     comparison_fingerprint, comparison_inputs = _comparison_fingerprint(
         benchmark,
