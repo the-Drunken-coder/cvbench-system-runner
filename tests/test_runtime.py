@@ -167,6 +167,8 @@ def test_docker_cleanup_retries_and_removes_retained_cgroup_idempotently(
     cgroup_root = tmp_path / "cgroup"
     parent = cgroup_root / "cvbench-test"
     parent.mkdir(parents=True)
+    retention = parent / "cvbench-retain"
+    retention.mkdir()
     runtime = StartedRuntime(
         _Process(),
         cidfile,
@@ -190,6 +192,7 @@ def test_docker_cleanup_retries_and_removes_retained_cgroup_idempotently(
 
     assert cleanup_runtime(runtime, parent, cgroup_root=cgroup_root) == []
     assert inspect_calls == 2
+    assert not retention.exists()
     assert not parent.exists()
     assert cleanup_runtime(runtime, parent, cgroup_root=cgroup_root) == []
 

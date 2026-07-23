@@ -22,6 +22,7 @@ CONTROL_PLANE_JOB_ID_PATTERN = re.compile(
 )
 CGROUP_ROOT = Path("/sys/fs/cgroup")
 ACCOUNTING_CGROUP_NAME_PATTERN = re.compile(r"cvbench-[0-9A-Za-z.-]{1,120}(?:\.slice)?")
+RETENTION_CGROUP_NAME = "cvbench-retain"
 
 
 @dataclass
@@ -566,11 +567,18 @@ def cleanup_runtime(
     elif container_identifier:
         errors.append("container cleanup failed: docker is unavailable")
     if accounting_cgroup_path is not None and runtime.accounting_cgroup_name is not None:
+        retention_error = _remove_accounting_cgroup(
+            accounting_cgroup_path / RETENTION_CGROUP_NAME,
+            RETENTION_CGROUP_NAME,
+            cgroup_root,
+        )
+        if retention_error is not None:
+            errors.append(retention_error)
         error = _remove_accounting_cgroup(
             accounting_cgroup_path,
             runtime.accounting_cgroup_name,
             cgroup_root,
         )
-        if error is not None:
+        if error is not None and error not in errors:
             errors.append(error)
     return errors

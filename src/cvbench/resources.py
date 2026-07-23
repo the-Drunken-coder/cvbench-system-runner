@@ -12,6 +12,8 @@ from typing import Any
 
 import psutil
 
+RETENTION_CGROUP_NAME = "cvbench-retain"
+
 
 def unavailable_resource_summary(runtime_seconds: float, runtime_type: str) -> dict[str, Any]:
     """Return a complete, explicitly non-authoritative summary for an unstarted runtime."""
@@ -169,6 +171,7 @@ class ResourceMonitor:
         self._capture_lock = threading.Lock()
         self._container_id: str | None = None
         self._cgroup_path: Path | None = None
+        self._retention_cgroup_path: Path | None = None
         self._last_cpu: tuple[int, float] | None = None
         self._final_sample_complete = False
 
@@ -277,8 +280,7 @@ class ResourceMonitor:
             and self.configured_cgroup_path.name == self.cgroup_parent_name
             and (self.configured_cgroup_path / "cpu.stat").is_file()
         ):
-            self._cgroup_path = self.configured_cgroup_path
-            return self._cgroup_path
+            return self._retain_cgroup(self.configured_cgroup_path)
         if not self._container_id:
             return None
         result = subprocess.run(
@@ -302,6 +304,32 @@ class ResourceMonitor:
             path = path.parent
             if path.name != self.cgroup_parent_name or not (path / "cpu.stat").is_file():
                 return None
+        return self._retain_cgroup(path)
+
+    def _retain_cgroup(self, path: Path) -> Path | None:
+        retention = path / RETENTION_CGROUP_NAME
+        try:
+            retention.mkdir()
+        except FileExistsError:
+            pass
+        except OSError:
+            if not shutil.which("sudo"):
+                return None
+            try:
+                result = subprocess.run(
+                    ["sudo", "-n", "mkdir", "--", str(retention)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                return None
+            if result.returncode != 0 and not retention.is_dir():
+                return None
+        if not retention.is_dir():
+            return None
+        self._retention_cgroup_path = retention
         self._cgroup_path = path
         return path
 
