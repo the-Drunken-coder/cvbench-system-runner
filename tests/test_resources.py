@@ -78,6 +78,7 @@ def test_external_cgroup_v2_accounting_never_executes_in_submitted_image(
     (group / "cpu.stat").write_text("usage_usec 1500000\n")
     (group / "io.stat").write_text("8:0 rbytes=30 wbytes=80 rios=2 wios=3\n")
     assert monitor.finalize_accounting()
+    assert monitor.finalize_accounting()
     summary = monitor.summary(1)
 
     assert cgroup_v2_path("0::/docker/test\n", cgroup_root) == group
