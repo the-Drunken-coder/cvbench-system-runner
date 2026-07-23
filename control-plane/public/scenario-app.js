@@ -421,7 +421,7 @@ function prefetchPosterNeighbors(index) {
 }
 
 async function showFrame(index, announcement = true) {
-  if (!state.frames) return;
+  if (!state.frames) return false;
   stopPlayback();
   const selected = Math.max(0, Math.min(index, state.frames.frames.length - 1));
   cancelPendingFramesExcept(selected);
@@ -429,12 +429,15 @@ async function showFrame(index, announcement = true) {
   hideMediaStatus();
   try {
     const entry = await requestDecodedFrame(selected);
-    if (generation !== state.playbackGeneration || entry.generation !== state.generation) return;
+    if (generation !== state.playbackGeneration || entry.generation !== state.generation) return false;
     presentFrame(selected, entry, announcement);
     prefetchPosterNeighbors(selected);
+    return true;
   } catch (error) {
-    if (generation !== state.playbackGeneration || error?.name === "AbortError") return;
+    if (generation !== state.playbackGeneration || error?.name === "AbortError") return false;
     renderExactFrameFailure(byId("media-state"), error);
+    byId("viewer-announcement").textContent = error.message;
+    return false;
   }
 }
 
@@ -544,7 +547,8 @@ function playbackTick(now, playbackGeneration) {
 
 async function startPlayback() {
   if (state.selected === state.frames.frames.length - 1) {
-    await showFrame(0, false);
+    const presented = await showFrame(0, false);
+    if (!presented) return;
   }
   const requestGeneration = ++state.playbackGeneration;
   const scenarioGeneration = state.generation;

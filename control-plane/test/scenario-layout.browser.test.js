@@ -587,6 +587,134 @@ test("playback controls retain exact-frame inspection, synchronized overlays, an
   await page.waitForFunction(() => document.querySelector("#viewer-announcement")?.textContent === "Playback ended on frame 150.");
   assert.equal(Number(await page.locator("#frame-scrubber").inputValue()), 149);
   assert.equal(await page.locator("#play-pause").getAttribute("aria-label"), "Play sequence");
+  await page.locator("#play-pause").click();
+  await page.waitForFunction(() => document.querySelector("#play-pause").textContent === "Pause"
+    && Number(document.querySelector("#frame-scrubber").value) >= 2
+    && Number(document.querySelector("#frame-scrubber").value) < 149);
+  assert.equal(await page.locator("#play-pause").textContent(), "Pause");
+  await page.locator("#play-pause").click();
+});
+
+test("final-frame restart preserves persistent frame-zero failures instead of reporting normal end", async (context) => {
+  const { browser, fixture } = await buildBrowserFixture(context, "endpoint-restart-failures");
+  const detail = await (await fetch(`${fixture.origin}/scenario-catalog/v1/scenarios/rvmot-a1c9.json`)).json();
+  const manifest = await (await fetch(new URL(detail.media.frame_manifest.url, fixture.origin))).json();
+  const frameZeroPath = new URL(manifest.frames[0].media.url, fixture.origin).pathname;
+  const failures = [
+    {
+      body: "missing exact frame",
+      contentType: "text/plain",
+      expected: "Exact frame is missing (404).",
+      label: "404",
+      status: 404,
+    },
+    {
+      body: "temporarily unavailable",
+      contentType: "text/plain",
+      expected: "Exact frame is unavailable because retrieval failed (503).",
+      label: "503",
+      status: 503,
+    },
+    {
+      body: "not the published JPEG bytes",
+      contentType: "image/jpeg",
+      expected: "Exact frame failed its published SHA-256 check.",
+      label: "corrupt SHA",
+      status: 200,
+    },
+  ];
+
+  for (const failure of failures) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    let failRestart = false;
+    let restartRequests = 0;
+    await page.route("**/*.jpg", async (route) => {
+      if (!failRestart || new URL(route.request().url()).pathname !== frameZeroPath) {
+        await route.continue();
+        return;
+      }
+      restartRequests += 1;
+      await route.fulfill({
+        body: failure.body,
+        contentType: failure.contentType,
+        status: failure.status,
+      });
+    });
+    await loadScenario(page, fixture.origin, "rvmot-a1c9");
+    await page.locator("#playback-speed").selectOption("2");
+    await page.locator("#play-pause").click();
+    await page.waitForFunction(() => document.querySelector("#viewer-announcement")?.textContent ===
+      "Playback ended on frame 150.");
+    assert.equal(Number(await page.locator("#frame-scrubber").inputValue()), 149);
+
+    const lastGood = await page.evaluate(() => ({
+      frame: document.querySelector("#scenario-frame").dataset.frameIndex,
+      overlay: document.querySelector("#scenario-overlay").innerHTML,
+      pixels: document.querySelector("#scenario-frame").toDataURL(),
+    }));
+    await page.evaluate(() => {
+      const probe = {
+        samples: [],
+        timer: null,
+      };
+      const sample = () => {
+        const mediaState = document.querySelector("#media-state");
+        probe.samples.push({
+          announcement: document.querySelector("#viewer-announcement").textContent,
+          error: mediaState.classList.contains("error"),
+          frame: document.querySelector("#scenario-frame").dataset.frameIndex,
+          hidden: mediaState.hidden,
+          text: mediaState.textContent,
+        });
+      };
+      sample();
+      probe.timer = setInterval(sample, 2);
+      window.__endpointRestartProbe = probe;
+    });
+    failRestart = true;
+    await page.locator("#play-pause").click();
+    await page.waitForTimeout(160);
+    const result = await page.evaluate(() => {
+      clearInterval(window.__endpointRestartProbe.timer);
+      const mediaState = document.querySelector("#media-state");
+      return {
+        announcement: document.querySelector("#viewer-announcement").textContent,
+        error: mediaState.classList.contains("error"),
+        frame: document.querySelector("#scenario-frame").dataset.frameIndex,
+        hidden: mediaState.hidden,
+        overlay: document.querySelector("#scenario-overlay").innerHTML,
+        pixels: document.querySelector("#scenario-frame").toDataURL(),
+        playButton: document.querySelector("#play-pause").textContent,
+        samples: window.__endpointRestartProbe.samples,
+        text: mediaState.textContent,
+      };
+    });
+
+    const firstErrorSample = result.samples.findIndex((sample) => sample.error && !sample.hidden);
+    assert.ok(firstErrorSample >= 0, `${failure.label}: the persistent frame-zero failure must become visible`);
+    assert.ok(result.samples.slice(firstErrorSample).every((sample) =>
+      sample.error
+      && !sample.hidden
+      && sample.text === failure.expected
+      && sample.frame === "149"
+      && sample.announcement === failure.expected),
+    `${failure.label}: every sub-frame sample after failure must retain the actual error`);
+    assert.equal(result.hidden, false, `${failure.label}: the actionable error must remain visible`);
+    assert.equal(result.error, true, `${failure.label}: the persistent error class must remain set`);
+    assert.equal(result.text, failure.expected);
+    assert.equal(result.announcement, failure.expected,
+      `${failure.label}: accessibility state must announce the failure, not normal playback end`);
+    assert.equal(result.playButton, "Play", `${failure.label}: failed restart must leave playback stopped`);
+    assert.deepEqual({
+      frame: result.frame,
+      overlay: result.overlay,
+      pixels: result.pixels,
+    }, lastGood, `${failure.label}: failed restart must preserve the final verified frame and overlay`);
+    assert.equal(restartRequests, 1, `${failure.label}: restart must make one fresh frame-zero request`);
+    context.diagnostic(`${failure.label} endpoint restart: ${result.samples.length} samples on a requested 2ms cadence; `
+      + `persistent error, final-frame pixels/overlay, and actual announcement preserved`);
+    await page.close();
+  }
 });
 
 test("a delayed stale playback failure cannot stop a scrubbed and resumed session", async (context) => {
