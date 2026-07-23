@@ -1,11 +1,13 @@
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
 import psutil
 import yaml
 
+from cvbench.collector import OutputCollector
 from cvbench.runner import run_benchmark
 from cvbench.synthetic import generate_synthetic_pack
 
@@ -18,6 +20,8 @@ def _definitions(
     grace: float = 1,
     max_records: int = 100_000,
     output_limits: dict[str, int] | None = None,
+    environment: dict[str, str] | None = None,
+    max_run_seconds: float = 5,
 ) -> tuple[Path, Path]:
     manifests = generate_synthetic_pack(tmp_path / "pack")
     benchmark = {
@@ -32,7 +36,7 @@ def _definitions(
         "thresholds": {"minimum_match_iou": 0.3, "max_match_center_error_px": 20},
         "scenarios": [str(manifests[0])],
         "reporting": {"generate_failure_packets": False},
-        "max_run_seconds": 5,
+        "max_run_seconds": max_run_seconds,
         "max_output_records": max_records,
         **(output_limits or {}),
     }
@@ -48,6 +52,7 @@ def _definitions(
             "environment": {
                 "CVBENCH_TEST_PID_FILE": str(tmp_path / "sut.pid"),
                 "CVBENCH_TEST_CHILD_PID_FILE": str(tmp_path / "sut-child.pid"),
+                **(environment or {}),
             },
         },
         "readiness": {"type": "stdout_pattern", "pattern": "CVBENCH_READY", "timeout_seconds": 2},
@@ -65,9 +70,17 @@ def _report(
     grace: float = 1,
     max_records: int = 100_000,
     output_limits: dict[str, int] | None = None,
+    environment: dict[str, str] | None = None,
+    max_run_seconds: float = 5,
 ) -> dict:
     benchmark, system = _definitions(
-        tmp_path, ROOT / "tests/fixtures" / fixture, grace, max_records, output_limits
+        tmp_path,
+        ROOT / "tests/fixtures" / fixture,
+        grace,
+        max_records,
+        output_limits,
+        environment,
+        max_run_seconds,
     )
     artifacts = run_benchmark(benchmark, system, tmp_path / "runs")
     return json.loads(artifacts.report_json.read_text())
@@ -122,6 +135,81 @@ def test_exact_timestamp_post_stream_output_is_scored_during_bounded_drain(
     assert report["metrics"]["sample_counts"]["output_records"] == 1
     assert report["timing"]["output"]["late_after_benchmark_end"] == 1
     assert "bounded drain window" in report["timing"]["output"]["late_output_policy"]
+
+
+def test_half_close_waits_for_delayed_collector_and_scores_buffered_output(
+    tmp_path: Path, monkeypatch
+) -> None:
+    consume_started = threading.Event()
+    boundary_requested = threading.Event()
+    original_consume = OutputCollector._consume_line
+    original_request = OutputCollector.request_output_boundary
+
+    def delayed_consume(self, raw_line, recent_records):
+        if b'"schema_version":"cvbench.track/v1"' in raw_line and not consume_started.is_set():
+            consume_started.set()
+            assert boundary_requested.wait(1)
+        return original_consume(self, raw_line, recent_records)
+
+    def observed_request(self):
+        boundary_requested.set()
+        return original_request(self)
+
+    monkeypatch.setattr(OutputCollector, "_consume_line", delayed_consume)
+    monkeypatch.setattr(OutputCollector, "request_output_boundary", observed_request)
+
+    report = _report(tmp_path, "sut_half_close_output.py")
+
+    assert consume_started.is_set()
+    assert boundary_requested.is_set()
+    assert report["outcome"]["status"] == "completed"
+    assert report["metrics"]["sample_counts"]["output_records"] == 2
+    assert report["diagnostics"]["collector_errors"] == []
+
+
+def test_malformed_before_half_close_is_reported_but_late_lines_are_not_scored(
+    tmp_path: Path,
+) -> None:
+    report = _report(
+        tmp_path,
+        "sut_half_close_output.py",
+        environment={"CVBENCH_HALF_CLOSE_MODE": "malformed-before"},
+    )
+
+    assert report["outcome"]["status"] == "failed"
+    assert report["metrics"]["sample_counts"]["output_records"] == 2
+    assert len(report["diagnostics"]["collector_errors"]) == 1
+    assert "malformed-before-boundary" in report["diagnostics"]["collector_errors"][0]
+    assert "malformed-late" not in report["diagnostics"]["collector_errors"][0]
+
+
+def test_blocked_reader_cannot_extend_socket_send_past_overall_deadline(
+    tmp_path: Path,
+) -> None:
+    benchmark, system = _definitions(
+        tmp_path,
+        ROOT / "tests/fixtures/sut_blocked_reader.py",
+        max_run_seconds=0.3,
+    )
+    scenario = yaml.safe_load(Path(yaml.safe_load(benchmark.read_text())["scenarios"][0]).read_text())
+    frame_path = Path(yaml.safe_load(benchmark.read_text())["scenarios"][0]).parent / scenario["frames"][0]["path"]
+    frame_path.write_bytes(b"x" * 4_000_000)
+    started = time.monotonic()
+
+    artifacts = run_benchmark(benchmark, system, tmp_path / "blocked-runs")
+    elapsed = time.monotonic() - started
+    report = json.loads(artifacts.report_json.read_text())
+
+    assert elapsed < 1.5
+    assert report["outcome"]["status"] == "failed"
+    assert report["outcome"]["timed_out"] is True
+    assert report["feed"]["delivered_frames"] == 0
+    assert any(
+        "benchmark run deadline expired during" in error
+        for error in report["outcome"]["errors"]
+    )
+    pid = int((tmp_path / "sut.pid").read_text())
+    assert not psutil.pid_exists(pid)
 
 
 def test_missing_readiness_is_bounded_and_reported(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import threading
 import time
 from collections import deque
@@ -39,6 +40,8 @@ class OutputCollector:
         self.flooded = threading.Event()
         self.scoring_closed = threading.Event()
         self.stdout_closed = threading.Event()
+        self.output_boundary_requested = threading.Event()
+        self.output_boundary_drained = threading.Event()
         self.limit_reason: str | None = None
         self.first_output_timestamp_ns: int | None = None
         self._lock = threading.Lock()
@@ -55,12 +58,27 @@ class OutputCollector:
     def _read_stdout(self) -> None:
         assert self.process.stdout is not None
         file_descriptor = self.process.stdout.fileno()
+        os.set_blocking(file_descriptor, False)
         buffer = bytearray()
         total_bytes = 0
         recent_records: deque[int] = deque()
+        boundary_acknowledged = False
         try:
             while not self.flooded.is_set():
-                chunk = os.read(file_descriptor, 65536)
+                readable, _, _ = select.select([file_descriptor], [], [], 0.02)
+                if not readable:
+                    if self.output_boundary_requested.is_set() and not boundary_acknowledged:
+                        if buffer:
+                            self._consume_line(bytes(buffer), recent_records)
+                            buffer.clear()
+                        self.close_scoring()
+                        self.output_boundary_drained.set()
+                        boundary_acknowledged = True
+                    continue
+                try:
+                    chunk = os.read(file_descriptor, 65536)
+                except BlockingIOError:
+                    continue
                 if not chunk:
                     if buffer:
                         self._consume_line(bytes(buffer), recent_records)
@@ -100,9 +118,9 @@ class OutputCollector:
         if not self.ready.is_set() and self.readiness_pattern in line:
             self.ready.set()
             return
-        if self.scoring_closed.is_set():
-            return
         with self._lock:
+            if self.scoring_closed.is_set():
+                return
             self._output_record_count += 1
             record_number = self._output_record_count
         if record_number > self.max_records:
@@ -183,6 +201,8 @@ class OutputCollector:
             self._record_invalid(str(exc), sample)
             return
         with self._lock:
+            if self.scoring_closed.is_set():
+                return
             if self.first_output_timestamp_ns is None:
                 self.first_output_timestamp_ns = received
             self.records.append(CollectedRecord(received, record))
@@ -224,7 +244,13 @@ class OutputCollector:
             return list(self.records), list(self.errors), list(self.stderr)
 
     def close_scoring(self) -> None:
-        self.scoring_closed.set()
+        with self._lock:
+            self.scoring_closed.set()
+
+    def request_output_boundary(self) -> bool:
+        """Drain stdout already written before a socket half-close, then close scoring."""
+        self.output_boundary_requested.set()
+        return self.output_boundary_drained.is_set()
 
     def join(self, timeout: float = 2.0) -> None:
         self._stdout_thread.join(timeout)

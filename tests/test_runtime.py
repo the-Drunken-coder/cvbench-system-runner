@@ -54,7 +54,18 @@ def test_normal_exit_is_released_only_after_final_scoring_checkpoint() -> None:
 
 def test_system_half_close_marks_output_complete_without_releasing_input() -> None:
     runner, system = socket.socketpair()
-    collector = SimpleNamespace(stdout_closed=SimpleNamespace(is_set=lambda: False))
+    boundary_drained = False
+
+    def request_boundary():
+        nonlocal boundary_drained
+        boundary_drained = True
+        return boundary_drained
+
+    collector = SimpleNamespace(
+        stdout_closed=SimpleNamespace(is_set=lambda: False),
+        output_boundary_drained=SimpleNamespace(is_set=lambda: boundary_drained),
+        request_output_boundary=request_boundary,
+    )
     try:
         assert _scoring_complete(runner, collector) is False
         system.shutdown(socket.SHUT_WR)

@@ -143,6 +143,23 @@ def _sleep_until(deadline_ns: int, run_deadline: float) -> None:
         time.sleep(min(remaining, 0.05))
 
 
+def _send_before_deadline(
+    connection: socket.socket,
+    metadata: dict[str, Any],
+    payload: bytes,
+    run_deadline: float,
+) -> None:
+    remaining = run_deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("benchmark run deadline expired before socket send")
+    connection.settimeout(remaining)
+    try:
+        send_message(connection, metadata, payload)
+    except TimeoutError as exc:
+        event = metadata.get("event", "message")
+        raise TimeoutError(f"benchmark run deadline expired during {event} send") from exc
+
+
 def _faults_for_frame(scenario: Scenario, frame_index: int) -> list[dict[str, Any]]:
     result = []
     for fault in scenario.faults:
@@ -205,7 +222,7 @@ def _deliver_scenarios(
         shifted_ground_truth.extend(_shift_ground_truth(scenario, source_base_ns))
         sequence_timestamps[scenario.frames[0].sequence_id] = []
         source_metadata = native_source_metadata([scenario])["sequences"][0]
-        send_message(
+        _send_before_deadline(
             connection,
             {
                 "event": "stream_start",
@@ -222,6 +239,8 @@ def _deliver_scenarios(
                     "timestamp_origin": source_metadata["timestamp_origin"],
                 },
             },
+            b"",
+            run_deadline,
         )
         tolerance_ns = delivery_tolerance_ns(scenario, config.playback_rate)
         for frame in scenario.frames:
@@ -250,7 +269,7 @@ def _deliver_scenarios(
             for fault in fault_actions:
                 if fault.get("type") == "feed_interruption":
                     counters["feed_interruptions"] += 1
-                    send_message(
+                    _send_before_deadline(
                         connection,
                         {
                             "event": "feed_interruption_start",
@@ -258,9 +277,14 @@ def _deliver_scenarios(
                             "sequence_id": frame.sequence_id,
                             "source_timestamp_ns": source_timestamp_ns,
                         },
+                        b"",
+                        run_deadline,
                     )
-                    time.sleep(float(fault.get("duration_ms", 250)) / 1000)
-                    send_message(
+                    interruption_ends_ns = time.monotonic_ns() + int(
+                        float(fault.get("duration_ms", 250)) * 1_000_000
+                    )
+                    _sleep_until(interruption_ends_ns, run_deadline)
+                    _send_before_deadline(
                         connection,
                         {
                             "event": "feed_interruption_end",
@@ -268,10 +292,15 @@ def _deliver_scenarios(
                             "sequence_id": frame.sequence_id,
                             "source_timestamp_ns": source_timestamp_ns,
                         },
+                        b"",
+                        run_deadline,
                     )
                 elif fault.get("type") == "delay":
                     counters["delayed_frames"] += 1
-                    time.sleep(float(fault.get("duration_ms", 100)) / 1000)
+                    delay_ends_ns = time.monotonic_ns() + int(
+                        float(fault.get("duration_ms", 100)) * 1_000_000
+                    )
+                    _sleep_until(delay_ends_ns, run_deadline)
             if any(fault.get("type") == "frame_drop" for fault in fault_actions):
                 counters["dropped_frames"] += 1
                 dropped_ns = time.monotonic_ns()
@@ -308,7 +337,7 @@ def _deliver_scenarios(
             send_started_ns = time.monotonic_ns()
             delivered = False
             try:
-                send_message(connection, metadata, payload)
+                _send_before_deadline(connection, metadata, payload, run_deadline)
                 delivered = True
             finally:
                 send_completed_ns = time.monotonic_ns()
@@ -330,18 +359,25 @@ def _deliver_scenarios(
             if any(fault.get("type") == "duplicate" for fault in fault_actions):
                 duplicate = dict(metadata)
                 duplicate["duplicate"] = True
-                send_message(connection, duplicate, payload)
+                _send_before_deadline(connection, duplicate, payload, run_deadline)
                 counters["duplicate_frames"] += 1
-        send_message(
+        _send_before_deadline(
             connection,
             {
                 "event": "stream_end",
                 "schema_version": "cvbench.frame/v1",
                 "sequence_id": scenario.frames[0].sequence_id,
             },
+            b"",
+            run_deadline,
         )
     delivery.benchmark_end_send_started_ns = time.monotonic_ns()
-    send_message(connection, {"event": "benchmark_end", "schema_version": "cvbench.frame/v1"})
+    _send_before_deadline(
+        connection,
+        {"event": "benchmark_end", "schema_version": "cvbench.frame/v1"},
+        b"",
+        run_deadline,
+    )
     delivery.benchmark_end_sent_ns = time.monotonic_ns()
     return shifted_ground_truth, counters, sequence_timestamps, fault_events, delivery
 
@@ -382,11 +418,15 @@ def _release_input(connection: socket.socket) -> None:
 def _scoring_complete(connection: socket.socket, collector: OutputCollector) -> bool:
     if collector.stdout_closed.is_set():
         return True
+    if collector.output_boundary_drained.is_set():
+        return True
     try:
         readable, _, _ = select.select([connection], [], [], 0)
-        return bool(readable and connection.recv(1, socket.MSG_PEEK) == b"")
+        if readable and connection.recv(1, socket.MSG_PEEK) == b"":
+            return collector.request_output_boundary()
+        return False
     except OSError:
-        return True
+        return collector.request_output_boundary()
 
 
 def _load_unique_scenarios(
