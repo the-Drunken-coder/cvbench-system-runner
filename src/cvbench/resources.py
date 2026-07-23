@@ -145,12 +145,16 @@ class ResourceMonitor:
         *,
         proc_root: Path = Path("/proc"),
         cgroup_root: Path = Path("/sys/fs/cgroup"),
+        cgroup_parent_name: str | None = None,
+        configured_cgroup_path: Path | None = None,
     ):
         self.process = process
         self.interval_seconds = interval_seconds
         self.cidfile = cidfile
         self.proc_root = proc_root
         self.cgroup_root = cgroup_root
+        self.cgroup_parent_name = cgroup_parent_name
+        self.configured_cgroup_path = configured_cgroup_path
         self.samples: list[dict[str, Any]] = []
         self.context: dict[str, Any] = {
             "phase": "startup",
@@ -167,6 +171,10 @@ class ResourceMonitor:
         self._cgroup_path: Path | None = None
         self._last_cpu: tuple[int, float] | None = None
         self._final_sample_complete = False
+
+    @property
+    def accounting_cgroup_path(self) -> Path | None:
+        return self._cgroup_path
 
     def start(self) -> None:
         self._thread.start()
@@ -254,12 +262,22 @@ class ResourceMonitor:
         if not container_id:
             return
         self._container_id = container_id
+        while not self._stop.is_set() and not self.capture_checkpoint():
+            self._stop.wait(0.01)
         while not self._stop.wait(self.interval_seconds):
             if not self.capture_checkpoint() and self.process.poll() is not None:
                 break
 
     def _resolve_cgroup(self) -> Path | None:
         if self._cgroup_path is not None:
+            return self._cgroup_path
+        if (
+            self.configured_cgroup_path is not None
+            and self.cgroup_parent_name is not None
+            and self.configured_cgroup_path.name == self.cgroup_parent_name
+            and (self.configured_cgroup_path / "cpu.stat").is_file()
+        ):
+            self._cgroup_path = self.configured_cgroup_path
             return self._cgroup_path
         if not self._container_id:
             return None
@@ -280,6 +298,10 @@ class ResourceMonitor:
         path = cgroup_v2_path(payload, self.cgroup_root)
         if path is None or not (path / "cpu.stat").is_file():
             return None
+        if self.cgroup_parent_name is not None:
+            path = path.parent
+            if path.name != self.cgroup_parent_name or not (path / "cpu.stat").is_file():
+                return None
         self._cgroup_path = path
         return path
 

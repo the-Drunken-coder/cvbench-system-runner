@@ -28,11 +28,22 @@ def test_docker_command_mounts_only_socket_and_disables_network(tmp_path: Path) 
             "cvbench.runtime._resolve_image",
             return_value=ResolvedImage("registry.example/good@sha256:immutable", "sha256:image-id"),
         ),
+        patch(
+            "cvbench.runtime._docker_accounting_scope",
+            return_value=(
+                "/cvbench-test",
+                "cvbench-test",
+                Path("/sys/fs/cgroup/cvbench-test"),
+            ),
+        ),
         patch("cvbench.runtime.subprocess.Popen") as popen,
     ):
         popen.return_value = MagicMock(spec=Popen)
         runtime = start_runtime(config, socket_dir, tmp_path)
     command = runtime.command
+    assert "--rm" not in command
+    assert command[command.index("--cgroup-parent") + 1] == "/cvbench-test"
+    assert command[command.index("--name") + 1].startswith("cvbench-")
     assert command[command.index("--network") + 1] == "none"
     assert command[command.index("--user") + 1] == f"{EXPECTED_UID}:{EXPECTED_GID}"
     assert command[command.index("--volume") + 1] == f"{socket_dir}:/run/cvbench"
@@ -40,6 +51,9 @@ def test_docker_command_mounts_only_socket_and_disables_network(tmp_path: Path) 
     assert "registry.example/good@sha256:immutable" in command
     assert config.image not in command
     assert runtime.resolved_image_id == "sha256:image-id"
+    assert runtime.accounting_cgroup_name == "cvbench-test"
+    assert runtime.accounting_cgroup_path == Path("/sys/fs/cgroup/cvbench-test")
+    assert runtime.container_name == command[command.index("--name") + 1]
     assert runtime.isolation["status"] == "pending_verification"
     assert runtime.isolation["expected_mount"] == {
         "source": str(socket_dir.resolve()),
@@ -72,6 +86,14 @@ def test_control_plane_job_id_adds_a_unique_docker_label(tmp_path: Path) -> None
         patch(
             "cvbench.runtime._resolve_image",
             return_value=ResolvedImage("registry.example/good@sha256:immutable", "sha256:image-id"),
+        ),
+        patch(
+            "cvbench.runtime._docker_accounting_scope",
+            return_value=(
+                "/cvbench-test",
+                "cvbench-test",
+                Path("/sys/fs/cgroup/cvbench-test"),
+            ),
         ),
         patch("cvbench.runtime.subprocess.Popen") as popen,
     ):

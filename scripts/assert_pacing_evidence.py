@@ -86,6 +86,7 @@ def main() -> int:
     parser.add_argument("--idle", type=Path, required=True)
     parser.add_argument("--background-child", type=Path, required=True)
     parser.add_argument("--final-burst", type=Path, required=True)
+    parser.add_argument("--immediate-exit", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     reports = {
@@ -94,6 +95,7 @@ def main() -> int:
         "idle": _report(args.idle),
         "background_child": _report(args.background_child),
         "final_burst": _report(args.final_burst),
+        "immediate_exit": _report(args.immediate_exit),
     }
     for report in reports.values():
         assert report["outcome"]["status"] == "completed", report["outcome"]
@@ -116,6 +118,7 @@ def main() -> int:
     idle = reports["idle"]
     child = reports["background_child"]
     final_burst = reports["final_burst"]
+    immediate_exit = reports["immediate_exit"]
     assert cpu_heavy["timing"]["durations"]["real_time_factor"] > fast["timing"]["durations"]["real_time_factor"]
     assert idle["timing"]["durations"]["real_time_factor"] > fast["timing"]["durations"]["real_time_factor"]
     assert (
@@ -137,6 +140,12 @@ def main() -> int:
     assert final_sample["final_cumulative"] is True
     assert final_sample["cpu_time_seconds"] > first_drain["cpu_time_seconds"]
     assert final_sample["disk_write_bytes"] > first_drain["disk_write_bytes"]
+    assert immediate_exit["resources"]["over_time"][-1]["final_cumulative"] is True
+    assert immediate_exit["metrics"]["sample_counts"]["output_records"] > 0
+    assert immediate_exit["resources"]["cpu_time_seconds"] > 0
+    assert immediate_exit["resources"]["peak_ram_bytes"] > 0
+    assert immediate_exit["resources"]["disk_read_bytes"] >= 0
+    assert immediate_exit["resources"]["disk_write_bytes"] >= 0
     accuracy = {
         (
             report["metrics"]["acquisition"]["rate"],
@@ -149,7 +158,7 @@ def main() -> int:
     tactic_dominates_fast = {
         name: _efficiency_dominates(report, fast)
         for name, report in reports.items()
-        if name != "fast"
+        if name not in {"fast", "immediate_exit"}
     }
     assert tactic_dominates_fast == {
         "cpu_heavy": False,

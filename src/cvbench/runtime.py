@@ -20,6 +20,8 @@ UNPRIVILEGED_SOCKET_UID = 65532
 CONTROL_PLANE_JOB_ID_PATTERN = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+ACCOUNTING_CGROUP_NAME_PATTERN = re.compile(r"cvbench-[0-9A-Za-z.-]{1,120}(?:\.slice)?")
 
 
 @dataclass
@@ -31,6 +33,10 @@ class StartedRuntime:
     isolation: dict[str, object]
     process_group_id: int | None = None
     resolved_image_id: str | None = None
+    accounting_cgroup_parent: str | None = None
+    accounting_cgroup_name: str | None = None
+    accounting_cgroup_path: Path | None = None
+    container_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +122,33 @@ def _resolve_image(image: str) -> ResolvedImage:
     return ResolvedImage(image_id, image_id)
 
 
+def _runtime_token(run_dir: Path) -> str:
+    token = re.sub(r"[^0-9A-Za-z.-]", "-", run_dir.name)[:100]
+    return f"cvbench-{token}"
+
+
+def _docker_accounting_scope(run_dir: Path) -> tuple[str | None, str | None, Path | None]:
+    if not (CGROUP_ROOT / "cgroup.controllers").is_file():
+        return None, None, None
+    result = subprocess.run(
+        ["docker", "info", "--format", "{{.CgroupDriver}}"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeFailure(result.stderr.strip() or "could not determine Docker cgroup driver")
+    name = _runtime_token(run_dir)
+    driver = result.stdout.strip()
+    if driver == "cgroupfs":
+        return f"/{name}", name, CGROUP_ROOT / name
+    if driver == "systemd":
+        name = f"{name}.slice"
+        return name, name, CGROUP_ROOT / name
+    raise RuntimeFailure(f"unsupported Docker cgroup driver for authoritative accounting: {driver}")
+
+
 def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> StartedRuntime:
     environment = os.environ.copy()
     environment.update(config.environment)
@@ -125,6 +158,10 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
     resolved_image_id: str | None = None
     container_user: str | None = None
     socket_access: dict[str, object] | None = None
+    accounting_cgroup_parent: str | None = None
+    accounting_cgroup_name: str | None = None
+    accounting_cgroup_path: Path | None = None
+    container_name: str | None = None
     if config.runtime_type == "local":
         command = [sys.executable if value == "{python}" else value for value in config.command]
         cwd = config.path.parent.parent
@@ -142,12 +179,19 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
             "socket_mode": oct((socket_dir / "input.sock").stat().st_mode & 0o777),
         }
         cidfile = run_dir / "container.cid"
+        container_name = _runtime_token(run_dir)
+        (
+            accounting_cgroup_parent,
+            accounting_cgroup_name,
+            accounting_cgroup_path,
+        ) = _docker_accounting_scope(run_dir)
         command = [
             "docker",
             "run",
-            "--rm",
             "--cidfile",
             str(cidfile),
+            "--name",
+            container_name,
             "--network",
             "none",
             "--user",
@@ -157,6 +201,8 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
             "--env",
             "CVBENCH_INPUT_SOCKET=/run/cvbench/input.sock",
         ]
+        if accounting_cgroup_parent is not None:
+            command.extend(["--cgroup-parent", accounting_cgroup_parent])
         cpu_limit = config.resources.get("cpu_limit")
         memory_limit = config.resources.get("memory_limit_mb")
         if cpu_limit:
@@ -227,6 +273,10 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
         isolation,
         process.pid if config.runtime_type == "local" else None,
         resolved_image_id,
+        accounting_cgroup_parent,
+        accounting_cgroup_name,
+        accounting_cgroup_path,
+        container_name,
     )
 
 
@@ -433,15 +483,94 @@ def _verification_failed(runtime: StartedRuntime, error: str) -> dict[str, objec
     return runtime.isolation
 
 
-def cleanup_runtime(runtime: StartedRuntime) -> None:
-    if runtime.cidfile is None or not runtime.cidfile.exists() or not shutil.which("docker"):
-        return
-    container_id = runtime.cidfile.read_text().strip()
-    if container_id:
-        subprocess.run(
-            ["docker", "rm", "--force", container_id],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            check=False,
+def _remove_accounting_cgroup(path: Path, expected_name: str, cgroup_root: Path) -> str | None:
+    root = cgroup_root.resolve()
+    candidate = path.resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return f"refused to remove accounting cgroup outside {root}"
+    if (
+        candidate == root
+        or candidate.name != expected_name
+        or not ACCOUNTING_CGROUP_NAME_PATTERN.fullmatch(candidate.name)
+    ):
+        return "refused to remove an unexpected accounting cgroup"
+    for _ in range(3):
+        try:
+            candidate.rmdir()
+            return None
+        except FileNotFoundError:
+            return None
+        except OSError:
+            time.sleep(0.05)
+    if shutil.which("sudo"):
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "rmdir", "--", str(candidate)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+            if result.returncode == 0 or not candidate.exists():
+                return None
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return f"accounting cgroup cleanup failed: {candidate}"
+
+
+def cleanup_runtime(
+    runtime: StartedRuntime,
+    accounting_cgroup_path: Path | None = None,
+    *,
+    cgroup_root: Path = CGROUP_ROOT,
+) -> list[str]:
+    errors: list[str] = []
+    container_id = ""
+    docker = shutil.which("docker")
+    if runtime.cidfile is not None and runtime.cidfile.exists():
+        try:
+            container_id = runtime.cidfile.read_text().strip()
+        except OSError as exc:
+            errors.append(f"container ID file cleanup read failed: {exc}")
+    container_identifier = container_id or runtime.container_name or ""
+    if container_identifier and docker:
+        cleanup_detail = ""
+        for _ in range(3):
+            try:
+                subprocess.run(
+                    ["docker", "rm", "--force", container_identifier],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+                inspected = subprocess.run(
+                    ["docker", "inspect", container_identifier],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                cleanup_detail = str(exc)
+                time.sleep(0.05)
+                continue
+            if inspected.returncode != 0:
+                break
+            time.sleep(0.05)
+        else:
+            suffix = f": {cleanup_detail}" if cleanup_detail else ""
+            errors.append(f"container cleanup failed: {container_identifier}{suffix}")
+    elif container_identifier:
+        errors.append("container cleanup failed: docker is unavailable")
+    if accounting_cgroup_path is not None and runtime.accounting_cgroup_name is not None:
+        error = _remove_accounting_cgroup(
+            accounting_cgroup_path,
+            runtime.accounting_cgroup_name,
+            cgroup_root,
         )
+        if error is not None:
+            errors.append(error)
+    return errors

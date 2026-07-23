@@ -146,13 +146,110 @@ def test_docker_cleanup_happens_after_accounting_and_removes_the_container(
     monkeypatch.setattr("cvbench.runtime.shutil.which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(
         "cvbench.runtime.subprocess.run",
-        lambda command, **_kwargs: events.append(command) or SimpleNamespace(returncode=0),
+        lambda command, **_kwargs: events.append(command)
+        or SimpleNamespace(returncode=1 if command[1] == "inspect" else 0),
     )
-    cleanup_runtime(runtime)
+    assert cleanup_runtime(runtime) == []
 
     assert events == [
         "checkpoint",
         "final-accounting",
         "release",
         ["docker", "rm", "--force", "container-id"],
+        ["docker", "inspect", "container-id"],
     ]
+
+
+def test_docker_cleanup_retries_and_removes_retained_cgroup_idempotently(
+    tmp_path, monkeypatch
+) -> None:
+    cidfile = tmp_path / "container.cid"
+    cidfile.write_text("container-id")
+    cgroup_root = tmp_path / "cgroup"
+    parent = cgroup_root / "cvbench-test"
+    parent.mkdir(parents=True)
+    runtime = StartedRuntime(
+        _Process(),
+        cidfile,
+        None,
+        ["sut"],
+        {},
+        accounting_cgroup_name="cvbench-test",
+        accounting_cgroup_path=parent,
+    )
+    inspect_calls = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal inspect_calls
+        if command[1] == "inspect":
+            inspect_calls += 1
+            return SimpleNamespace(returncode=0 if inspect_calls == 1 else 1)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("cvbench.runtime.shutil.which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr("cvbench.runtime.subprocess.run", fake_run)
+
+    assert cleanup_runtime(runtime, parent, cgroup_root=cgroup_root) == []
+    assert inspect_calls == 2
+    assert not parent.exists()
+    assert cleanup_runtime(runtime, parent, cgroup_root=cgroup_root) == []
+
+
+def test_docker_cleanup_uses_runner_owned_name_when_cidfile_is_missing(
+    tmp_path, monkeypatch
+) -> None:
+    commands = []
+    runtime = StartedRuntime(
+        _Process(),
+        tmp_path / "missing.cid",
+        None,
+        ["sut"],
+        {},
+        container_name="cvbench-fallback",
+    )
+    monkeypatch.setattr("cvbench.runtime.shutil.which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "cvbench.runtime.subprocess.run",
+        lambda command, **_kwargs: commands.append(command)
+        or SimpleNamespace(returncode=1 if command[1] == "inspect" else 0),
+    )
+
+    assert cleanup_runtime(runtime) == []
+    assert commands == [
+        ["docker", "rm", "--force", "cvbench-fallback"],
+        ["docker", "inspect", "cvbench-fallback"],
+    ]
+
+
+def test_docker_cleanup_failure_is_reported_without_removing_unexpected_path(
+    tmp_path, monkeypatch
+) -> None:
+    cidfile = tmp_path / "container.cid"
+    cidfile.write_text("container-id")
+    cgroup_root = tmp_path / "cgroup"
+    unexpected = tmp_path / "outside" / "cvbench-test"
+    unexpected.mkdir(parents=True)
+    runtime = StartedRuntime(
+        _Process(),
+        cidfile,
+        None,
+        ["sut"],
+        {},
+        accounting_cgroup_name="cvbench-test",
+        accounting_cgroup_path=unexpected,
+    )
+    monkeypatch.setattr("cvbench.runtime.shutil.which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "cvbench.runtime.subprocess.run",
+        lambda command, **_kwargs: SimpleNamespace(
+            returncode=0 if command[1] == "inspect" else 1
+        ),
+    )
+
+    errors = cleanup_runtime(runtime, unexpected, cgroup_root=cgroup_root)
+
+    assert errors == [
+        "container cleanup failed: container-id",
+        f"refused to remove accounting cgroup outside {cgroup_root.resolve()}",
+    ]
+    assert unexpected.exists()

@@ -143,6 +143,86 @@ def test_final_accounting_never_certifies_a_stale_sample_after_cgroup_disappears
     assert not any(sample.get("final_cumulative") for sample in summary["over_time"])
 
 
+def test_retained_parent_cgroup_captures_work_after_immediate_child_exit(
+    tmp_path, monkeypatch
+) -> None:
+    proc_root = tmp_path / "proc"
+    cgroup_root = tmp_path / "cgroup"
+    child = cgroup_root / "cvbench-run/container-id"
+    child.mkdir(parents=True)
+    parent = child.parent
+    (proc_root / "123").mkdir(parents=True)
+    (proc_root / "123" / "cgroup").write_text("0::/cvbench-run/container-id\n")
+    (parent / "cpu.stat").write_text("usage_usec 1000000\n")
+    (parent / "io.stat").write_text("8:0 rbytes=10 wbytes=20\n")
+    (parent / "memory.current").write_text("1024\n")
+    (parent / "memory.max").write_text("2048\n")
+    (parent / "memory.peak").write_text("1536\n")
+    (parent / "pids.current").write_text("2\n")
+    (child / "cpu.stat").write_text("usage_usec 1000000\n")
+    cidfile = tmp_path / "container.cid"
+    cidfile.write_text("container-id")
+    monkeypatch.setattr(
+        "cvbench.resources.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="123\n", stderr=""),
+    )
+    monitor = ResourceMonitor(
+        SimpleNamespace(pid=1),
+        cidfile=cidfile,
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+        cgroup_parent_name="cvbench-run",
+        configured_cgroup_path=parent,
+    )
+
+    assert monitor.capture_checkpoint()
+    (parent / "cpu.stat").write_text("usage_usec 2750000\n")
+    (parent / "io.stat").write_text("8:0 rbytes=40 wbytes=8192\n")
+    (parent / "memory.peak").write_text("1900\n")
+    shutil.rmtree(child)
+    shutil.rmtree(proc_root / "123")
+
+    assert monitor.finalize_accounting()
+    summary = monitor.summary(1)
+    assert monitor.accounting_cgroup_path == parent
+    assert summary["cpu_time_seconds"] == 2.75
+    assert summary["disk_read_bytes"] == 40
+    assert summary["disk_write_bytes"] == 8192
+    assert summary["peak_ram_bytes"] == 1900
+    assert summary["over_time"][-1]["final_cumulative"] is True
+    assert summary["authoritative"] is True
+
+
+def test_disappearing_retained_parent_fails_closed_at_final_boundary(tmp_path) -> None:
+    cgroup_root = tmp_path / "cgroup"
+    parent = cgroup_root / "cvbench-run"
+    parent.mkdir(parents=True)
+    (parent / "cpu.stat").write_text("usage_usec 1000000\n")
+    (parent / "io.stat").write_text("8:0 rbytes=10 wbytes=20\n")
+    (parent / "memory.current").write_text("1024\n")
+    (parent / "memory.max").write_text("2048\n")
+    (parent / "memory.peak").write_text("1536\n")
+    (parent / "pids.current").write_text("1\n")
+    cidfile = tmp_path / "container.cid"
+    cidfile.write_text("container-id")
+    monitor = ResourceMonitor(
+        SimpleNamespace(pid=1),
+        cidfile=cidfile,
+        cgroup_root=cgroup_root,
+        cgroup_parent_name="cvbench-run",
+        configured_cgroup_path=parent,
+    )
+
+    assert monitor.capture_checkpoint()
+    shutil.rmtree(parent)
+
+    assert monitor.finalize_accounting() is False
+    summary = monitor.summary(1)
+    assert summary["accounting_availability"]["final_cumulative_cpu_sample"] is False
+    assert summary["authoritative"] is False
+    assert not any(sample.get("final_cumulative") for sample in summary["over_time"])
+
+
 def test_immediate_cgroup_disappearance_has_no_synthetic_final_sample(tmp_path) -> None:
     monitor = ResourceMonitor(
         SimpleNamespace(pid=1),

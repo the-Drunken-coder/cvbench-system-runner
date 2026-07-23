@@ -332,6 +332,24 @@ def test_cli_valid_run_remains_strict_and_sanitizable(
     validate_redacted_report(json.loads((safe_run / "report.json").read_text()))
 
 
+def test_cleanup_failure_invalidates_an_otherwise_valid_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        runner_module,
+        "cleanup_runtime",
+        lambda *_args, **_kwargs: ["accounting scope cleanup sentinel"],
+    )
+
+    report = _report(tmp_path, "sut_reader.py")
+
+    validate_report(report)
+    assert report["outcome"]["status"] == "failed"
+    assert "accounting scope cleanup sentinel" in report["outcome"]["errors"]
+    assert report["leaderboard"]["eligible"] is False
+    assert report["leaderboard"]["composite_score"] is None
+
+
 def test_sut_crash_is_reported(tmp_path: Path) -> None:
     report = _report(tmp_path, "sut_crash.py")
     assert report["outcome"]["status"] == "failed"

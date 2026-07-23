@@ -571,7 +571,12 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             benchmark.thresholds.out_of_bounds,
         )
         collector.start()
-        monitor = ResourceMonitor(runtime.process, cidfile=runtime.cidfile)
+        monitor = ResourceMonitor(
+            runtime.process,
+            cidfile=runtime.cidfile,
+            cgroup_parent_name=runtime.accounting_cgroup_name,
+            configured_cgroup_path=runtime.accounting_cgroup_path,
+        )
         monitor.start()
         if system.runtime_type == "docker":
             verify_docker_isolation(runtime, socket_dir)
@@ -696,7 +701,17 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             if finished_ns is None:
                 finished_ns = time.monotonic_ns()
             outcome.resolved_image = runtime.resolved_image
-            cleanup_runtime(runtime)
+            cleanup_errors = cleanup_runtime(
+                runtime,
+                (
+                    monitor.accounting_cgroup_path
+                    if monitor is not None and monitor.accounting_cgroup_path is not None
+                    else runtime.accounting_cgroup_path
+                ),
+            )
+            if cleanup_errors:
+                outcome.status = "failed"
+                outcome.errors.extend(cleanup_errors)
             teardown_finished_ns = time.monotonic_ns()
         shutil.rmtree(socket_dir, ignore_errors=True)
 

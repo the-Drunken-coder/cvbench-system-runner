@@ -94,7 +94,14 @@ def _connect(path: str) -> socket.socket:
 
 def _pacing_mode() -> tuple[str, float]:
     mode = os.environ.get("CVBENCH_PACING_EVIDENCE_MODE", "fast")
-    if mode not in {"fast", "cpu-heavy", "idle", "background-child-cpu", "final-burst"}:
+    if mode not in {
+        "fast",
+        "cpu-heavy",
+        "idle",
+        "background-child-cpu",
+        "final-burst",
+        "immediate-exit",
+    }:
         raise ValueError("CVBENCH_PACING_EVIDENCE_MODE is invalid")
     try:
         delay = float(os.environ.get("CVBENCH_PACING_EVIDENCE_DELAY_SECONDS", "0.15"))
@@ -175,6 +182,8 @@ def main() -> int:
                     _final_accounting_burst(pacing_mode)
                     sock.shutdown(socket.SHUT_WR)
                     benchmark_ended = True
+                    if pacing_mode == "immediate-exit":
+                        break
                     continue
                 if benchmark_ended:
                     continue
