@@ -43,6 +43,7 @@ class ResolvedImage:
 class RuntimeStop:
     exit_code: int | None
     forced: bool
+    scoring_timed_out: bool
     scoring_finished_ns: int
     teardown_finished_ns: int
 
@@ -213,17 +214,25 @@ def stop_runtime(
 ) -> RuntimeStop:
     """Enforce the scoring deadline, then tear down descendants out of band."""
     forced = False
+    scoring_timed_out = False
     deadline = time.monotonic() + max(0, grace)
     exit_code = runtime.process.poll()
-    while (
-        exit_code is None
-        and not (scoring_complete is not None and scoring_complete())
-        and time.monotonic() < deadline
-    ):
+    scoring_done = False
+    while time.monotonic() < deadline:
+        if scoring_complete is None:
+            if exit_code is not None:
+                break
+        else:
+            scoring_done = scoring_complete()
+            if scoring_done or exit_code not in {None, 0}:
+                break
         if checkpoint is not None:
             checkpoint()
         time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
         exit_code = runtime.process.poll()
+    if scoring_complete is not None and not scoring_done:
+        scoring_done = scoring_complete()
+        scoring_timed_out = not scoring_done and exit_code in {None, 0}
     if checkpoint is not None:
         checkpoint()
     if on_scoring_finished is not None:
@@ -248,7 +257,13 @@ def stop_runtime(
         _signal_process_group(runtime, signal.SIGTERM)
         time.sleep(0.02)
         _signal_process_group(runtime, signal.SIGKILL)
-    return RuntimeStop(exit_code, forced, scoring_finished_ns, time.monotonic_ns())
+    return RuntimeStop(
+        exit_code,
+        forced,
+        scoring_timed_out,
+        scoring_finished_ns,
+        time.monotonic_ns(),
+    )
 
 
 def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: float = 10) -> dict[str, object]:

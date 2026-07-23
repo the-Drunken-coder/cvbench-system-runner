@@ -1,6 +1,7 @@
 import signal
 import socket
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,6 +51,37 @@ def test_normal_exit_is_released_only_after_final_scoring_checkpoint() -> None:
     assert stopped.forced is False
     assert process.signals == []
     assert stopped.scoring_finished_ns <= stopped.teardown_finished_ns
+
+
+def test_clean_exit_still_waits_for_scoring_completion() -> None:
+    process = _Process()
+    process.exited = True
+    checks = 0
+
+    def scoring_complete():
+        nonlocal checks
+        checks += 1
+        return checks == 2
+
+    stopped = stop_runtime(_runtime(process), 1, scoring_complete=scoring_complete)
+
+    assert checks == 2
+    assert stopped.exit_code == 0
+    assert stopped.forced is False
+    assert stopped.scoring_timed_out is False
+
+
+def test_clean_exit_without_stdout_completion_fails_at_drain_deadline() -> None:
+    process = _Process()
+    process.exited = True
+    started = time.monotonic()
+
+    stopped = stop_runtime(_runtime(process), 0.03, scoring_complete=lambda: False)
+
+    assert time.monotonic() - started < 0.2
+    assert stopped.exit_code == 0
+    assert stopped.forced is False
+    assert stopped.scoring_timed_out is True
 
 
 def test_system_half_close_marks_output_complete_without_releasing_input() -> None:

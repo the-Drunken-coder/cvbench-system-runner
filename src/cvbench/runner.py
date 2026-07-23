@@ -625,10 +625,14 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             finished_ns = stopped.scoring_finished_ns
             teardown_finished_ns = stopped.teardown_finished_ns
             outcome.exit_code = stopped.exit_code
-            outcome.timed_out = stopped.forced
-            outcome.crashed = stopped.exit_code not in {0, None} and not stopped.forced
+            outcome.timed_out = stopped.forced or stopped.scoring_timed_out
+            if stopped.scoring_timed_out:
+                outcome.errors.append(
+                    "scoring drain deadline expired before stdout completion"
+                )
+            outcome.crashed = stopped.exit_code not in {0, None} and not outcome.timed_out
             outcome.status = (
-                "completed" if stopped.exit_code == 0 and not stopped.forced else "failed"
+                "completed" if stopped.exit_code == 0 and not outcome.timed_out else "failed"
             )
     except (OSError, RuntimeFailure, TimeoutError) as exc:
         outcome.errors.append(str(exc))

@@ -3,8 +3,13 @@ import os
 import socket
 import sys
 import time
+from pathlib import Path
 
 from cvbench.protocol import receive_message
+
+pid_file = os.environ.get("CVBENCH_TEST_PID_FILE")
+if pid_file:
+    Path(pid_file).write_text(str(os.getpid()))
 
 
 def _record(frame: dict, track_id: str) -> str:
@@ -49,6 +54,8 @@ with sock, sock.makefile("rb") as stream:
         sys.stdout.write("\n".join(lines) + "\n")
         sys.stdout.flush()
         sock.shutdown(socket.SHUT_WR)
+        if mode == "immediate-clean-exit":
+            break
         time.sleep(0.12)
         sys.stdout.write(_record(first_frame, "late") + "\n{malformed-late\n")
         sys.stdout.flush()

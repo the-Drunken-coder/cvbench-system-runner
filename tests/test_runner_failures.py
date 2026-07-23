@@ -7,6 +7,7 @@ from pathlib import Path
 import psutil
 import yaml
 
+import cvbench.runner as runner_module
 from cvbench.collector import OutputCollector
 from cvbench.runner import run_benchmark
 from cvbench.synthetic import generate_synthetic_pack
@@ -165,6 +166,80 @@ def test_half_close_waits_for_delayed_collector_and_scores_buffered_output(
     assert report["outcome"]["status"] == "completed"
     assert report["metrics"]["sample_counts"]["output_records"] == 2
     assert report["diagnostics"]["collector_errors"] == []
+
+
+def test_immediate_clean_exit_drains_delayed_stdout_boundary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    consume_started = threading.Event()
+    boundary_requested = threading.Event()
+    original_consume = OutputCollector._consume_line
+    original_request = OutputCollector.request_output_boundary
+    original_stop = runner_module.stop_runtime
+
+    def delayed_consume(self, raw_line, recent_records):
+        if b'"schema_version":"cvbench.track/v1"' in raw_line and not consume_started.is_set():
+            consume_started.set()
+            assert boundary_requested.wait(1)
+        return original_consume(self, raw_line, recent_records)
+
+    def observed_request(self):
+        boundary_requested.set()
+        return original_request(self)
+
+    def stop_after_clean_exit(runtime, *args, **kwargs):
+        assert runtime.process.wait(timeout=1) == 0
+        return original_stop(runtime, *args, **kwargs)
+
+    monkeypatch.setattr(OutputCollector, "_consume_line", delayed_consume)
+    monkeypatch.setattr(OutputCollector, "request_output_boundary", observed_request)
+    monkeypatch.setattr(runner_module, "stop_runtime", stop_after_clean_exit)
+
+    report = _report(
+        tmp_path,
+        "sut_half_close_output.py",
+        environment={"CVBENCH_HALF_CLOSE_MODE": "immediate-clean-exit"},
+    )
+
+    assert consume_started.is_set()
+    assert boundary_requested.is_set()
+    assert report["outcome"]["status"] == "completed"
+    assert report["metrics"]["sample_counts"]["output_records"] == 2
+    assert report["diagnostics"]["collector_errors"] == []
+
+
+def test_immediate_clean_exit_without_boundary_ack_fails_and_cleans_up(
+    tmp_path: Path, monkeypatch
+) -> None:
+    original_consume = OutputCollector._consume_line
+    original_stop = runner_module.stop_runtime
+
+    def delayed_consume(self, raw_line, recent_records):
+        if b'"schema_version":"cvbench.track/v1"' in raw_line:
+            time.sleep(0.15)
+        return original_consume(self, raw_line, recent_records)
+
+    def stop_after_clean_exit(runtime, *args, **kwargs):
+        assert runtime.process.wait(timeout=1) == 0
+        return original_stop(runtime, *args, **kwargs)
+
+    monkeypatch.setattr(OutputCollector, "_consume_line", delayed_consume)
+    monkeypatch.setattr(runner_module, "stop_runtime", stop_after_clean_exit)
+
+    report = _report(
+        tmp_path,
+        "sut_half_close_output.py",
+        grace=0.03,
+        environment={"CVBENCH_HALF_CLOSE_MODE": "immediate-clean-exit"},
+    )
+
+    assert report["outcome"]["status"] == "failed"
+    assert report["outcome"]["timed_out"] is True
+    assert "scoring drain deadline expired before stdout completion" in report["outcome"]["errors"]
+    assert report["metrics"]["sample_counts"]["output_records"] == 0
+    assert report["timing"]["durations"]["drain_seconds"] <= 0.1
+    pid = int((tmp_path / "sut.pid").read_text())
+    assert not psutil.pid_exists(pid)
 
 
 def test_malformed_before_half_close_is_reported_but_late_lines_are_not_scored(
