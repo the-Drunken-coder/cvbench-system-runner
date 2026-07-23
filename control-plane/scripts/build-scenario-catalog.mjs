@@ -437,6 +437,15 @@ function annotationPolicy(real) {
   };
 }
 
+function scoreableRegion(real, manifest, frames) {
+  return real
+    ? { type: "full_frame", bounds: [0, 0, frames[0].width, frames[0].height] }
+    : {
+        type: manifest.scoreable_roi ? "fixed_roi" : "full_frame",
+        bounds: manifest.scoreable_roi || [0, 0, frames[0].width, frames[0].height],
+      };
+}
+
 function scoringPolicy(real) {
   if (real) {
     return {
@@ -714,8 +723,7 @@ async function scenarioDocument({ id, manifestPath, membership, metadata, baseli
     schema_version: "cvbench.annotation-manifest/v1",
     scenario_id: id,
     annotation_policy: annotationPolicy(real),
-    scoreable_region: real ? { type: "full_frame", bounds: [0, 0, frames[0].width, frames[0].height] } :
-      { type: manifest.scoreable_roi ? "fixed_roi" : "full_frame", bounds: manifest.scoreable_roi || [0, 0, frames[0].width, frames[0].height] },
+    scoreable_region: scoreableRegion(real, manifest, frames),
     faults,
     frames: groupedAnnotations,
   });
@@ -752,8 +760,7 @@ async function scenarioDocument({ id, manifestPath, membership, metadata, baseli
     annotations: {
       annotation_manifest: annotationManifest,
       policy: annotationPolicy(real),
-      scoreable_region: real ? { type: "full_frame", bounds: [0, 0, frames[0].width, frames[0].height] } :
-        { type: manifest.scoreable_roi ? "fixed_roi" : "full_frame", bounds: manifest.scoreable_roi || [0, 0, frames[0].width, frames[0].height] },
+      scoreable_region: scoreableRegion(real, manifest, frames),
       target_count: countTargets(annotations),
       class_ids: classes,
       object_rows: annotations.filter((row) => !row.ignore).length,

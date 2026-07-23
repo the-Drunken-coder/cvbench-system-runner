@@ -67,8 +67,9 @@ test("public benchmark descriptor exactly matches its versioned manifest", async
   }
   assert.equal(benchmark.id, PUBLIC_BENCHMARK.id);
   assert.equal(benchmark.version, PUBLIC_BENCHMARK.version);
-  assert.deepEqual(scenarioIds.sort(), [...PUBLIC_BENCHMARK.scenario_ids].sort());
+  assert.deepEqual(scenarioIds, PUBLIC_BENCHMARK.scenario_ids);
   assert.equal(scenarioIds.length, PUBLIC_BENCHMARK.scenario_count);
+  assert.equal(new Set(scenarioIds).size, scenarioIds.length);
 });
 
 test("catalog assets keep honest status, MIME, and cache semantics", async () => {
