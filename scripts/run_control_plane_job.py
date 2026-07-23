@@ -18,6 +18,11 @@ from typing import Any
 from cvbench.audit import AUDIT_EVIDENCE_MAX_BYTES
 from cvbench.json_contract import serialized_json_bytes
 
+try:
+    from scripts.hydrate_real_video_corpus import hydrate
+except ModuleNotFoundError:  # Direct `python scripts/run_control_plane_job.py` execution.
+    from hydrate_real_video_corpus import hydrate
+
 IMAGE_PATTERN = re.compile(
     r"^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?/)?"
     r"[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$"
@@ -35,6 +40,27 @@ SECRET_ENVIRONMENT_KEYS = {
     "GITHUB_TOKEN",
 }
 MAX_CALLBACK_BYTES = 1024 * 1024
+PUBLIC_BENCHMARK_ID = "public-whole-system-tracking"
+PUBLIC_BENCHMARK_VERSION = "2.0.0"
+PUBLIC_BENCHMARK_MANIFEST = "benchmarks/public-whole-system-v2.yaml"
+PUBLIC_SCENARIO_IDS = {
+    "synthetic-acquisition",
+    "synthetic-false-detection",
+    "synthetic-multi-target-identity",
+    "synthetic-multi-target-pair",
+    "synthetic-occlusion-gap-1000ms",
+    "synthetic-occlusion-gap-100ms",
+    "synthetic-occlusion-gap-2000ms",
+    "synthetic-occlusion-gap-250ms",
+    "synthetic-occlusion-gap-500ms",
+    "synthetic-occlusion-reacquisition",
+    "synthetic-resource-stress",
+    "synthetic-track-id-churn",
+    "synthetic-visible-retention",
+    "rvmot-a1c9",
+    "rvmot-b7e2",
+    "rvmot-c4f6",
+}
 
 
 def callback_payload_bytes(body: dict[str, Any]) -> bytes:
@@ -82,6 +108,7 @@ def validate_lease(lease: dict[str, Any]) -> tuple[dict[str, Any], str, int]:
     image = submission.get("image")
     argv = submission.get("argv")
     token = lease_data.get("token")
+    benchmark = submission.get("benchmark")
     max_result_bytes = lease_data.get("max_result_bytes", MAX_CALLBACK_BYTES)
     if not isinstance(job_id, str) or not JOB_ID_PATTERN.fullmatch(job_id):
         raise ValueError("lease contains an invalid submission id")
@@ -95,6 +122,12 @@ def validate_lease(lease: dict[str, Any]) -> tuple[dict[str, Any], str, int]:
         raise ValueError("lease contains invalid argv")
     if not isinstance(token, str) or not 32 <= len(token) <= 200:
         raise ValueError("lease token is invalid")
+    if not isinstance(benchmark, dict) or (
+        benchmark.get("id") != PUBLIC_BENCHMARK_ID
+        or benchmark.get("version") != PUBLIC_BENCHMARK_VERSION
+        or benchmark.get("manifest") != PUBLIC_BENCHMARK_MANIFEST
+    ):
+        raise ValueError("lease contains an unsupported benchmark assignment")
     if (
         not isinstance(max_result_bytes, int)
         or isinstance(max_result_bytes, bool)
@@ -216,6 +249,7 @@ def execute_submission(repository: Path, submission: dict[str, Any], work: Path)
         raise ValueError("submission ID is invalid")
     environment["CVBENCH_DOCKER_JOB_ID"] = job_id
     try:
+        hydrate(repository)
         subprocess.run(
             ["docker", "pull", "--platform", "linux/amd64", image],
             cwd=repository,
@@ -233,7 +267,7 @@ def execute_submission(repository: Path, submission: dict[str, Any], work: Path)
                 "cvbench.cli",
                 "run",
                 "--benchmark",
-                str(repository / "benchmarks/persistent-target-tracking.yaml"),
+                str(repository / PUBLIC_BENCHMARK_MANIFEST),
                 "--system",
                 str(system_config),
                 "--output",
@@ -250,6 +284,23 @@ def execute_submission(repository: Path, submission: dict[str, Any], work: Path)
         report = json.loads(reports[0].read_text())
         if report.get("outcome", {}).get("status") != "completed":
             raise RuntimeError(f"benchmark outcome was {report.get('outcome', {}).get('status', 'unknown')}")
+        benchmark = report.get("benchmark", {})
+        if benchmark.get("id") != PUBLIC_BENCHMARK_ID or benchmark.get("version") != PUBLIC_BENCHMARK_VERSION:
+            raise RuntimeError("benchmark report does not match the assigned public suite")
+        reported_scenarios = report.get("provenance", {}).get("comparison_inputs", {}).get("scenarios", [])
+        reported_ids = (
+            [scenario.get("id") for scenario in reported_scenarios]
+            if isinstance(reported_scenarios, list)
+            else []
+        )
+        if (
+            not isinstance(reported_scenarios, list)
+            or len(reported_scenarios) != len(PUBLIC_SCENARIO_IDS)
+            or not all(isinstance(scenario, dict) for scenario in reported_scenarios)
+            or len(set(reported_ids)) != len(reported_ids)
+            or set(reported_ids) != PUBLIC_SCENARIO_IDS
+        ):
+            raise RuntimeError("benchmark report scenario set does not match the assigned public suite")
         isolation = report.get("runtime_isolation", {})
         if isolation.get("status") != "verified" or isolation.get("network_mode") != "none":
             raise RuntimeError("benchmark did not verify the required container isolation")

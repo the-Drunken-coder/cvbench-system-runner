@@ -46,7 +46,7 @@
               <select id="pack-filter">
                 <option value="all">All packs</option>
                 <option value="synthetic-v1">Synthetic v1</option>
-                <option value="real-video-v1">Real video v1</option>
+                <option value="real-video-v2">Real video v2</option>
               </select>
             </label>
           </div>
@@ -79,15 +79,23 @@
               <label class="scrubber-label" for="frame-scrubber">Frame <span id="frame-position">0 / 0</span></label>
               <input id="frame-scrubber" type="range" min="0" max="0" value="0" aria-describedby="frame-time">
               <output id="frame-time">0.000 s</output>
+              <label class="speed-label" for="playback-speed">Speed
+                <select id="playback-speed">
+                  <option value="0.5">0.5×</option>
+                  <option value="1" selected>1×</option>
+                  <option value="2">2×</option>
+                </select>
+              </label>
             </div>
             <fieldset class="overlay-controls">
               <legend>Overlays</legend>
-              <label><input type="checkbox" data-overlay="targets" checked> Targets</label>
-              <label><input type="checkbox" data-overlay="ignores" checked> Ignores</label>
-              <label><input type="checkbox" data-overlay="roi" checked> Scoreable ROI</label>
+              <label id="objects-overlay-label"><input type="checkbox" data-overlay="targets" checked> <span>Targets</span></label>
+              <label id="ignores-overlay-label"><input type="checkbox" data-overlay="ignores" checked> Ignores</label>
+              <label id="region-overlay-label"><input type="checkbox" data-overlay="roi" checked> Scoreable boundary</label>
               <label><input type="checkbox" data-overlay="faults" checked> Faults</label>
               <label><input type="checkbox" data-overlay="labels" checked> Labels</label>
             </fieldset>
+            <p id="overlay-disclosure" class="overlay-disclosure"></p>
             <p id="viewer-announcement" class="sr-only" aria-live="polite"></p>
           </div>
 

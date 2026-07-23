@@ -6,5 +6,6 @@
 !scripts/
 !scripts/prepare_real_video.py
 !scripts/verify_real_video_corpus.py
+!scripts/hydrate_real_video_corpus.py
 !src/
 !src/**

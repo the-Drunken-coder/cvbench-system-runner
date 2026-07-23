@@ -14,6 +14,9 @@ from cvbench.metrics import calculate_metrics
 from scripts.run_control_plane_job import (
     IMAGE_PATTERN,
     MAX_CALLBACK_BYTES,
+    PUBLIC_BENCHMARK_ID,
+    PUBLIC_BENCHMARK_MANIFEST,
+    PUBLIC_BENCHMARK_VERSION,
     SECRET_ENVIRONMENT_KEYS,
     build_success_callback,
     callback_path,
@@ -28,6 +31,11 @@ from scripts.run_control_plane_job import (
 from tests.helpers import gt, output
 
 IMAGE = f"ghcr.io/example/tracker@sha256:{'a' * 64}"
+BENCHMARK = {
+    "id": PUBLIC_BENCHMARK_ID,
+    "version": PUBLIC_BENCHMARK_VERSION,
+    "manifest": PUBLIC_BENCHMARK_MANIFEST,
+}
 
 
 def test_image_pattern_requires_digest_and_rejects_shell_like_input() -> None:
@@ -44,11 +52,13 @@ def test_validate_lease_revalidates_untrusted_control_plane_data() -> None:
                 "id": "12345678-1234-4123-8123-123456789abc",
                 "image": IMAGE,
                 "argv": ["python", "-m", "tracker"],
+                "benchmark": BENCHMARK,
             },
             "lease": {"token": "b" * 64},
         }
     )
     assert submission["image"] == IMAGE
+    assert submission["benchmark"] == BENCHMARK
     assert token == "b" * 64
     assert max_result_bytes == MAX_CALLBACK_BYTES
 
@@ -59,6 +69,7 @@ def test_validate_lease_revalidates_untrusted_control_plane_data() -> None:
                     "id": "12345678-1234-4123-8123-123456789abc",
                     "image": IMAGE,
                     "argv": ["python\nmalicious"],
+                    "benchmark": BENCHMARK,
                 },
                 "lease": {"token": "b" * 64},
             }
@@ -67,7 +78,20 @@ def test_validate_lease_revalidates_untrusted_control_plane_data() -> None:
     with pytest.raises(ValueError, match="submission id"):
         validate_lease(
             {
-                "submission": {"id": "../other-job", "image": IMAGE, "argv": ["python"]},
+                "submission": {"id": "../other-job", "image": IMAGE, "argv": ["python"], "benchmark": BENCHMARK},
+                "lease": {"token": "b" * 64},
+            }
+        )
+
+    with pytest.raises(ValueError, match="benchmark assignment"):
+        validate_lease(
+            {
+                "submission": {
+                    "id": "12345678-1234-4123-8123-123456789abc",
+                    "image": IMAGE,
+                    "argv": ["python"],
+                    "benchmark": {"id": "other", "version": "1.0.0", "manifest": "benchmarks/other.yaml"},
+                },
                 "lease": {"token": "b" * 64},
             }
         )
@@ -133,6 +157,7 @@ def test_execution_timeout_still_runs_unique_label_cleanup(tmp_path: Path) -> No
         "argv": ["python", "-m", "tracker"],
     }
     with (
+        patch("scripts.run_control_plane_job.hydrate"),
         patch(
             "scripts.run_control_plane_job.subprocess.run",
             side_effect=subprocess.TimeoutExpired(["docker", "pull"], 600),
@@ -153,7 +178,7 @@ def test_success_callback_build_failure_is_converted_to_failed(monkeypatch: pyte
         "image": IMAGE,
         "argv": ["python", "-m", "tracker"],
     }
-    lease = {"submission": submission, "lease": {"token": "b" * 64}}
+    lease = {"submission": {**submission, "benchmark": BENCHMARK}, "lease": {"token": "b" * 64}}
     monkeypatch.setenv("CVBENCH_API_BASE_URL", "https://cvbench.test")
     monkeypatch.setenv("CVBENCH_RUNNER_TOKEN", "runner-token")
     with (
@@ -178,7 +203,7 @@ def test_transient_success_callback_failure_never_emits_failed_callback(monkeypa
         "image": IMAGE,
         "argv": ["python", "-m", "tracker"],
     }
-    lease = {"submission": submission, "lease": {"token": "b" * 64}}
+    lease = {"submission": {**submission, "benchmark": BENCHMARK}, "lease": {"token": "b" * 64}}
     monkeypatch.setenv("CVBENCH_API_BASE_URL", "https://cvbench.test")
     monkeypatch.setenv("CVBENCH_RUNNER_TOKEN", "runner-token")
     with (
@@ -218,7 +243,7 @@ def test_worst_case_stderr_report_fits_callback_budget_and_records_success(
         "argv": ["python", "-m", "tracker"],
     }
     lease = {
-        "submission": submission,
+        "submission": {**submission, "benchmark": BENCHMARK},
         "lease": {"token": lease_token, "max_result_bytes": MAX_CALLBACK_BYTES},
     }
     terminal: dict[str, object] = {"status": "running"}

@@ -13,7 +13,7 @@ TRACK_OBSERVATION_EVENTS = {"track_started", "track_update", "track_reacquired"}
 EVENTS = TRACK_EVENTS | {"system_status", "system_error"}
 TRACK_STATES = {"tentative", "confirmed", "coasting", "reacquired", "lost"}
 SUPPORT_VALUES = {"observed", "predicted"}
-OCCLUSION_VALUES = {"none", "partial", "full"}
+OCCLUSION_VALUES = {"none", "partial", "full", "unknown"}
 MAX_HEADER_BYTES = 1_000_000
 MAX_PAYLOAD_BYTES = 100_000_000
 
@@ -99,7 +99,6 @@ def validate_ground_truth(record: Any) -> dict[str, Any]:
         "source_timestamp_ns": int,
         "on_screen": bool,
         "eligible_for_detection": bool,
-        "visibility_fraction": (int, float),
         "occlusion": str,
         "class_id": str,
     }
@@ -112,6 +111,9 @@ def validate_ground_truth(record: Any) -> dict[str, Any]:
     if not isinstance(ignore_region, bool):
         raise ProtocolError("ignore_region must be boolean")
     ignore_region_id = record.get("ignore_region_id")
+    truncated = record.get("truncated", False)
+    if not isinstance(truncated, bool):
+        raise ProtocolError("truncated must be boolean")
     if ignore_region and not ignore:
         raise ProtocolError("ignore_region requires ignore=true")
     if ignore_region and (not isinstance(ignore_region_id, str) or not ignore_region_id):
@@ -120,14 +122,23 @@ def validate_ground_truth(record: Any) -> dict[str, Any]:
         raise ProtocolError("ignore_region_id must be a string")
     if ignore_region_id is not None and not ignore_region:
         raise ProtocolError("ignore_region_id requires ignore_region=true")
-    visibility = float(record["visibility_fraction"])
-    if not math.isfinite(visibility) or not 0 <= visibility <= 1:
+    if "visibility_fraction" not in record:
+        raise ProtocolError("missing visibility_fraction")
+    visibility = record["visibility_fraction"]
+    if visibility is None:
+        if record["occlusion"] != "unknown":
+            raise ProtocolError("unknown visibility requires unknown occlusion")
+    elif not isinstance(visibility, (int, float)) or isinstance(visibility, bool):
+        raise ProtocolError("visibility_fraction has invalid type")
+    elif not math.isfinite(float(visibility)) or not 0 <= float(visibility) <= 1:
         raise ProtocolError("visibility_fraction must be between zero and one")
     if record["occlusion"] not in OCCLUSION_VALUES:
         raise ProtocolError("invalid occlusion state")
     clean = dict(record)
     clean["ignore"] = ignore
     clean["ignore_region"] = ignore_region
+    clean["truncated"] = truncated
+    clean["visibility_fraction"] = visibility
     if record["on_screen"]:
         clean["bbox_xyxy"] = validate_bbox(record.get("bbox_xyxy"))
     elif record.get("bbox_xyxy") is not None:

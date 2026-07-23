@@ -197,6 +197,244 @@
       "track_id_reuse_evidence": [],
       "unique_track_ids": 2
     },
+    "multi_object_tracking": {
+      "association_accuracy": 0.3583333333333333,
+      "by_scenario": {
+        "acquisition": {
+          "association_accuracy": 0.375,
+          "ground_truth_detections": 8,
+          "ground_truth_tracks": 1,
+          "hota": 0.375,
+          "idf1": 0.5454545454545454,
+          "tracker_detections": 3,
+          "tracker_tracks": 1
+        },
+        "false": {
+          "association_accuracy": 0.0,
+          "ground_truth_detections": 2,
+          "ground_truth_tracks": 1,
+          "hota": 0.0,
+          "idf1": 0.0,
+          "tracker_detections": 2,
+          "tracker_tracks": 1
+        },
+        "reacquisition": {
+          "association_accuracy": 0.3333333333333333,
+          "ground_truth_detections": 4,
+          "ground_truth_tracks": 1,
+          "hota": 0.3333333333333333,
+          "idf1": 0.5,
+          "tracker_detections": 4,
+          "tracker_tracks": 1
+        }
+      },
+      "class_aware": true,
+      "detection_accuracy": 0.2777777777777778,
+      "ground_truth_detections": 14,
+      "ground_truth_tracks": 3,
+      "hota": 0.3154949081000152,
+      "hota_by_iou_threshold": [
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.05,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.1,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.15,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.2,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.25,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.3,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.35,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.4,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.45,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.5,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.55,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.6,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.65,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.7,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.75,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.8,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.85,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.9,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        },
+        {
+          "association_accuracy": 0.3583333333333333,
+          "detection_accuracy": 0.2777777777777778,
+          "false_negatives": 9,
+          "false_positives": 4,
+          "hota": 0.3154949081000152,
+          "iou_threshold": 0.95,
+          "localization_accuracy": 1.0,
+          "true_positives": 5
+        }
+      ],
+      "identity_false_negatives": 9,
+      "identity_false_positives": 4,
+      "identity_true_positives": 5,
+      "idf1": 0.43478260869565216,
+      "idf1_match_iou": 0.5,
+      "localization_accuracy": 1.0,
+      "schema_version": "cvbench.mot-metrics/v1",
+      "tracker_detections": 9,
+      "tracker_tracks": 3
+    },
     "multi_target": {
       "1": {
         "coverage": 0.35714285714285715,

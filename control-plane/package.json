@@ -13,7 +13,8 @@
     "test": "node --test test/*.test.js",
     "test:d1": "node scripts/d1-lifecycle.mjs",
     "test:preview": "node scripts/test-preview-routes.mjs",
-    "test:production-install": "node scripts/test-production-install.mjs"
+    "test:production-install": "node scripts/test-production-install.mjs",
+    "screenshots": "npm run build && node scripts/capture-scenario-screenshots.mjs"
   },
   "dependencies": {
     "yaml": "^2.8.3"

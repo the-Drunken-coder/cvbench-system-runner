@@ -7,7 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from .config import Thresholds
-from .matching import bbox_iou, center_error, match_records_by_support
+from .matching import _hungarian, bbox_iou, center_error, match_records_by_support
 from .model import CollectedRecord, Match
 from .protocol import TRACK_EVENTS, TRACK_OBSERVATION_EVENTS
 
@@ -155,6 +155,222 @@ def _dropout_intervals(rows: list[tuple[int, int, bool]], tolerance_ns: int) -> 
     return intervals
 
 
+def _mot_detections(
+    ground_truth: list[dict[str, Any]], outputs: list[dict[str, Any]]
+) -> tuple[dict[tuple[str, int], list[dict[str, Any]]], dict[tuple[str, int], list[dict[str, Any]]]]:
+    truth_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    output_by_frame: dict[tuple[str, int], list[dict[str, Any]]] = defaultdict(list)
+    for row in ground_truth:
+        if not row.get("ignore") and row.get("on_screen") and row.get("eligible_for_detection"):
+            truth_by_frame[(row["sequence_id"], row["source_timestamp_ns"])].append(row)
+    for row in outputs:
+        if row.get("event") in TRACK_OBSERVATION_EVENTS and row.get("state") != "lost":
+            output_by_frame[(row["sequence_id"], row["source_timestamp_ns"])].append(row)
+    return truth_by_frame, output_by_frame
+
+
+def _mot_identity(row: dict[str, Any], *, truth: bool) -> tuple[str, str, str]:
+    return (
+        str(row["sequence_id"]),
+        str(row.get("class_id", "")),
+        str(row["target_id"] if truth else row["track_id"]),
+    )
+
+
+def _mot_pair_iou(truth: dict[str, Any], output: dict[str, Any]) -> float:
+    if truth.get("class_id") != output.get("class_id"):
+        return 0.0
+    return bbox_iou(truth["bbox_xyxy"], output["geometry"]["value"])
+
+
+def _frame_assignment(
+    truths: list[dict[str, Any]],
+    outputs: list[dict[str, Any]],
+    scores: list[list[float]],
+    similarities: list[list[float]],
+    threshold: float,
+) -> list[tuple[int, int]]:
+    if not truths or not outputs:
+        return []
+    cost = [
+        [
+            -(scores[row][column]) if similarities[row][column] >= threshold else 1_000_000.0
+            for column in range(len(outputs))
+        ]
+        for row in range(len(truths))
+    ]
+    return [
+        (row, column)
+        for row, column in _hungarian(cost)
+        if similarities[row][column] >= threshold and cost[row][column] < 1_000_000.0
+    ]
+
+
+def _calculate_mot_metrics(
+    ground_truth: list[dict[str, Any]],
+    outputs: list[dict[str, Any]],
+    scenario_families: dict[str, str] | None = None,
+    *,
+    include_scenario_breakdown: bool = True,
+) -> dict[str, Any]:
+    """Calculate class-aware HOTA and IDF1 over complete tracker hypotheses.
+
+    HOTA follows the TrackEval global-alignment formulation at IoU thresholds
+    0.05 through 0.95. IDF1 uses a global identity assignment after class-aware
+    per-frame IoU >= 0.5 matching. Sequence IDs are part of every identity, so
+    identities cannot leak across scenario boundaries.
+    """
+    truth_by_frame, output_by_frame = _mot_detections(ground_truth, outputs)
+    frames = sorted(set(truth_by_frame) | set(output_by_frame))
+    truth_counts: Counter[tuple[str, str, str]] = Counter()
+    output_counts: Counter[tuple[str, str, str]] = Counter()
+    potential: Counter[tuple[tuple[str, str, str], tuple[str, str, str]]] = Counter()
+    frame_data: list[tuple[list[dict[str, Any]], list[dict[str, Any]], list[list[float]]]] = []
+    for frame in frames:
+        truths = truth_by_frame.get(frame, [])
+        predictions = output_by_frame.get(frame, [])
+        similarities = [[_mot_pair_iou(truth, prediction) for prediction in predictions] for truth in truths]
+        for truth in truths:
+            truth_counts[_mot_identity(truth, truth=True)] += 1
+        for prediction in predictions:
+            output_counts[_mot_identity(prediction, truth=False)] += 1
+        for truth_index, truth in enumerate(truths):
+            row_sum = sum(similarities[truth_index])
+            for output_index, prediction in enumerate(predictions):
+                similarity = similarities[truth_index][output_index]
+                if similarity <= 0:
+                    continue
+                column_sum = sum(row[output_index] for row in similarities)
+                denominator = row_sum + column_sum - similarity
+                if denominator > 0:
+                    potential[(_mot_identity(truth, truth=True), _mot_identity(prediction, truth=False))] += (
+                        similarity / denominator
+                    )
+        frame_data.append((truths, predictions, similarities))
+
+    alignment = {
+        pair: value / (truth_counts[pair[0]] + output_counts[pair[1]] - value)
+        for pair, value in potential.items()
+    }
+    threshold_rows = []
+    for threshold_integer in range(5, 100, 5):
+        threshold = threshold_integer / 100
+        matches: Counter[tuple[tuple[str, str, str], tuple[str, str, str]]] = Counter()
+        true_positives = 0
+        localization_sum = 0.0
+        for truths, predictions, similarities in frame_data:
+            scores = [
+                [
+                    alignment.get((_mot_identity(truth, truth=True), _mot_identity(prediction, truth=False)), 0.0)
+                    * similarities[truth_index][output_index]
+                    for output_index, prediction in enumerate(predictions)
+                ]
+                for truth_index, truth in enumerate(truths)
+            ]
+            for truth_index, output_index in _frame_assignment(
+                truths, predictions, scores, similarities, threshold
+            ):
+                pair = (
+                    _mot_identity(truths[truth_index], truth=True),
+                    _mot_identity(predictions[output_index], truth=False),
+                )
+                matches[pair] += 1
+                true_positives += 1
+                localization_sum += similarities[truth_index][output_index]
+        false_negatives = sum(truth_counts.values()) - true_positives
+        false_positives = sum(output_counts.values()) - true_positives
+        detection_denominator = true_positives + false_negatives + false_positives
+        detection_accuracy = true_positives / detection_denominator if detection_denominator else 1.0
+        association_sum = 0.0
+        for pair, count in matches.items():
+            association_accuracy = count / (truth_counts[pair[0]] + output_counts[pair[1]] - count)
+            association_sum += count * association_accuracy
+        association_accuracy = association_sum / true_positives if true_positives else 0.0
+        threshold_rows.append(
+            {
+                "iou_threshold": threshold,
+                "hota": math.sqrt(detection_accuracy * association_accuracy),
+                "detection_accuracy": detection_accuracy,
+                "association_accuracy": association_accuracy,
+                "localization_accuracy": localization_sum / true_positives if true_positives else 0.0,
+                "true_positives": true_positives,
+                "false_negatives": false_negatives,
+                "false_positives": false_positives,
+            }
+        )
+
+    identity_pair_counts: Counter[tuple[tuple[str, str, str], tuple[str, str, str]]] = Counter()
+    for truths, predictions, similarities in frame_data:
+        for truth_index, output_index in _frame_assignment(truths, predictions, similarities, similarities, 0.5):
+            identity_pair_counts[
+                (
+                    _mot_identity(truths[truth_index], truth=True),
+                    _mot_identity(predictions[output_index], truth=False),
+                )
+            ] += 1
+    truth_ids = sorted(truth_counts)
+    output_ids = sorted(output_counts)
+    id_assignment = _hungarian(
+        [[-identity_pair_counts[(truth_id, output_id)] for output_id in output_ids] for truth_id in truth_ids]
+    ) if truth_ids and output_ids else []
+    identity_true_positives = sum(
+        identity_pair_counts[(truth_ids[row], output_ids[column])] for row, column in id_assignment
+    )
+    identity_false_negatives = sum(truth_counts.values()) - identity_true_positives
+    identity_false_positives = sum(output_counts.values()) - identity_true_positives
+    idf1_denominator = 2 * identity_true_positives + identity_false_negatives + identity_false_positives
+
+    result = {
+        "schema_version": "cvbench.mot-metrics/v1",
+        "class_aware": True,
+        "ground_truth_detections": sum(truth_counts.values()),
+        "tracker_detections": sum(output_counts.values()),
+        "ground_truth_tracks": len(truth_counts),
+        "tracker_tracks": len(output_counts),
+        "hota": statistics.fmean(row["hota"] for row in threshold_rows) if threshold_rows else 1.0,
+        "detection_accuracy": statistics.fmean(row["detection_accuracy"] for row in threshold_rows)
+        if threshold_rows
+        else 1.0,
+        "association_accuracy": statistics.fmean(row["association_accuracy"] for row in threshold_rows)
+        if threshold_rows
+        else 1.0,
+        "localization_accuracy": statistics.fmean(row["localization_accuracy"] for row in threshold_rows)
+        if threshold_rows
+        else 1.0,
+        "hota_by_iou_threshold": threshold_rows,
+        "idf1": 2 * identity_true_positives / idf1_denominator if idf1_denominator else 1.0,
+        "identity_true_positives": identity_true_positives,
+        "identity_false_negatives": identity_false_negatives,
+        "identity_false_positives": identity_false_positives,
+        "idf1_match_iou": 0.5,
+    }
+    if include_scenario_breakdown:
+        scenario_families = scenario_families or {}
+        sequences_by_scenario: dict[str, set[str]] = defaultdict(set)
+        for sequence_id, _ in frames:
+            sequences_by_scenario[scenario_families.get(sequence_id, sequence_id)].add(sequence_id)
+        result["by_scenario"] = {}
+        for scenario, sequences in sorted(sequences_by_scenario.items()):
+            scenario_result = _calculate_mot_metrics(
+                [row for row in ground_truth if row["sequence_id"] in sequences],
+                [row for row in outputs if row["sequence_id"] in sequences],
+                include_scenario_breakdown=False,
+            )
+            result["by_scenario"][scenario] = {
+                key: scenario_result[key]
+                for key in (
+                    "association_accuracy",
+                    "ground_truth_detections",
+                    "ground_truth_tracks",
+                    "hota",
+                    "idf1",
+                    "tracker_detections",
+                    "tracker_tracks",
+                )
+            }
+    return result
+
+
 def calculate_metrics(
     ground_truth: list[dict[str, Any]],
     collected: list[CollectedRecord],
@@ -266,13 +482,13 @@ def calculate_metrics(
             target_total += duration
             target_observed += duration if is_observed else 0
             target_continuity += duration if is_continuous else 0
-            visibility = (
-                "full"
-                if row["visibility_fraction"] >= 0.8
-                else ("partial" if row["visibility_fraction"] >= 0.3 else "low")
-            )
-            coverage_by_visibility[visibility][0] += duration if is_observed else 0
-            coverage_by_visibility[visibility][1] += duration
+            visibility_fraction = row.get("visibility_fraction")
+            if visibility_fraction is not None:
+                visibility = (
+                    "full" if visibility_fraction >= 0.8 else ("partial" if visibility_fraction >= 0.3 else "low")
+                )
+                coverage_by_visibility[visibility][0] += duration if is_observed else 0
+                coverage_by_visibility[visibility][1] += duration
             family = str(row.get("scenario_family", "unknown"))
             coverage_by_scenario[family][0] += duration if is_observed else 0
             coverage_by_scenario[family][1] += duration
@@ -326,13 +542,13 @@ def calculate_metrics(
         diagonal = math.hypot(gt_box[2] - gt_box[0], gt_box[3] - gt_box[1])
         area = (gt_box[2] - gt_box[0]) * (gt_box[3] - gt_box[1])
         size = "small" if area < 32**2 else ("medium" if area < 96**2 else "large")
-        visibility = (
-            "full"
-            if match.gt["visibility_fraction"] >= 0.8
-            else ("partial" if match.gt["visibility_fraction"] >= 0.3 else "low")
-        )
         size_groups[size].append(match.iou)
-        visibility_groups[visibility].append(match.iou)
+        visibility_fraction = match.gt.get("visibility_fraction")
+        if visibility_fraction is not None:
+            visibility = (
+                "full" if visibility_fraction >= 0.8 else ("partial" if visibility_fraction >= 0.3 else "low")
+            )
+            visibility_groups[visibility].append(match.iou)
         localization_rows.append(
             {
                 "iou": match.iou,
@@ -806,6 +1022,7 @@ def calculate_metrics(
         "interruption_recovery_rate": interruption.get("observed_recovery_rate"),
         "latency_drift_ms": latency.get("drift_ms"),
     }
+    mot = _calculate_mot_metrics(ground_truth, scored_outputs, scenario_families)
 
     return {
         "acquisition": acquisition,
@@ -818,6 +1035,7 @@ def calculate_metrics(
         "robustness": robustness,
         "latency": latency,
         "multi_target": multi_target,
+        "multi_object_tracking": mot,
         "long_running_stability": long_running_stability,
         "sample_counts": {
             "ground_truth_records": len(ground_truth),

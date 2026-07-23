@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-image=${CVBENCH_REAL_VIDEO_PREP_IMAGE:-cvbench-real-video-prep:v1}
+image=${CVBENCH_REAL_VIDEO_PREP_IMAGE:-cvbench-real-video-prep:v2}
 
 docker image inspect "$image" >/dev/null 2>&1 || {
   echo "missing preparation image $image; build examples/Dockerfile.real-video-prep first" >&2

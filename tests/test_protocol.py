@@ -80,6 +80,16 @@ def test_ground_truth_validation() -> None:
         validate_ground_truth(invalid)
 
 
+def test_unknown_real_visibility_is_explicit_and_paired_with_unknown_occlusion() -> None:
+    record = gt(0)
+    record["visibility_fraction"] = None
+    record["occlusion"] = "unknown"
+    assert validate_ground_truth(record)["visibility_fraction"] is None
+    record["occlusion"] = "none"
+    with pytest.raises(ProtocolError, match="unknown visibility"):
+        validate_ground_truth(record)
+
+
 @pytest.mark.parametrize(
     "record",
     [

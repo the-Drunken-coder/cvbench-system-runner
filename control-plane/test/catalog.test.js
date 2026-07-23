@@ -87,7 +87,7 @@ test("catalog equals the benchmark union and every published hash verifies", asy
   assert.equal(catalog.all_current_scenarios_public, true);
 
   const expected = new Set();
-  for (const filename of ["long-running-stability.yaml", "persistent-target-tracking.yaml", "real-video-v1.yaml"]) {
+  for (const filename of ["long-running-stability.yaml", "persistent-target-tracking.yaml", "public-whole-system-v2.yaml", "real-video-v2.yaml"]) {
     const benchmarkPath = path.join(ROOT, "benchmarks", filename);
     const benchmark = parseYaml(await readFile(benchmarkPath, "utf8"));
     for (const declared of benchmark.scenarios) {
@@ -133,13 +133,23 @@ test("licenses, annotation scope, scoring rules, and track churn evidence are ex
   context.after(async () => rm(output, { recursive: true, force: true }));
   build("dist-test-policy");
   const detail = async (id) => JSON.parse(await readFile(path.join(output, `scenario-catalog/v1/scenarios/${id}.json`)));
-  for (const id of ["rv1-b2c8", "rv1-c3d1"]) {
+  for (const id of ["rvmot-a1c9", "rvmot-b7e2", "rvmot-c4f6"]) {
     const scenario = await detail(id);
-    assert.equal(scenario.provenance.source.license, "CC BY 3.0");
-    assert.match(scenario.provenance.source.attribution, /licensed CC BY 3\.0/);
-    assert.match(scenario.provenance.source.transformation, /re-encoded as JPEG quality 90/);
-    assert.equal(scenario.annotations.policy.scope, "targeted_non_exhaustive");
-    assert.equal(scenario.annotations.scoring.outside_fixed_roi, "out_of_scope");
+    assert.equal(scenario.provenance.source.license, "CC-BY-4.0");
+    assert.match(scenario.provenance.source.attribution, /licensed CC BY 4\.0/);
+    assert.match(scenario.provenance.source.transformation, /consecutive frames/);
+    assert.match(scenario.provenance.source.annotation_provenance, /Per-frame MEVA geometry and types/);
+    assert.match(scenario.provenance.source.corrections, /no temporal interpolation/);
+    assert.equal(scenario.annotations.policy.scope, "exhaustive_full_frame_moving_objects");
+    assert.equal(scenario.annotations.scoring.scoreable_region, "full_frame");
+    assert.equal(scenario.annotations.ignore_rows, 0);
+    assert.deepEqual(scenario.annotations.scoreable_region.bounds, [0, 0, scenario.media.width, scenario.media.height]);
+    assert.equal(scenario.media.fps, 30);
+    const baseline = JSON.parse(await readFile(path.join(output, scenario.baseline.manifest.url)));
+    assert.ok("hota" in baseline.metrics);
+    assert.ok("idf1" in baseline.metrics);
+    assert.ok("association_accuracy" in baseline.metrics);
+    assert.equal(baseline.metrics.neutral_ignored_predictions, 0);
   }
   const empty = await detail("synthetic-false-detection");
   assert.equal(empty.annotations.target_count, 0);
@@ -189,7 +199,7 @@ test("catalog safety helpers reject traversal, symlinks, malformed geometry, has
   await writeFile(path.join(output, "safe-name.json"), '{"contact":"private@example.invalid"}');
   await assert.rejects(outputEvidence(output), /private artifact content/);
 
-  const manifest = { id: "canary", sequence_id: "sequence", frames: [{ source_timestamp_ns: 0, width: 10, height: 10 }] };
+  const manifest = { id: "canary", sequence_id: "sequence", ontology: ["target"], frames: [{ source_timestamp_ns: 0, width: 10, height: 10 }] };
   const annotation = {
     bbox_xyxy: [0, 0, 5, 5],
     class_id: "target",
@@ -202,6 +212,7 @@ test("catalog safety helpers reject traversal, symlinks, malformed geometry, has
     visibility_fraction: 1,
   };
   assert.throws(() => sanitizeAnnotation({ ...annotation, undeclared: "canary" }, manifest, 0), /undeclared field undeclared/);
+  assert.throws(() => sanitizeAnnotation({ ...annotation, class_id: "unsupported-cat" }, manifest, 0), /outside the scenario ontology/);
   assert.throws(() => sanitizeAnnotation({ ...annotation, metadata: { api_key: "canary" } }, manifest, 0), /private-looking field api_key/);
   assert.throws(() => sanitizeAnnotation({ ...annotation, local_path: "/private/canary" }, manifest, 0), /private-looking field local_path/);
   assert.throws(() => sanitizeFault({ type: "blackout", api_key: "canary" }, "canary", 0), /private-looking field api_key/);

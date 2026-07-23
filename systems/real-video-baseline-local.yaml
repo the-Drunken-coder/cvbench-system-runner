@@ -1,6 +1,6 @@
 schema_version: cvbench.system/v1
 id: classical-motion-baseline
-revision: real-video-v1
+revision: real-video-v2
 runtime:
   type: local
   command: ["{python}", "-m", "cvbench.examples.real_video_baseline"]
