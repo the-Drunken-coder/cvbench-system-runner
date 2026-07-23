@@ -1,6 +1,11 @@
 import { createLatestScenarioLoader, exactFrameFailureMessage, renderExactFrameFailure } from "/scenario-loader.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+const MAX_DECODED_BYTES = 48 * 1024 * 1024;
+const MAX_DECODE_CONCURRENCY = 4;
+const PLAYBACK_AHEAD_NS = 750_000_000;
+const PLAYBACK_START_BUFFER_NS = 250_000_000;
+const SAVE_DATA_AHEAD_NS = 150_000_000;
 const detailLoader = createLatestScenarioLoader();
 const state = {
   catalog: null,
@@ -11,8 +16,15 @@ const state = {
   selected: 0,
   playing: false,
   playbackSpeed: 1,
-  timer: null,
-  verifiedMedia: new Set(),
+  animationFrame: null,
+  playbackAnchorMs: null,
+  playbackAnchorSourceNs: null,
+  playbackGeneration: 0,
+  buffering: false,
+  frameCache: new Map(),
+  decodedBytes: 0,
+  decodeQueue: [],
+  activeDecodes: 0,
   generation: 0,
 };
 
@@ -187,73 +199,227 @@ async function digestHex(buffer) {
   return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-async function verifyMedia(frame, generation, announce = true) {
-  if (state.verifiedMedia.has(frame.media.url)) return true;
-  const response = await fetch(frame.media.url, { cache: "force-cache" });
-  if (!response.ok) throw new Error(exactFrameFailureMessage(response.status));
-  const body = await response.arrayBuffer();
-  const digest = await digestHex(body);
-  if (digest !== frame.media.sha256) throw new Error(`Exact frame failed its published SHA-256 check.`);
-  if (generation !== state.generation) return false;
-  state.verifiedMedia.add(frame.media.url);
-  if (announce) byId("media-state").textContent = "Exact frame verified.";
-  return true;
+function sameOriginUrl(url) {
+  const resolved = new URL(url, location.origin);
+  if (resolved.origin !== location.origin || !["http:", "https:"].includes(resolved.protocol)) {
+    throw new Error("Exact frame URL must be same-origin.");
+  }
+  return resolved.href;
 }
 
-async function prefetchNextFrames(generation) {
-  if (navigator.connection?.saveData) return;
-  for (let offset = 1; offset <= 2; offset += 1) {
-    const frame = state.frames.frames[state.selected + offset];
-    if (!frame) break;
-    try {
-      await verifyMedia(frame, generation, false);
-    } catch {
-      return;
+function mediaStatus(message, error = false) {
+  const mediaState = byId("media-state");
+  mediaState.hidden = false;
+  mediaState.classList.toggle("error", error);
+  mediaState.textContent = message;
+}
+
+function hideMediaStatus() {
+  const mediaState = byId("media-state");
+  mediaState.hidden = true;
+  mediaState.classList.remove("error");
+}
+
+function closeCacheEntry(entry) {
+  if (entry.status === "ready") {
+    entry.bitmap.close();
+    state.decodedBytes -= entry.decodedBytes;
+  }
+  state.frameCache.delete(entry.index);
+}
+
+function resetFrameCache() {
+  for (const entry of state.frameCache.values()) {
+    if (entry.status === "ready") entry.bitmap.close();
+    else entry.controller.abort();
+    if (entry.status === "queued") {
+      entry.status = "cancelled";
+      entry.reject(new DOMException("Stale frame request.", "AbortError"));
     }
   }
+  state.frameCache.clear();
+  state.decodeQueue.length = 0;
+  state.decodedBytes = 0;
+  state.generation += 1;
+  const canvas = byId("scenario-frame");
+  canvas.getContext("2d", { alpha: false }).clearRect(0, 0, canvas.width, canvas.height);
+  canvas.dataset.frameReady = "false";
+  canvas.removeAttribute("data-frame-index");
+  byId("scenario-overlay").replaceChildren();
+}
+
+function cancelPendingFramesExcept(keepIndex = null) {
+  for (const entry of [...state.frameCache.values()]) {
+    if (entry.index === keepIndex || !["queued", "loading"].includes(entry.status)) continue;
+    entry.controller.abort();
+    state.frameCache.delete(entry.index);
+    if (entry.status === "queued") {
+      entry.status = "cancelled";
+      entry.reject(new DOMException("Superseded frame request.", "AbortError"));
+    }
+  }
+  state.decodeQueue = state.decodeQueue.filter((entry) => entry.status === "queued");
+}
+
+function trimFrameCache(focusIndex) {
+  const entries = [...state.frameCache.values()];
+  for (const entry of entries) {
+    if (entry.status === "ready" && entry.index < focusIndex - 2) closeCacheEntry(entry);
+  }
+  if (state.decodedBytes <= MAX_DECODED_BYTES) return;
+  const removable = [...state.frameCache.values()]
+    .filter((entry) => entry.status === "ready" && entry.index !== state.selected)
+    .sort((left, right) => Math.abs(right.index - focusIndex) - Math.abs(left.index - focusIndex));
+  for (const entry of removable) {
+    closeCacheEntry(entry);
+    if (state.decodedBytes <= MAX_DECODED_BYTES) break;
+  }
+}
+
+async function decodeFrame(entry) {
+  const frame = state.frames.frames[entry.index];
+  const response = await fetch(sameOriginUrl(frame.media.url), {
+    cache: "force-cache",
+    signal: entry.controller.signal,
+  });
+  if (!response.ok) throw new Error(exactFrameFailureMessage(response.status));
+  const body = await response.arrayBuffer();
+  if (await digestHex(body) !== frame.media.sha256) {
+    throw new Error("Exact frame failed its published SHA-256 check.");
+  }
+  const bitmap = await createImageBitmap(new Blob([body], { type: "image/jpeg" }));
+  if (bitmap.width !== frame.width || bitmap.height !== frame.height) {
+    bitmap.close();
+    throw new Error("The verified media decoded at an unexpected resolution.");
+  }
+  if (entry.generation !== state.generation) {
+    bitmap.close();
+    throw new DOMException("Stale frame decode.", "AbortError");
+  }
+  entry.bitmap = bitmap;
+  entry.decodedBytes = frame.width * frame.height * 4;
+  entry.status = "ready";
+  state.decodedBytes += entry.decodedBytes;
+  trimFrameCache(Math.min(state.selected, entry.index));
+  return entry;
+}
+
+function pumpDecodeQueue() {
+  while (state.activeDecodes < MAX_DECODE_CONCURRENCY && state.decodeQueue.length) {
+    const entry = state.decodeQueue.shift();
+    if (entry.generation !== state.generation || entry.status !== "queued") continue;
+    entry.status = "loading";
+    state.activeDecodes += 1;
+    decodeFrame(entry).then(entry.resolve, (error) => {
+      entry.status = "error";
+      entry.error = error;
+      entry.reject(error);
+    }).finally(() => {
+      state.activeDecodes -= 1;
+      pumpDecodeQueue();
+    });
+  }
+}
+
+function requestDecodedFrame(index) {
+  const cached = state.frameCache.get(index);
+  if (cached) return cached.promise;
+  const entry = {
+    controller: new AbortController(),
+    decodedBytes: 0,
+    generation: state.generation,
+    index,
+    status: "queued",
+  };
+  entry.promise = new Promise((resolve, reject) => {
+    entry.resolve = resolve;
+    entry.reject = reject;
+  });
+  state.frameCache.set(index, entry);
+  state.decodeQueue.push(entry);
+  pumpDecodeQueue();
+  return entry.promise;
+}
+
+function frameIndexAtOrBefore(sourceTimestampNs) {
+  const frames = state.frames.frames;
+  let low = 0;
+  let high = frames.length - 1;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (frames[middle].source_timestamp_ns <= sourceTimestampNs) low = middle;
+    else high = middle - 1;
+  }
+  return low;
+}
+
+function frameIndexThroughDuration(startIndex, durationNs) {
+  const start = state.frames.frames[startIndex].source_timestamp_ns;
+  return frameIndexAtOrBefore(start + durationNs);
+}
+
+function updateFrameUi(index, announcement = false) {
+  state.selected = index;
+  const frame = state.frames.frames[index];
+  byId("frame-scrubber").value = String(index);
+  byId("frame-position").textContent = `${index + 1} / ${state.frames.frames.length}`;
+  byId("frame-time").textContent = formatTime(frame.source_timestamp_ns);
+  byId("previous-frame").disabled = index === 0;
+  byId("next-frame").disabled = index === state.frames.frames.length - 1;
+  renderOverlay();
+  renderInspector();
+  if (announcement) {
+    byId("viewer-announcement").textContent = `Frame ${index + 1} of ${state.frames.frames.length}, ${annotationsSummary()}.`;
+  }
+}
+
+function presentFrame(index, entry, announcement = false) {
+  const frame = state.frames.frames[index];
+  const canvas = byId("scenario-frame");
+  if (canvas.width !== frame.width || canvas.height !== frame.height) {
+    canvas.width = frame.width;
+    canvas.height = frame.height;
+  }
+  const context = canvas.getContext("2d", { alpha: false });
+  context.drawImage(entry.bitmap, 0, 0);
+  canvas.dataset.frameReady = "true";
+  canvas.dataset.frameIndex = String(index);
+  canvas.setAttribute("aria-label", `${state.detail.title}, exact frame ${frame.frame_index + 1} of ${state.frames.frames.length}`);
+  updateFrameUi(index, announcement);
+  hideMediaStatus();
+  trimFrameCache(index);
+}
+
+async function prefetchRange(startIndex, endIndex) {
+  const work = [];
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    work.push(requestDecodedFrame(index));
+  }
+  return Promise.all(work);
+}
+
+function prefetchPosterNeighbors(index) {
+  if (navigator.connection?.saveData) return;
+  const last = state.frames.frames.length - 1;
+  void prefetchRange(index + 1, Math.min(index + 2, last)).catch(() => {});
 }
 
 async function showFrame(index, announcement = true) {
   if (!state.frames) return;
   stopPlayback();
-  state.selected = Math.max(0, Math.min(index, state.frames.frames.length - 1));
-  const frame = state.frames.frames[state.selected];
-  const image = byId("scenario-frame");
-  const mediaState = byId("media-state");
-  const generation = ++state.generation;
-  image.removeAttribute("src");
-  image.width = frame.width;
-  image.height = frame.height;
-  image.alt = `${state.detail.title}, exact frame ${frame.frame_index + 1} of ${state.frames.frames.length}`;
-  mediaState.hidden = false;
-  mediaState.classList.remove("error");
-  mediaState.textContent = "Verifying exact frame hash…";
-  byId("frame-scrubber").value = String(state.selected);
-  byId("frame-position").textContent = `${state.selected + 1} / ${state.frames.frames.length}`;
-  byId("frame-time").textContent = formatTime(frame.source_timestamp_ns);
-  byId("previous-frame").disabled = state.selected === 0;
-  byId("next-frame").disabled = state.selected === state.frames.frames.length - 1;
-  renderOverlay();
-  renderInspector();
+  const selected = Math.max(0, Math.min(index, state.frames.frames.length - 1));
+  cancelPendingFramesExcept(selected);
+  const generation = ++state.playbackGeneration;
+  mediaStatus("Verifying and decoding exact frame…");
   try {
-    const current = await verifyMedia(frame, generation);
-    if (!current || generation !== state.generation) return;
-    image.src = frame.media.url;
-    image.addEventListener("load", () => {
-      if (generation === state.generation) mediaState.hidden = true;
-    }, { once: true });
-    image.addEventListener("error", () => {
-      if (generation !== state.generation) return;
-      mediaState.hidden = false;
-      mediaState.classList.add("error");
-      mediaState.textContent = "The verified media could not be decoded by this browser.";
-    }, { once: true });
-    void prefetchNextFrames(generation);
+    const entry = await requestDecodedFrame(selected);
+    if (generation !== state.playbackGeneration || entry.generation !== state.generation) return;
+    presentFrame(selected, entry, announcement);
+    prefetchPosterNeighbors(selected);
   } catch (error) {
-    if (generation !== state.generation) return;
-    renderExactFrameFailure(mediaState, error);
+    if (generation !== state.playbackGeneration || error?.name === "AbortError") return;
+    renderExactFrameFailure(byId("media-state"), error);
   }
-  if (announcement) byId("viewer-announcement").textContent = `Frame ${state.selected + 1} of ${state.frames.frames.length}, ${annotationsSummary()}.`;
 }
 
 function annotationsSummary() {
@@ -263,49 +429,115 @@ function annotationsSummary() {
 }
 
 function stopPlayback() {
-  if (state.timer) window.clearTimeout(state.timer);
-  state.timer = null;
+  if (state.animationFrame) window.cancelAnimationFrame(state.animationFrame);
+  state.animationFrame = null;
+  state.playbackAnchorMs = null;
+  state.playbackAnchorSourceNs = null;
+  state.buffering = false;
   state.playing = false;
   const button = byId("play-pause");
   if (button) {
     button.textContent = "Play";
     button.setAttribute("aria-label", "Play sequence");
   }
+  if (byId("scenario-frame")?.dataset.frameReady === "true") hideMediaStatus();
 }
 
-function scheduleNext() {
+function setBuffering(buffering) {
+  if (state.buffering === buffering) return;
+  state.buffering = buffering;
+  if (buffering) {
+    mediaStatus("Buffering verified exact frames…");
+    byId("viewer-announcement").textContent = "Playback buffering. The current frame remains visible.";
+  } else {
+    hideMediaStatus();
+  }
+}
+
+function handlePlaybackDecodeError(error, generation) {
+  if (!state.playing || generation !== state.generation || error?.name === "AbortError") return;
+  stopPlayback();
+  renderExactFrameFailure(byId("media-state"), error);
+  byId("viewer-announcement").textContent = `Playback stopped. ${error.message}`;
+}
+
+function prefetchPlayback(expectedIndex) {
+  const duration = navigator.connection?.saveData ? SAVE_DATA_AHEAD_NS : PLAYBACK_AHEAD_NS;
+  const frame = state.frames.frames[expectedIndex];
+  const decodedFrameBytes = frame.width * frame.height * 4;
+  const memoryFrameLimit = Math.max(1, Math.floor(MAX_DECODED_BYTES / decodedFrameBytes) - 1);
+  const end = Math.min(
+    frameIndexThroughDuration(expectedIndex, duration),
+    expectedIndex + memoryFrameLimit,
+    state.frames.frames.length - 1,
+  );
+  const generation = state.generation;
+  for (let index = expectedIndex; index <= end; index += 1) {
+    void requestDecodedFrame(index).catch((error) => handlePlaybackDecodeError(error, generation));
+  }
+}
+
+function playbackTick(now) {
   if (!state.playing) return;
-  const current = state.frames.frames[state.selected];
-  const next = state.frames.frames[state.selected + 1];
-  if (!next) {
+  const elapsedMs = now - state.playbackAnchorMs;
+  const sourceTimestampNs = state.playbackAnchorSourceNs + elapsedMs * 1_000_000 * state.playbackSpeed;
+  const expectedIndex = frameIndexAtOrBefore(sourceTimestampNs);
+  prefetchPlayback(expectedIndex);
+
+  let presentable = null;
+  for (let index = expectedIndex; index > state.selected; index -= 1) {
+    const entry = state.frameCache.get(index);
+    if (entry?.status === "ready") {
+      presentable = entry;
+      break;
+    }
+  }
+  if (presentable) presentFrame(presentable.index, presentable);
+  setBuffering(expectedIndex > state.selected);
+
+  const lastIndex = state.frames.frames.length - 1;
+  if (expectedIndex === lastIndex && state.selected === lastIndex) {
     stopPlayback();
+    byId("viewer-announcement").textContent = `Playback ended on frame ${lastIndex + 1}.`;
     return;
   }
-  const delay = Math.max(8, (next.source_timestamp_ns - current.source_timestamp_ns) / 1_000_000 / state.playbackSpeed);
-  state.timer = window.setTimeout(async () => {
-    const wasPlaying = state.playing;
-    await showFrame(state.selected + 1, false);
-    if (wasPlaying && state.selected < state.frames.frames.length - 1) {
-      state.playing = true;
-      byId("play-pause").textContent = "Pause";
-      byId("play-pause").setAttribute("aria-label", "Pause sequence");
-      scheduleNext();
-    }
-  }, delay);
+  state.animationFrame = window.requestAnimationFrame(playbackTick);
+}
+
+async function startPlayback() {
+  if (state.selected === state.frames.frames.length - 1) {
+    await showFrame(0, false);
+  }
+  const requestGeneration = ++state.playbackGeneration;
+  state.playing = true;
+  byId("play-pause").textContent = "Pause";
+  byId("play-pause").setAttribute("aria-label", "Pause sequence");
+  setBuffering(true);
+  const lastIndex = state.frames.frames.length - 1;
+  const bufferEnd = Math.min(frameIndexThroughDuration(state.selected, PLAYBACK_START_BUFFER_NS), lastIndex);
+  try {
+    await prefetchRange(state.selected, bufferEnd);
+  } catch (error) {
+    handlePlaybackDecodeError(error, state.generation);
+    return;
+  }
+  if (!state.playing || requestGeneration !== state.playbackGeneration) return;
+  state.playbackAnchorMs = performance.now();
+  state.playbackAnchorSourceNs = state.frames.frames[state.selected].source_timestamp_ns;
+  setBuffering(false);
+  byId("viewer-announcement").textContent = `Playing from frame ${state.selected + 1} at ${state.playbackSpeed} times speed.`;
+  prefetchPlayback(state.selected);
+  state.animationFrame = window.requestAnimationFrame(playbackTick);
 }
 
 function togglePlayback() {
   if (state.playing) {
+    state.playbackGeneration += 1;
     stopPlayback();
     byId("viewer-announcement").textContent = `Paused on frame ${state.selected + 1}.`;
     return;
   }
-  if (state.selected === state.frames.frames.length - 1) void showFrame(0, false);
-  state.playing = true;
-  byId("play-pause").textContent = "Pause";
-  byId("play-pause").setAttribute("aria-label", "Pause sequence");
-  byId("viewer-announcement").textContent = `Playing from frame ${state.selected + 1}.`;
-  scheduleNext();
+  void startPlayback();
 }
 
 function safeLink(label, href) {
@@ -380,6 +612,8 @@ function renderDetailFacts() {
 
 async function loadDetail(id) {
   stopPlayback();
+  state.playbackGeneration += 1;
+  cancelPendingFramesExcept();
   setCatalogStatus(`Loading ${id}…`);
   const summary = state.catalog.scenarios.find((scenario) => scenario.id === id);
   if (!summary) {
@@ -397,6 +631,7 @@ async function loadDetail(id) {
     if (frames.frames.length !== annotations.frames.length) throw new Error("Frame and annotation manifest lengths differ.");
     return { annotations, baseline, detail, frames };
   }, detailFromLocation, ({ annotations, baseline, detail, frames }) => {
+    resetFrameCache();
     state.detail = detail;
     state.frames = frames;
     state.annotations = annotations;
@@ -444,11 +679,12 @@ byId("previous-frame").addEventListener("click", () => void showFrame(state.sele
 byId("next-frame").addEventListener("click", () => void showFrame(state.selected + 1));
 byId("play-pause").addEventListener("click", togglePlayback);
 byId("playback-speed").addEventListener("change", (event) => {
-  state.playbackSpeed = Number(event.currentTarget.value);
-  if (state.playing) {
-    if (state.timer) window.clearTimeout(state.timer);
-    scheduleNext();
+  const now = performance.now();
+  if (state.playing && state.playbackAnchorMs !== null) {
+    state.playbackAnchorSourceNs += (now - state.playbackAnchorMs) * 1_000_000 * state.playbackSpeed;
+    state.playbackAnchorMs = now;
   }
+  state.playbackSpeed = Number(event.currentTarget.value);
   byId("viewer-announcement").textContent = `Playback speed ${state.playbackSpeed} times.`;
 });
 byId("frame-scrubber").addEventListener("input", (event) => void showFrame(Number(event.currentTarget.value)));

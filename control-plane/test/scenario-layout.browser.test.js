@@ -37,13 +37,17 @@ async function chromeExecutable() {
   throw new Error("Chrome is required for scenario layout regression tests. Set CHROME_BIN if it is installed elsewhere.");
 }
 
-async function staticServer(root) {
+async function staticServer(root, { mediaDelay = 0, mediaRequests = [] } = {}) {
   const server = http.createServer(async (request, response) => {
     try {
       const pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
       let filename = path.resolve(root, `.${pathname}`);
       if (!filename.startsWith(`${root}${path.sep}`)) throw new Error("Path escapes browser fixture root.");
       if ((await stat(filename)).isDirectory()) filename = path.join(filename, "index.html");
+      if (path.extname(filename) === ".jpg") {
+        mediaRequests.push(pathname);
+        if (mediaDelay) await new Promise((resolve) => setTimeout(resolve, mediaDelay));
+      }
       const body = await readFile(filename);
       response.writeHead(200, { "content-type": MIME_TYPES.get(path.extname(filename)) || "application/octet-stream" });
       response.end(body);
@@ -79,8 +83,8 @@ async function loadScenario(page, origin, scenarioId, frameIndex = 0) {
     }, frameIndex);
   }
   await page.waitForFunction(() => {
-    const image = document.querySelector("#scenario-frame");
-    return image?.complete && image.naturalWidth > 0 && document.querySelector("#media-state")?.hidden;
+    const canvas = document.querySelector("#scenario-frame");
+    return canvas?.dataset.frameReady === "true" && document.querySelector("#media-state")?.hidden;
   });
 }
 
@@ -91,15 +95,15 @@ async function frameGeometry(page) {
       return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     };
     const stage = document.querySelector("#frame-stage");
-    const image = document.querySelector("#scenario-frame");
+    const canvas = document.querySelector("#scenario-frame");
     const svg = document.querySelector("#scenario-overlay");
-    const imageBounds = bounds(image);
-    const imageScale = Math.min(imageBounds.width / image.naturalWidth, imageBounds.height / image.naturalHeight);
+    const imageBounds = bounds(canvas);
+    const imageScale = Math.min(imageBounds.width / canvas.width, imageBounds.height / canvas.height);
     const imageContent = {
-      x: imageBounds.x + (imageBounds.width - image.naturalWidth * imageScale) / 2,
-      y: imageBounds.y + (imageBounds.height - image.naturalHeight * imageScale) / 2,
-      width: image.naturalWidth * imageScale,
-      height: image.naturalHeight * imageScale,
+      x: imageBounds.x + (imageBounds.width - canvas.width * imageScale) / 2,
+      y: imageBounds.y + (imageBounds.height - canvas.height * imageScale) / 2,
+      width: canvas.width * imageScale,
+      height: canvas.height * imageScale,
     };
     const svgBounds = bounds(svg);
     const viewBox = svg.viewBox.baseVal;
@@ -182,4 +186,267 @@ test("image pixels and SVG annotations share one rendered coordinate space", asy
       assert.ok(control.width >= 44 && control.height >= 44, `${width}px viewer buttons must remain at least 44px`);
     }
   }
+});
+
+async function buildBrowserFixture(context, suffix, serverOptions = {}) {
+  const output = path.join(CONTROL_PLANE, `dist-test-browser-${suffix}`);
+  context.after(async () => rm(output, { recursive: true, force: true }));
+  const build = spawnSync(process.execPath, ["scripts/build-scenario-catalog.mjs", "--output", output], {
+    cwd: CONTROL_PLANE,
+    encoding: "utf8",
+  });
+  assert.equal(build.status, 0, `${build.stdout}\n${build.stderr}`);
+  const fixture = await staticServer(output, serverOptions);
+  context.after(fixture.close);
+  const browser = await chromium.launch({ executablePath: await chromeExecutable(), headless: true });
+  context.after(() => browser.close());
+  return { browser, fixture };
+}
+
+async function selectExactFrame(page, index) {
+  await page.locator("#frame-scrubber").evaluate((scrubber, value) => {
+    scrubber.value = String(value);
+    scrubber.dispatchEvent(new Event("input", { bubbles: true }));
+  }, index);
+  await page.waitForFunction((value) => {
+    const canvas = document.querySelector("#scenario-frame");
+    return Number(document.querySelector("#frame-scrubber").value) === value
+      && canvas?.dataset.frameReady === "true"
+      && canvas.getAttribute("aria-label")?.includes(`exact frame ${value + 1} of`);
+  }, index);
+}
+
+async function measureCadence(page, speed, durationMs = 700, fps = 30) {
+  await selectExactFrame(page, 0);
+  await page.locator("#playback-speed").selectOption(String(speed));
+  await page.locator("#play-pause").click();
+  await page.waitForFunction(() => document.querySelector("#viewer-announcement")?.textContent.startsWith("Playing from frame"));
+  const start = await page.evaluate(() => ({
+    frame: Number(document.querySelector("#frame-scrubber").value),
+    time: performance.now(),
+  }));
+  await page.waitForTimeout(durationMs);
+  await page.locator("#play-pause").click();
+  const end = await page.evaluate(() => ({
+    frame: Number(document.querySelector("#frame-scrubber").value),
+    time: performance.now(),
+  }));
+  const sourceElapsedMs = (end.frame - start.frame) * (1000 / fps);
+  const expectedElapsedMs = (end.time - start.time) * speed;
+  return { ...end, driftMs: sourceElapsedMs - expectedElapsedMs, sourceElapsedMs, start };
+}
+
+test("native playback uses a monotonic source clock without blank or shifted presentation", async (context) => {
+  const { browser, fixture } = await buildBrowserFixture(context, "cadence", { mediaDelay: 20 });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
+  await loadScenario(page, fixture.origin, "rvmot-a1c9");
+
+  await page.evaluate(() => {
+    const canvas = document.querySelector("#scenario-frame");
+    const stage = document.querySelector("#frame-stage");
+    const initial = stage.getBoundingClientRect();
+    window.__visualProbe = { blankFrames: 0, maxLayoutDelta: 0, running: true };
+    const sample = () => {
+      if (canvas.dataset.frameReady !== "true") window.__visualProbe.blankFrames += 1;
+      const current = stage.getBoundingClientRect();
+      window.__visualProbe.maxLayoutDelta = Math.max(
+        window.__visualProbe.maxLayoutDelta,
+        Math.abs(current.width - initial.width),
+        Math.abs(current.height - initial.height),
+      );
+      if (window.__visualProbe.running) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+
+  for (const speed of [0.5, 1, 2]) {
+    const measurement = await measureCadence(page, speed);
+    assert.ok(measurement.sourceElapsedMs > 0, `${speed}x must advance the source clock`);
+    assert.ok(Math.abs(measurement.driftMs) <= 70,
+      `${speed}x source-clock drift ${measurement.driftMs.toFixed(1)}ms exceeds two 30 FPS frames`);
+  }
+
+  await selectExactFrame(page, 0);
+  await page.locator("#playback-speed").selectOption("1");
+  await page.locator("#play-pause").click();
+  await page.waitForFunction(() => document.querySelector("#viewer-announcement")?.textContent.startsWith("Playing from frame"));
+  const beforeBlock = Number(await page.locator("#frame-scrubber").inputValue());
+  await page.evaluate(() => {
+    const until = performance.now() + 220;
+    while (performance.now() < until) {
+      // Deliberately block presentation; the monotonic source clock must continue.
+    }
+  });
+  await page.waitForFunction((frame) => Number(document.querySelector("#frame-scrubber").value) >= frame + 5, beforeBlock);
+  await page.locator("#play-pause").click();
+
+  const visual = await page.evaluate(() => {
+    window.__visualProbe.running = false;
+    return window.__visualProbe;
+  });
+  assert.equal(visual.blankFrames, 0);
+  assert.equal(visual.maxLayoutDelta, 0);
+  assert.equal(await page.locator("#scenario-frame").getAttribute("role"), "img");
+  assert.match(await page.locator("#scenario-frame").getAttribute("aria-label"), /exact frame \d+ of 150/);
+  const synchronized = await page.evaluate(() => ({
+    canvasHeight: document.querySelector("#scenario-frame").height,
+    canvasWidth: document.querySelector("#scenario-frame").width,
+    frame: Number(document.querySelector("#frame-scrubber").value) + 1,
+    label: document.querySelector("#scenario-frame").getAttribute("aria-label"),
+    viewBox: document.querySelector("#scenario-overlay").getAttribute("viewBox"),
+  }));
+  assert.equal(synchronized.label.includes(`exact frame ${synchronized.frame} of`), true);
+  assert.equal(synchronized.viewBox, `0 0 ${synchronized.canvasWidth} ${synchronized.canvasHeight}`);
+});
+
+test("real-browser playback follows exact 24, 30, and 60 FPS source timestamps", async (context) => {
+  const { browser, fixture } = await buildBrowserFixture(context, "source-rates");
+  for (const fps of [24, 30, 60]) {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await page.route("**/scenario-catalog/v1/frame-manifests/**", async (route) => {
+      const response = await route.fetch();
+      const manifest = await response.json();
+      manifest.frames = manifest.frames.map((frame, index) => ({
+        ...frame,
+        source_timestamp_ns: Math.round(index * 1_000_000_000 / fps),
+      }));
+      await route.fulfill({ response, json: manifest });
+    });
+    await loadScenario(page, fixture.origin, "rvmot-a1c9");
+    const measurement = await measureCadence(page, 1, 650, fps);
+    assert.ok(Math.abs(measurement.driftMs) <= 1000 / fps * 2,
+      `${fps} FPS source-clock drift ${measurement.driftMs.toFixed(1)}ms exceeds two source frames`);
+    await page.close();
+  }
+});
+
+test("playback controls retain exact-frame inspection, synchronized overlays, and accessible state", async (context) => {
+  const { browser, fixture } = await buildBrowserFixture(context, "controls");
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await loadScenario(page, fixture.origin, "rvmot-a1c9", 20);
+
+  await page.locator("#play-pause").click();
+  await page.waitForFunction(() => Number(document.querySelector("#frame-scrubber").value) >= 23);
+  await page.locator("#play-pause").click();
+  const paused = Number(await page.locator("#frame-scrubber").inputValue());
+  await page.waitForTimeout(150);
+  assert.equal(Number(await page.locator("#frame-scrubber").inputValue()), paused);
+  assert.match(await page.locator("#viewer-announcement").textContent(), /Paused on frame/);
+
+  await page.locator("#play-pause").click();
+  await page.waitForFunction((frame) => Number(document.querySelector("#frame-scrubber").value) > frame, paused);
+  await selectExactFrame(page, 60);
+  assert.equal(await page.locator("#play-pause").textContent(), "Play");
+  assert.match(await page.locator("#scenario-frame").getAttribute("aria-label"), /exact frame 61 of 150/);
+  assert.equal(Number(await page.locator("#frame-scrubber").inputValue()), 60);
+
+  const targetToggle = page.locator('[data-overlay="targets"]');
+  assert.ok(await page.locator(".overlay-box.target").count() > 0);
+  await targetToggle.uncheck();
+  assert.equal(await page.locator(".overlay-box.target").count(), 0);
+  await targetToggle.check();
+  assert.ok(await page.locator(".overlay-box.target").count() > 0);
+
+  await page.locator("#frame-viewer").focus();
+  await page.locator("#frame-viewer").press("ArrowRight");
+  await page.waitForFunction(() => Number(document.querySelector("#frame-scrubber").value) === 61);
+  await page.locator("#frame-viewer").press("ArrowLeft");
+  await page.waitForFunction(() => Number(document.querySelector("#frame-scrubber").value) === 60);
+  await page.locator("#frame-viewer").press("Space");
+  await page.waitForFunction(() => document.querySelector("#play-pause").textContent === "Pause");
+  await page.locator("#frame-viewer").press("Space");
+  assert.equal(await page.locator("#play-pause").textContent(), "Play");
+
+  await selectExactFrame(page, 145);
+  await page.locator("#play-pause").click();
+  await page.waitForFunction(() => document.querySelector("#viewer-announcement")?.textContent === "Playback ended on frame 150.");
+  assert.equal(Number(await page.locator("#frame-scrubber").inputValue()), 149);
+  assert.equal(await page.locator("#play-pause").getAttribute("aria-label"), "Play sequence");
+});
+
+test("cache-cold navigation, Save-Data, reduced motion, and mobile rendering stay bounded", async (context) => {
+  const mediaRequests = [];
+  const { browser, fixture } = await buildBrowserFixture(context, "policies", { mediaDelay: 15, mediaRequests });
+  const page = await browser.newPage({ viewport: { width: 390, height: 900 } });
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "connection", { configurable: true, value: { saveData: true } });
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await loadScenario(page, fixture.origin, "rvmot-a1c9");
+  await page.waitForTimeout(150);
+  assert.equal(new Set(mediaRequests).size, 1, "Save-Data must keep paused poster loading to one exact frame");
+  assert.equal(await page.locator("#play-pause").textContent(), "Play");
+  assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).scrollBehavior), "auto");
+
+  await page.locator("#play-pause").click();
+  await page.waitForFunction(() => Number(document.querySelector("#frame-scrubber").value) >= 3);
+  await page.locator("#play-pause").click();
+  assert.ok(new Set(mediaRequests).size < 20, "Save-Data playback must keep a small active-scenario window");
+
+  await page.route("**/scenario-catalog/v1/scenarios/rvmot-a1c9.json", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    await route.continue().catch(() => {});
+  });
+  await page.goto(`${fixture.origin}/scenarios/`);
+  await page.locator("#scenario-list .scenario-card").first().waitFor();
+  await page.evaluate(() => {
+    history.pushState({}, "", "/scenarios/?scenario=rvmot-a1c9");
+    dispatchEvent(new PopStateEvent("popstate"));
+    history.pushState({}, "", "/scenarios/?scenario=rvmot-b7e2");
+    dispatchEvent(new PopStateEvent("popstate"));
+  });
+  await page.waitForFunction(() => document.querySelector("#detail-kicker")?.textContent.includes("rvmot-b7e2"));
+  await page.waitForTimeout(220);
+  assert.match(await page.locator("#detail-kicker").textContent(), /rvmot-b7e2/);
+  const requestsBeforeRapidScrub = mediaRequests.length;
+  await page.locator("#frame-scrubber").evaluate((scrubber) => {
+    for (const index of [20, 50, 80, 100]) {
+      scrubber.value = String(index);
+      scrubber.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  });
+  await page.waitForFunction(() => document.querySelector("#scenario-frame").dataset.frameIndex === "100");
+  assert.ok(mediaRequests.length - requestsBeforeRapidScrub <= 4,
+    "rapid scrubbing must cancel superseded exact-frame network work");
+
+  for (const width of [320, 390, 430]) {
+    await page.setViewportSize({ width, height: 900 });
+    const mobile = await page.evaluate(() => ({
+      canvasReady: document.querySelector("#scenario-frame").dataset.frameReady,
+      overflow: document.documentElement.scrollWidth - innerWidth,
+      stageHeight: document.querySelector("#frame-stage").getBoundingClientRect().height,
+    }));
+    assert.equal(mobile.canvasReady, "true");
+    assert.ok(mobile.overflow <= 0, `${width}px viewport must not overflow`);
+    assert.ok(mobile.stageHeight > 0, `${width}px frame stage must remain visible`);
+  }
+});
+
+test("missing and corrupt exact media keep an honest non-blank failure state", async (context) => {
+  const { browser, fixture } = await buildBrowserFixture(context, "media-failures");
+
+  const missing = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await missing.route("**/*.jpg", (route) => route.fulfill({
+    body: "Not found",
+    contentType: "text/plain",
+    status: 404,
+  }));
+  await missing.goto(`${fixture.origin}/scenarios/?scenario=rvmot-a1c9`);
+  await missing.locator("#media-state.error").waitFor();
+  assert.equal(await missing.locator("#media-state").textContent(), "Exact frame is missing (404).");
+  assert.equal(await missing.locator("#scenario-frame").getAttribute("data-frame-ready"), "false");
+  assert.ok(await missing.locator("#frame-stage").evaluate((stage) => stage.getBoundingClientRect().height > 0));
+
+  const corrupt = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await corrupt.route("**/*.jpg", (route) => route.fulfill({
+    body: "not the published JPEG bytes",
+    contentType: "image/jpeg",
+    status: 200,
+  }));
+  await corrupt.goto(`${fixture.origin}/scenarios/?scenario=rvmot-a1c9`);
+  await corrupt.locator("#media-state.error").waitFor();
+  assert.equal(await corrupt.locator("#media-state").textContent(), "Exact frame failed its published SHA-256 check.");
+  assert.equal(await corrupt.locator("#scenario-frame").getAttribute("data-frame-ready"), "false");
 });

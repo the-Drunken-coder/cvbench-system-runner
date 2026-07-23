@@ -67,8 +67,8 @@ async function capture(filename, scenario, viewport, frame = 0) {
     }, frame);
   }
   await page.waitForFunction(() => {
-    const image = document.querySelector("#scenario-frame");
-    return image?.complete && image.naturalWidth > 0 && document.querySelector("#media-state")?.hidden;
+    const canvas = document.querySelector("#scenario-frame");
+    return canvas?.dataset.frameReady === "true" && document.querySelector("#media-state")?.hidden;
   });
   await page.locator("#scenario-detail").screenshot({ path: path.join(OUTPUT, filename) });
   await page.close();
