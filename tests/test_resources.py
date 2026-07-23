@@ -1,4 +1,5 @@
 import shutil
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -221,6 +222,43 @@ def test_disappearing_retained_parent_fails_closed_at_final_boundary(tmp_path) -
     assert summary["accounting_availability"]["final_cumulative_cpu_sample"] is False
     assert summary["authoritative"] is False
     assert not any(sample.get("final_cumulative") for sample in summary["over_time"])
+
+
+def test_final_accounting_stops_sampler_before_certified_sample(tmp_path) -> None:
+    cgroup_root = tmp_path / "cgroup"
+    parent = cgroup_root / "cvbench-run"
+    parent.mkdir(parents=True)
+    (parent / "cpu.stat").write_text("usage_usec 1000000\n")
+    (parent / "io.stat").write_text("8:0 rbytes=10 wbytes=20\n")
+    (parent / "memory.current").write_text("1024\n")
+    (parent / "memory.max").write_text("2048\n")
+    (parent / "memory.peak").write_text("1536\n")
+    (parent / "pids.current").write_text("1\n")
+    cidfile = tmp_path / "container.cid"
+    cidfile.write_text("container-id")
+    monitor = ResourceMonitor(
+        SimpleNamespace(pid=1, poll=lambda: None),
+        interval_seconds=0.01,
+        cidfile=cidfile,
+        cgroup_root=cgroup_root,
+        cgroup_parent_name="cvbench-run",
+        configured_cgroup_path=parent,
+    )
+    monitor.start()
+    deadline = time.monotonic() + 1
+    while not monitor.samples and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert monitor.samples
+    (parent / "cpu.stat").write_text("usage_usec 1500000\n")
+    assert monitor.finalize_accounting()
+    sample_count = len(monitor.samples)
+    assert monitor.samples[-1]["final_cumulative"] is True
+    (parent / "cpu.stat").write_text("usage_usec 2000000\n")
+    time.sleep(0.05)
+
+    assert len(monitor.samples) == sample_count
+    assert monitor.summary(1)["cpu_time_seconds"] == 1.5
 
 
 def test_immediate_cgroup_disappearance_has_no_synthetic_final_sample(tmp_path) -> None:

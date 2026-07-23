@@ -413,7 +413,6 @@ def _wait_for_readiness(collector: OutputCollector, runtime: StartedRuntime, tim
 
 def _finish_scoring(monitor: ResourceMonitor, collector: OutputCollector) -> None:
     collector.close_scoring()
-    monitor.stop()
     monitor.finalize_accounting()
 
 

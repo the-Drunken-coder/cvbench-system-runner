@@ -370,12 +370,16 @@ class ResourceMonitor:
 
     def finalize_accounting(self) -> bool:
         """Capture and certify a new cumulative sample at the scoring boundary."""
+        self._stop.set()
         with self._capture_lock:
             if self._final_sample_complete:
-                return True
-            captured = self._capture_cgroup_checkpoint(final_cumulative=True)
-            self._final_sample_complete = captured
-            return captured
+                captured = True
+            else:
+                captured = self._capture_cgroup_checkpoint(final_cumulative=True)
+                self._final_sample_complete = captured
+        if self._thread.is_alive():
+            self._thread.join(3)
+        return captured
 
     def add_gpu_snapshot(self) -> None:
         if not shutil.which("nvidia-smi"):
