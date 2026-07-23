@@ -20,9 +20,14 @@ def main() -> int:
     boundary_requested = threading.Event()
     original_consume = OutputCollector._consume_line
     original_request = OutputCollector.request_output_boundary
+    track_lines = 0
 
     def delayed_final_consume(self, raw_line, recent_records):
-        if b'"source_timestamp_ns":1100000000' in raw_line:
+        nonlocal track_lines
+        is_track = b'"schema_version":"cvbench.track/v1"' in raw_line
+        if is_track:
+            track_lines += 1
+        if is_track and track_lines == 12:
             consume_started.set()
             if not boundary_requested.wait(2):
                 raise AssertionError("runner did not request the stdout completion boundary")
@@ -48,6 +53,7 @@ def main() -> int:
     validate_report(report)
     assert consume_started.is_set()
     assert boundary_requested.is_set()
+    assert track_lines == 12
     assert report["outcome"]["status"] == "completed"
     assert report["metrics"]["sample_counts"]["output_records"] > 0
     assert report["resources"]["authoritative"] is True
