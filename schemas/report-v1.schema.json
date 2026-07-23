@@ -302,6 +302,8 @@
         "cpu_percent": {"$ref": "#/$defs/nullableNonNegativeNumber"},
         "cpu_time_seconds": {"$ref": "#/$defs/nullableNonNegativeNumber"},
         "memory_bytes": {"$ref": "#/$defs/nullableNonNegativeNumber"},
+        "memory_limit_bytes": {"$ref": "#/$defs/nullableNonNegativeNumber"},
+        "memory_peak_bytes": {"$ref": "#/$defs/nullableNonNegativeNumber"},
         "gpu_percent": {"$ref": "#/$defs/nullableNonNegativeNumber"},
         "vram_bytes": {"$ref": "#/$defs/nullableNonNegativeNumber"},
         "disk_read_bytes": {"$ref": "#/$defs/nullableNonNegativeNumber"},
@@ -313,7 +315,9 @@
         "phase": {"type": "string", "minLength": 1},
         "scenario": {"type": ["string", "null"]},
         "target_count": {"type": ["integer", "null"], "minimum": 0},
-        "fault_injection": {"type": "boolean"}
+        "fault_injection": {"type": "boolean"},
+        "accounting_source": {"const": "host_cgroup_v2"},
+        "final_cumulative": {"type": "boolean"}
       }
     },
     "gpuAccounting": {
