@@ -173,6 +173,7 @@ class ResourceMonitor:
         self._cgroup_path: Path | None = None
         self._retention_cgroup_path: Path | None = None
         self._last_cpu: tuple[int, float] | None = None
+        self._finalization_started = False
         self._final_sample_complete = False
 
     @property
@@ -344,6 +345,8 @@ class ResourceMonitor:
     def capture_checkpoint(self) -> bool:
         """Capture externally from the host cgroup; never execute in the image."""
         with self._capture_lock:
+            if self._finalization_started:
+                return False
             return self._capture_cgroup_checkpoint()
 
     def _capture_cgroup_checkpoint(self, *, final_cumulative: bool = False) -> bool:
@@ -396,15 +399,29 @@ class ResourceMonitor:
             self.samples.append(sample)
         return True
 
+    @staticmethod
+    def _has_one_terminal_final_sample(samples: list[dict[str, Any]]) -> bool:
+        final_indexes = [
+            index
+            for index, sample in enumerate(samples)
+            if sample.get("final_cumulative") is True
+        ]
+        return final_indexes == [len(samples) - 1]
+
     def finalize_accounting(self) -> bool:
         """Capture and certify a new cumulative sample at the scoring boundary."""
         self._stop.set()
         with self._capture_lock:
-            if self._final_sample_complete:
-                captured = True
-            else:
-                captured = self._capture_cgroup_checkpoint(final_cumulative=True)
-                self._final_sample_complete = captured
+            if not self._finalization_started:
+                self._finalization_started = True
+                self._final_sample_complete = self._capture_cgroup_checkpoint(
+                    final_cumulative=True
+                )
+            with self._lock:
+                captured = (
+                    self._final_sample_complete
+                    and self._has_one_terminal_final_sample(self.samples)
+                )
         if self._thread.is_alive():
             self._thread.join(3)
         return captured
@@ -479,9 +496,10 @@ class ResourceMonitor:
         external_cgroup = any(
             sample.get("accounting_source") == "host_cgroup_v2" for sample in samples
         )
+        final_sample_available = self._has_one_terminal_final_sample(samples)
         availability = {
             "external_cgroup_v2": external_cgroup,
-            "final_cumulative_cpu_sample": self._final_sample_complete,
+            "final_cumulative_cpu_sample": final_sample_available,
             "cpu_time": cpu_time_seconds is not None,
             "cpu_percent": bool(cpu),
             "peak_ram": bool(memory),

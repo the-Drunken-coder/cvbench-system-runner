@@ -1,5 +1,7 @@
 import shutil
+import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +14,36 @@ from cvbench.resources import (
     parse_io_stat,
     parse_size,
 )
+
+
+def _retained_cgroup_monitor(
+    tmp_path, *, process=None, interval_seconds: float = 0.1
+) -> tuple[ResourceMonitor, Path]:
+    cgroup_root = tmp_path / "cgroup"
+    parent = cgroup_root / "cvbench-run"
+    parent.mkdir(parents=True)
+    for name, value in {
+        "cpu.stat": "usage_usec 1000000\n",
+        "io.stat": "8:0 rbytes=10 wbytes=20\n",
+        "memory.current": "1024\n",
+        "memory.max": "2048\n",
+        "memory.peak": "1536\n",
+        "pids.current": "1\n",
+    }.items():
+        (parent / name).write_text(value)
+    cidfile = tmp_path / "container.cid"
+    cidfile.write_text("container-id")
+    return (
+        ResourceMonitor(
+            process or SimpleNamespace(pid=1),
+            interval_seconds=interval_seconds,
+            cidfile=cidfile,
+            cgroup_root=cgroup_root,
+            cgroup_parent_name="cvbench-run",
+            configured_cgroup_path=parent,
+        ),
+        parent,
+    )
 
 
 def test_resource_size_parser() -> None:
@@ -136,6 +168,8 @@ def test_final_accounting_never_certifies_a_stale_sample_after_cgroup_disappears
     shutil.rmtree(group)
 
     assert monitor.finalize_accounting() is False
+    assert monitor.finalize_accounting() is False
+    assert monitor.capture_checkpoint() is False
     summary = monitor.summary(1)
     assert summary["cpu_time_seconds"] == 1
     assert summary["disk_write_bytes"] == 20
@@ -259,6 +293,117 @@ def test_final_accounting_stops_sampler_before_certified_sample(tmp_path) -> Non
 
     assert len(monitor.samples) == sample_count
     assert monitor.summary(1)["cpu_time_seconds"] == 1.5
+
+
+def test_sampler_admitted_before_capture_lock_cannot_append_after_final(
+    tmp_path, monkeypatch
+) -> None:
+    monitor, parent = _retained_cgroup_monitor(
+        tmp_path,
+        process=SimpleNamespace(pid=1, poll=lambda: None),
+        interval_seconds=0.01,
+    )
+    monitor.start()
+    deadline = time.monotonic() + 1
+    while not monitor.samples and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert monitor.samples
+
+    admitted = threading.Event()
+    release = threading.Event()
+    original_capture = monitor.capture_checkpoint
+    periodic_results: list[bool] = []
+
+    def pause_before_capture_lock() -> bool:
+        admitted.set()
+        assert release.wait(2)
+        captured = original_capture()
+        periodic_results.append(captured)
+        return captured
+
+    monkeypatch.setattr(monitor, "capture_checkpoint", pause_before_capture_lock)
+    assert admitted.wait(1)
+    (parent / "cpu.stat").write_text("usage_usec 1500000\n")
+    finalized: list[bool] = []
+    finalizer = threading.Thread(
+        target=lambda: finalized.append(monitor.finalize_accounting())
+    )
+    finalizer.start()
+    deadline = time.monotonic() + 1
+    while (
+        not any(sample.get("final_cumulative") for sample in monitor.samples)
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert monitor.samples[-1].get("final_cumulative") is True
+
+    release.set()
+    finalizer.join(2)
+
+    assert finalized == [True]
+    assert periodic_results == [False]
+    assert not finalizer.is_alive()
+    assert [sample.get("final_cumulative", False) for sample in monitor.samples] == [
+        False,
+        True,
+    ]
+    assert monitor.summary(1)["authoritative"] is True
+
+
+def test_finalization_waits_for_capture_already_holding_lock(
+    tmp_path, monkeypatch
+) -> None:
+    monitor, _parent = _retained_cgroup_monitor(tmp_path)
+    capture_holds_lock = threading.Event()
+    release = threading.Event()
+    original_capture = monitor._capture_cgroup_checkpoint
+
+    def pause_while_holding_lock(*, final_cumulative: bool = False) -> bool:
+        if not final_cumulative:
+            capture_holds_lock.set()
+            assert release.wait(2)
+        return original_capture(final_cumulative=final_cumulative)
+
+    monkeypatch.setattr(
+        monitor, "_capture_cgroup_checkpoint", pause_while_holding_lock
+    )
+    sampler = threading.Thread(target=monitor.capture_checkpoint)
+    sampler.start()
+    assert capture_holds_lock.wait(1)
+    finalized: list[bool] = []
+    finalizer = threading.Thread(
+        target=lambda: finalized.append(monitor.finalize_accounting())
+    )
+    finalizer.start()
+    time.sleep(0.02)
+    assert finalizer.is_alive()
+
+    release.set()
+    sampler.join(2)
+    finalizer.join(2)
+
+    assert finalized == [True]
+    assert [sample.get("final_cumulative", False) for sample in monitor.samples] == [
+        False,
+        True,
+    ]
+
+
+def test_summary_rejects_trailing_or_duplicate_final_samples(tmp_path) -> None:
+    monitor, _parent = _retained_cgroup_monitor(tmp_path)
+    assert monitor.capture_checkpoint()
+    assert monitor.finalize_accounting()
+    ordinary = dict(monitor.samples[0])
+    monitor.samples.append(ordinary)
+
+    trailing = monitor.summary(1)
+    assert trailing["accounting_availability"]["final_cumulative_cpu_sample"] is False
+    assert trailing["authoritative"] is False
+
+    monitor.samples[-1] = dict(monitor.samples[1])
+    duplicate = monitor.summary(1)
+    assert duplicate["accounting_availability"]["final_cumulative_cpu_sample"] is False
+    assert duplicate["authoritative"] is False
 
 
 def test_immediate_cgroup_disappearance_has_no_synthetic_final_sample(tmp_path) -> None:
