@@ -13,6 +13,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from cvbench.reporting import validate_report
+
 try:
     from scripts.run_control_plane_job import (
         PUBLIC_BENCHMARK_ID,
@@ -88,7 +90,18 @@ class ControlPlaneHandler(BaseHTTPRequestHandler):
             return
         if self.path == f"/api/v1/internal/submissions/{SUBMISSION_ID}/result":
             length = int(self.headers.get("Content-Length", "0"))
-            self.__class__.callback = json.loads(self.rfile.read(length))
+            callback = json.loads(self.rfile.read(length))
+            report = callback.get("report")
+            try:
+                validate_report(report)
+                if report["outcome"]["resolved_image"] != self.image:
+                    raise ValueError("callback image does not match lease")
+                if report["system"]["command"] != ["python", "-m", "cvbench.examples.good_tracker"]:
+                    raise ValueError("callback command does not match lease")
+            except (KeyError, TypeError, ValueError) as exc:
+                self._json(422, {"error": str(exc)})
+                return
+            self.__class__.callback = callback
             self._json(200, {"accepted": True})
             return
         self._json(404, {"error": "not found"})
@@ -110,6 +123,11 @@ def assert_callback(callback: dict[str, Any] | None) -> None:
     isolation = report.get("runtime_isolation", {})
     if isolation.get("status") != "verified" or isolation.get("ground_truth_access") is not False:
         raise RuntimeError("callback report did not verify runner isolation")
+    runner = report.get("runner", {})
+    if set(runner) != {"schema_version", "commit", "workflow_run_url", "workflow_name"}:
+        raise RuntimeError("callback report has incomplete trusted-runner metadata")
+    if runner.get("schema_version") != "cvbench.runner/v1":
+        raise RuntimeError("callback report has the wrong trusted-runner metadata version")
 
 
 def main() -> int:

@@ -101,3 +101,5 @@ The Linux Docker gate runs the same scored acquisition workload as:
 - the fast system with a CPU-bound child process.
 
 `scripts/assert_pacing_evidence.py` requires identical accuracy and native source duration, verifies cgroup authority, proves the slow systems' real-time-factor cost, proves sleeping trades CPU for completion time, and proves child CPU/process use remains charged. It publishes the compact `cvbench.timing-compute-evidence/v1` artifact in CI.
+
+Public-safe Docker report artifacts are not mislabeled core reports. Sanitization changes their identity to `cvbench.report-redacted/v1`, records `cvbench.report/v1` as the source contract, and replaces restricted audit and diagnostic sections with versioned redaction markers. Both the sanitizer and upload verifier validate `schemas/report-redacted-v1.schema.json`; an artifact that claims the core report version after redaction is rejected.

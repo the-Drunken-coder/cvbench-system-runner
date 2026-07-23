@@ -182,6 +182,11 @@ async function route(request, config) {
         "The report timing/compute contract does not match the native public leaderboard class.",
       );
     }
+    const submission = await config.store.getSubmission(resultMatch[1]);
+    if (!submission) return problem(404, "not_found", "Submission not found.");
+    if (validation.value.report && !reportMatchesSubmission(validation.value.report, submission)) {
+      return problem(422, "invalid_result", "The report image or command does not match the leased submission.");
+    }
     const report = validation.value.report ? await authoritativeReport(validation.value.report) : null;
     const completed = await config.store.completeJob({
       id: resultMatch[1],
@@ -352,6 +357,45 @@ function finiteNumber(value, { positive = false } = {}) {
   return typeof value === "number" && Number.isFinite(value) && (positive ? value > 0 : value >= 0);
 }
 
+function sameNumber(left, right) {
+  if (!finiteNumber(left) || !finiteNumber(right)) return false;
+  return Math.abs(left - right) <= Math.max(1e-9, Math.abs(left), Math.abs(right)) * 1e-9;
+}
+
+function validateAuthoritativeResources(resources, sourceDurationSeconds) {
+  const samples = resources.over_time;
+  if (!Array.isArray(samples) || samples.length < 1 || resources.sample_count !== samples.length) {
+    return false;
+  }
+  if (samples.some((sample) => sample.accounting_source !== "host_cgroup_v2")) return false;
+  const finals = samples.filter((sample) => sample.final_cumulative === true);
+  if (finals.length !== 1 || finals[0] !== samples.at(-1)) return false;
+  const present = (field) => samples.map((sample) => sample[field]).filter(finiteNumber);
+  const cpuPercent = present("cpu_percent");
+  const memory = present("memory_bytes");
+  const peakMemory = [...memory, ...present("memory_peak_bytes")];
+  const diskRead = present("disk_read_bytes");
+  const diskWrite = present("disk_write_bytes");
+  const final = finals[0];
+  return (
+    cpuPercent.length > 0
+    && memory.length > 0
+    && diskRead.length > 0
+    && diskWrite.length > 0
+    && sameNumber(resources.cpu_time_seconds, final.cpu_time_seconds)
+    && sameNumber(
+      resources.cpu_seconds_per_native_source_second,
+      final.cpu_time_seconds / sourceDurationSeconds,
+    )
+    && sameNumber(resources.average_cpu_percent, cpuPercent.reduce((sum, value) => sum + value, 0) / cpuPercent.length)
+    && sameNumber(resources.peak_cpu_percent, Math.max(...cpuPercent))
+    && sameNumber(resources.average_ram_bytes, memory.reduce((sum, value) => sum + value, 0) / memory.length)
+    && sameNumber(resources.peak_ram_bytes, Math.max(...peakMemory))
+    && sameNumber(resources.disk_read_bytes, Math.max(...diskRead))
+    && sameNumber(resources.disk_write_bytes, Math.max(...diskWrite))
+  );
+}
+
 function validateSuccessfulReport(report) {
   if (!validateReportSchema(report)) {
     const first = validateReportSchema.errors?.[0];
@@ -404,6 +448,7 @@ function validateSuccessfulReport(report) {
     || resources.authoritative !== true
     || resourceAxes.some((key) => !finiteNumber(resources[key]))
     || accountingAxes.some((key) => accounting[key] !== true)
+    || !validateAuthoritativeResources(resources, timing.source.duration_seconds)
   ) return "report.resources lacks mandatory authoritative external cgroup axes.";
 
   const leaderboard = report.leaderboard;
@@ -428,7 +473,30 @@ function validateSuccessfulReport(report) {
     || !Number.isInteger(provenance.run_budgets.max_output_records)
     || canonicalJson(provenance.accounting_availability) !== canonicalJson(accounting)
   ) return "report provenance, metrics, or audit evidence is incomplete.";
+  if (
+    report.runner?.schema_version !== "cvbench.runner/v1"
+    || !Object.hasOwn(report.runner, "commit")
+    || !Object.hasOwn(report.runner, "workflow_run_url")
+    || !Object.hasOwn(report.runner, "workflow_name")
+  ) return "report.runner must contain complete trusted-runner metadata.";
   return null;
+}
+
+function reportMatchesSubmission(report, submission) {
+  const image = submission.image;
+  const imageIdentity = report.runtime_isolation.image_identity;
+  const imageReferences = [
+    report.outcome.resolved_image,
+    report.provenance.resolved_container_image,
+    imageIdentity.configured_reference,
+    imageIdentity.resolved_reference,
+    imageIdentity.executed_reference,
+  ];
+  return (
+    imageReferences.every((value) => value === image)
+    && canonicalJson(report.system.command) === canonicalJson(submission.argv)
+    && canonicalJson(report.provenance.system_command) === canonicalJson(submission.argv)
+  );
 }
 
 async function authoritativeReport(report) {

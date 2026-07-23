@@ -10,10 +10,17 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from cvbench.reporting import validate_redacted_report, validate_report
+
 REDACTION_MARKER = {
-    "schema_version": "cvbench.audit/v1-redacted",
+    "schema_version": "cvbench.audit-redacted/v1",
     "redacted": True,
     "reason": "annotation and prediction geometry is restricted to the runner",
+}
+REDACTION = {
+    "schema_version": "cvbench.redaction/v1",
+    "redacted": True,
+    "reason": "restricted audit geometry, diagnostics, and host paths removed for CI publication",
 }
 
 
@@ -26,7 +33,11 @@ def _safe_mount(mount: dict[str, Any]) -> dict[str, Any]:
 
 def sanitize_report(report: dict[str, Any]) -> dict[str, Any]:
     """Remove restricted audit/raw diagnostics while retaining score evidence."""
+    validate_report(report)
     safe = copy.deepcopy(report)
+    safe["schema_version"] = "cvbench.report-redacted/v1"
+    safe["source_schema_version"] = "cvbench.report/v1"
+    safe["redaction"] = copy.deepcopy(REDACTION)
     safe["audit_evidence"] = copy.deepcopy(REDACTION_MARKER)
 
     isolation = safe.get("runtime_isolation")
@@ -39,7 +50,9 @@ def sanitize_report(report: dict[str, Any]) -> dict[str, Any]:
             ]
 
     safe["diagnostics"] = {
+        "schema_version": "cvbench.diagnostics-redacted/v1",
         "redacted": True,
+        "reason": "submitted-system stderr and collector diagnostics are restricted to the runner",
         "match_count": report.get("diagnostics", {}).get("match_count", 0)
         if isinstance(report.get("diagnostics"), dict)
         else 0,
@@ -47,6 +60,7 @@ def sanitize_report(report: dict[str, Any]) -> dict[str, Any]:
     outcome = safe.get("outcome")
     if isinstance(outcome, dict) and outcome.get("errors"):
         outcome["errors"] = ["<redacted diagnostic error>"]
+    validate_redacted_report(safe)
     return safe
 
 

@@ -22,7 +22,7 @@ def _validate_report(report: dict) -> None:
     Draft202012Validator(report_schema, registry=registry).validate(report)
 
 
-def _run(tmp_path: Path, profile: str) -> dict:
+def _run(tmp_path: Path, profile: str, *, mode: str = "online_replay") -> dict:
     scenario_root = tmp_path / "scenario"
     scenario_root.mkdir(exist_ok=True)
     frames = []
@@ -52,7 +52,7 @@ def _run(tmp_path: Path, profile: str) -> dict:
             }
         )
     )
-    benchmark = tmp_path / f"{profile}.yaml"
+    benchmark = tmp_path / f"{profile}-{mode}.yaml"
     benchmark.write_text(
         yaml.safe_dump(
             {
@@ -60,7 +60,7 @@ def _run(tmp_path: Path, profile: str) -> dict:
                 "id": "pacing",
                 "version": "1",
                 "input": {
-                    "mode": "online_replay",
+                    "mode": mode,
                     "protocol": "frame_socket_v1",
                     "replay_profile": profile,
                 },
@@ -92,10 +92,16 @@ def _run(tmp_path: Path, profile: str) -> dict:
             }
         )
     )
-    artifacts = run_benchmark(benchmark, system, tmp_path / f"runs-{profile}")
+    artifacts = run_benchmark(benchmark, system, tmp_path / f"runs-{profile}-{mode}")
     report = json.loads(artifacts.report_json.read_text())
     _validate_report(report)
     return report
+
+
+def test_offline_debug_run_emits_a_schema_valid_report(tmp_path: Path) -> None:
+    report = _run(tmp_path, "accelerated-test-20x", mode="offline_debug")
+    assert report["mode"] == "offline_debug"
+    assert report["provenance"]["comparison_inputs"]["input_mode"] == "offline_debug"
 
 
 def test_native_and_slower_replay_keep_identical_source_truth_but_separate_delivery_class(

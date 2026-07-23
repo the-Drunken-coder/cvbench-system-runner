@@ -178,3 +178,22 @@ def test_report_schema_has_no_unconstrained_object_contracts() -> None:
                 walk(child)
 
     walk(schema)
+
+
+def test_redacted_report_schema_is_distinct_and_recursively_strict() -> None:
+    schema = json.loads((ROOT / "schemas" / "report-redacted-v1.schema.json").read_text())
+    Draft202012Validator.check_schema(schema)
+    assert schema["properties"]["schema_version"]["const"] == "cvbench.report-redacted/v1"
+    assert schema["properties"]["source_schema_version"]["const"] == "cvbench.report/v1"
+
+    def walk(value: object) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "object":
+                assert "additionalProperties" in value
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(schema)

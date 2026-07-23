@@ -29,7 +29,7 @@
     "schema_version": {"const": "cvbench.report/v1"},
     "run_id": {"type": "string", "minLength": 1},
     "started_at": {"type": "string", "format": "date-time"},
-    "mode": {"enum": ["online_replay", "offline_sequence"]},
+    "mode": {"enum": ["online_replay", "offline_debug"]},
     "benchmark": {
       "type": "object",
       "additionalProperties": false,
@@ -79,9 +79,12 @@
     "runner": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["callback"],
+      "required": ["schema_version", "commit", "workflow_run_url", "workflow_name"],
       "properties": {
-        "callback": {"type": "string", "minLength": 1}
+        "schema_version": {"const": "cvbench.runner/v1"},
+        "commit": {"type": ["string", "null"], "minLength": 1, "maxLength": 64},
+        "workflow_run_url": {"type": ["string", "null"], "format": "uri"},
+        "workflow_name": {"type": ["string", "null"], "minLength": 1, "maxLength": 256}
       }
     }
   },
@@ -757,7 +760,7 @@
       "properties": {
         "benchmark_id": {"type": "string", "minLength": 1},
         "benchmark_version": {"type": "string", "minLength": 1},
-        "input_mode": {"enum": ["online_replay", "offline_sequence"]},
+        "input_mode": {"enum": ["online_replay", "offline_debug"]},
         "timing_compute_contract": {"const": "cvbench.timing-compute/v1"},
         "delivery_policy": {"const": "cvbench.delivery-lossless/v1"},
         "replay_profile": {"type": "string", "minLength": 1},

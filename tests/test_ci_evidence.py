@@ -9,6 +9,15 @@ from scripts.assert_docker_report import main as assert_docker_report
 from scripts.evidence_hashes import main as evidence_hashes
 from scripts.sanitize_ci_report import sanitize_runs
 from scripts.verify_ci_evidence import _assert_safe, main
+from tests.test_replay_pacing import _run
+
+
+def _generated_run(tmp_path: Path) -> tuple[Path, Path]:
+    _run(tmp_path, "accelerated-test-20x")
+    runs = tmp_path / "runs-accelerated-test-20x-online_replay"
+    reports = list(runs.glob("*/report.json"))
+    assert len(reports) == 1
+    return runs, reports[0]
 
 
 @pytest.mark.parametrize(
@@ -67,13 +76,11 @@ def test_combined_report_rejects_duplicate_scenario_even_when_set_is_complete(
 
 
 def test_safe_report_and_resources_are_accepted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    run = tmp_path / "runs" / "one"
-    run.mkdir(parents=True)
-    (run / "report.json").write_text('{"metrics": {"ground_truth_records": 3}, "resources": {}}')
-    (run / "resources.csv").write_text("elapsed_ms,process_count\n100,1\n")
+    runs, _report = _generated_run(tmp_path)
+    safe_run = sanitize_runs(runs, tmp_path / "safe")
     manifest = tmp_path / "artifacts.sha256"
     manifest.write_text("a" * 64 + "  frame.jpg\n")
-    monkeypatch.setattr("sys.argv", ["verify_ci_evidence.py", str(tmp_path / "runs"), str(manifest)])
+    monkeypatch.setattr("sys.argv", ["verify_ci_evidence.py", str(safe_run.parent), str(manifest)])
     main()
 
 
@@ -100,30 +107,23 @@ def test_restricted_ground_truth_payload_is_rejected(tmp_path: Path) -> None:
 def test_ci_sanitization_writes_a_safe_copy_without_mutating_core_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source_run = tmp_path / "source" / "run-1"
-    source_run.mkdir(parents=True)
-    core = {
-        "audit_evidence": {
-            "schema_version": "cvbench.audit/v1",
-            "frame_samples": [{"ground_truth": [{"bbox_xyxy": [1, 2, 3, 4]}]}],
-        },
-        "diagnostics": {"sut_stderr": ["secret-model-output"]},
-        "runtime_isolation": {
-            "expected_mount": {"source": "/tmp/socket-dir", "destination": "/run/cvbench"},
-            "mounts": [{"source": "/tmp/socket-dir", "destination": "/run/cvbench"}],
-        },
-        "metrics": {"sample_counts": {"matches": 3}},
-    }
-    source_report = source_run / "report.json"
+    source, source_report = _generated_run(tmp_path)
+    core = json.loads(source_report.read_text())
+    core["audit_evidence"]["frame_samples"] = [
+        {"ground_truth": [{"bbox_xyxy": [1, 2, 3, 4]}], "predictions": [], "matches": []}
+    ]
+    core["diagnostics"]["sut_stderr"] = ["secret-model-output"]
     source_report.write_text(json.dumps(core))
-    (source_run / "resources.csv").write_text("elapsed_ms,process_count\n100,1\n")
     original = source_report.read_text()
 
-    destination_run = sanitize_runs(tmp_path / "source", tmp_path / "safe")
+    destination_run = sanitize_runs(source, tmp_path / "safe")
     assert source_report.read_text() == original
     safe = json.loads((destination_run / "report.json").read_text())
+    assert safe["schema_version"] == "cvbench.report-redacted/v1"
+    assert safe["source_schema_version"] == "cvbench.report/v1"
+    assert safe["redaction"]["schema_version"] == "cvbench.redaction/v1"
     assert safe["audit_evidence"]["redacted"] is True
-    assert safe["runtime_isolation"]["mounts"][0]["source"] == "<socket-only-runtime-dir>"
+    assert safe["diagnostics"]["schema_version"] == "cvbench.diagnostics-redacted/v1"
     manifest = tmp_path / "artifacts.sha256"
     manifest.write_text("a" * 64 + "  frame.jpg\n")
     monkeypatch.setattr(
@@ -135,27 +135,32 @@ def test_ci_sanitization_writes_a_safe_copy_without_mutating_core_report(
 
 
 def test_failed_isolation_remains_unknown_in_public_safe_copy(tmp_path: Path) -> None:
-    source_run = tmp_path / "source" / "run-unknown"
-    source_run.mkdir(parents=True)
-    core = {
-        "outcome": {"status": "failed", "errors": ["container ID was not created"]},
-        "runtime_isolation": {
-            "status": "verification_failed",
-            "future_frame_isolation": None,
-            "ground_truth_access": None,
-            "repository_access": None,
-            "media_access": None,
-            "mounts": None,
-            "network_mode": None,
-            "image_identity_verified": None,
-            "container_user_alignment_verified": None,
-        },
-        "metrics": {"sample_counts": {"matches": 0}},
+    source, source_report = _generated_run(tmp_path)
+    core = json.loads(source_report.read_text())
+    core["outcome"] = {
+        "status": "failed",
+        "exit_code": 1,
+        "startup_time_ms": None,
+        "time_to_first_output_ms": None,
+        "errors": ["container ID was not created"],
+        "resolved_image": None,
+        "timed_out": False,
+        "crashed": True,
     }
-    (source_run / "report.json").write_text(json.dumps(core))
-    (source_run / "resources.csv").write_text("elapsed_ms,process_count\n")
+    core["runtime_isolation"].update({
+        "status": "verification_failed",
+        "future_frame_isolation": None,
+        "ground_truth_access": None,
+        "repository_access": None,
+        "media_access": None,
+        "mounts": None,
+        "network_mode": None,
+        "image_identity_verified": None,
+        "container_user_alignment_verified": None,
+    })
+    source_report.write_text(json.dumps(core))
 
-    destination = sanitize_runs(tmp_path / "source", tmp_path / "safe")
+    destination = sanitize_runs(source, tmp_path / "safe")
     safe = json.loads((destination / "report.json").read_text())
     isolation = safe["runtime_isolation"]
     assert safe["outcome"]["status"] == "failed"
@@ -165,3 +170,14 @@ def test_failed_isolation_remains_unknown_in_public_safe_copy(tmp_path: Path) ->
     assert isolation["repository_access"] is None
     assert isolation["media_access"] is None
     assert isolation["image_identity_verified"] is None
+
+
+def test_safe_artifact_rejects_core_or_redaction_schema_spoofing(tmp_path: Path) -> None:
+    source, _report = _generated_run(tmp_path)
+    destination = sanitize_runs(source, tmp_path / "safe")
+    safe_report = destination / "report.json"
+    safe = json.loads(safe_report.read_text())
+    safe["schema_version"] = "cvbench.report/v1"
+    safe_report.write_text(json.dumps(safe))
+    with pytest.raises(ValueError, match="cvbench.report-redacted/v1"):
+        _assert_safe(safe_report)

@@ -28,13 +28,35 @@ def _report_validator() -> Draft202012Validator:
     )
 
 
-def validate_report(report: dict[str, Any]) -> None:
+@lru_cache(maxsize=1)
+def _redacted_report_validator() -> Draft202012Validator:
+    timing_schema = _schema("timing-compute-v1.schema.json")
+    report_schema = _schema("report-v1.schema.json")
+    registry = Registry()
+    registry = registry.with_resource(timing_schema["$id"], Resource.from_contents(timing_schema))
+    registry = registry.with_resource(report_schema["$id"], Resource.from_contents(report_schema))
+    return Draft202012Validator(
+        _schema("report-redacted-v1.schema.json"),
+        registry=registry,
+        format_checker=FormatChecker(),
+    )
+
+
+def _validate(report: dict[str, Any], validator: Draft202012Validator, schema_version: str) -> None:
     wire_report = json.loads(json.dumps(report, allow_nan=False))
-    errors = sorted(_report_validator().iter_errors(wire_report), key=lambda error: list(error.absolute_path))
+    errors = sorted(validator.iter_errors(wire_report), key=lambda error: list(error.absolute_path))
     if errors:
         error = errors[0]
         location = ".".join(str(part) for part in error.absolute_path) or "<report>"
-        raise ValueError(f"invalid cvbench.report/v1 at {location}: {error.message}")
+        raise ValueError(f"invalid {schema_version} at {location}: {error.message}")
+
+
+def validate_report(report: dict[str, Any]) -> None:
+    _validate(report, _report_validator(), "cvbench.report/v1")
+
+
+def validate_redacted_report(report: dict[str, Any]) -> None:
+    _validate(report, _redacted_report_validator(), "cvbench.report-redacted/v1")
 
 
 def write_json(path: Path, data: Any) -> None:

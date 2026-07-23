@@ -17,6 +17,7 @@ from typing import Any
 
 from cvbench.audit import AUDIT_EVIDENCE_MAX_BYTES
 from cvbench.json_contract import serialized_json_bytes
+from cvbench.reporting import validate_report
 
 try:
     from scripts.hydrate_real_video_corpus import hydrate
@@ -344,10 +345,12 @@ def execute_submission(repository: Path, submission: dict[str, Any], work: Path)
         if isolation.get("status") != "verified" or isolation.get("network_mode") != "none":
             raise RuntimeError("benchmark did not verify the required container isolation")
         report["runner"] = {
+            "schema_version": "cvbench.runner/v1",
             "commit": os.environ.get("GITHUB_SHA"),
             "workflow_run_url": _workflow_run_url(),
             "workflow_name": os.environ.get("GITHUB_WORKFLOW"),
         }
+        validate_report(report)
         return report
     finally:
         cleanup_benchmark_containers(job_id, environment)

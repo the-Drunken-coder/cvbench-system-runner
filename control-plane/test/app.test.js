@@ -186,6 +186,11 @@ test("submission create, public read, idempotent replay, lease, and scored resul
   assert.equal(completed.result.scores.cpu_time_seconds, 15);
   assert.equal(completed.result.scores.teardown_seconds, 0.1);
   assert.equal(completed.result.scores.accounting_complete, true);
+  assert.equal((await jsonRequest(`/api/v1/submissions/${created.id}`)).status, "succeeded");
+  const operator = await jsonRequest(`/api/v1/operator/jobs/${created.id}`, {
+    headers: { authorization: `Bearer ${OPERATOR_READ_TOKEN}` },
+  });
+  assert.deepEqual(operator.raw_result.runner, scoredReport().runner);
   assert.equal((await result(created.id, { status: "failed", lease_token: leased.lease.token, error: "late" })).status, 409);
 });
 
@@ -209,6 +214,7 @@ test("successful callbacks reject empty, incomplete, and ineligible reports", as
   for (const [suffix, mutate, pattern] of [
     ["empty", () => ({}), /schema_version/],
     ["missing-cpu", (report) => { report.resources.cpu_time_seconds = null; return report; }, /cgroup axes/],
+    ["missing-runner", (report) => { delete report.runner; return report; }, /trusted-runner metadata/],
     ["unfinished", (report) => {
       Object.assign(report.outcome, { status: "failed", exit_code: 1, errors: ["failed"], crashed: true });
       return report;
@@ -224,6 +230,64 @@ test("successful callbacks reject empty, incomplete, and ineligible reports", as
     assert.equal(response.status, 422, suffix);
     assert.match((await response.json()).error.message, pattern, suffix);
   }
+});
+
+test("successful callbacks require internally consistent external cgroup evidence", async () => {
+  const created = await (await submit(validBody(), "cgroup-evidence-0001")).json();
+  const leased = await (await lease()).json();
+  const probes = [
+    ["empty samples", (report) => { report.resources.over_time = []; report.resources.sample_count = 0; }],
+    ["fake sample source", (report) => { report.resources.over_time[0].accounting_source = "submitted_process"; }],
+    ["missing final sample", (report) => { delete report.resources.over_time.at(-1).final_cumulative; }],
+    ["multiple final samples", (report) => { report.resources.over_time[0].final_cumulative = true; }],
+    ["false aggregate", (report) => { report.resources.cpu_time_seconds = 1; }],
+    ["false availability", (report) => { report.resources.accounting_availability.disk_io = false; }],
+  ];
+  for (const [name, mutate] of probes) {
+    const report = scoredReport();
+    mutate(report);
+    const response = await result(created.id, {
+      status: "succeeded",
+      lease_token: leased.lease.token,
+      report,
+    });
+    assert.equal(response.status, 422, name);
+    assert.equal((await jsonRequest(`/api/v1/submissions/${created.id}`)).status, "running", name);
+  }
+  assert.equal((await result(created.id, {
+    status: "succeeded",
+    lease_token: leased.lease.token,
+    report: scoredReport(),
+  })).status, 200);
+});
+
+test("successful callbacks are bound to the leased image digest and argv", async () => {
+  const created = await (await submit(validBody(), "lease-identity-0001")).json();
+  const leased = await (await lease()).json();
+  const otherImage = `ghcr.io/example/other@sha256:${"f".repeat(64)}`;
+  const probes = [
+    ["system command", (report) => { report.system.command = ["python", "-m", "other"]; }],
+    ["provenance command", (report) => { report.provenance.system_command = ["python", "-m", "other"]; }],
+    ["configured image", (report) => { report.runtime_isolation.image_identity.configured_reference = otherImage; }],
+    ["resolved image", (report) => { report.outcome.resolved_image = otherImage; }],
+  ];
+  for (const [name, mutate] of probes) {
+    const report = scoredReport();
+    mutate(report);
+    const response = await result(created.id, {
+      status: "succeeded",
+      lease_token: leased.lease.token,
+      report,
+    });
+    assert.equal(response.status, 422, name);
+    assert.match((await response.json()).error.message, /leased submission/, name);
+    assert.equal((await jsonRequest(`/api/v1/submissions/${created.id}`)).status, "running", name);
+  }
+  assert.equal((await result(created.id, {
+    status: "succeeded",
+    lease_token: leased.lease.token,
+    report: scoredReport(),
+  })).status, 200);
 });
 
 test("successful callbacks enforce the complete recursively strict published report contract", async () => {
@@ -713,7 +777,7 @@ function scoredReport(runtimeIsolation = {}) {
     started_at: "2026-07-23T00:00:00Z",
     mode: "online_replay",
     benchmark: { id: PUBLIC_BENCHMARK.id, version: PUBLIC_BENCHMARK.version },
-    system: { id: "safe", revision: "1", runtime: "docker", command: ["tracker"] },
+    system: { id: "safe", revision: "1", runtime: "docker", command: validBody().argv },
     outcome: {
       status: "completed",
       exit_code: 0,
@@ -832,28 +896,51 @@ function scoredReport(runtimeIsolation = {}) {
       fault_injection_samples: 0,
       accounting_scope: "container_cgroup_v2_external",
       authoritative: true,
-      over_time: [{
-        elapsed_ms: 9000,
-        cpu_percent: 150,
-        cpu_time_seconds: 15,
-        memory_bytes: 512,
-        memory_limit_bytes: 2147483648,
-        memory_peak_bytes: 1024,
-        gpu_percent: null,
-        vram_bytes: null,
-        disk_read_bytes: 100,
-        disk_write_bytes: 200,
-        network_rx_bytes: null,
-        network_tx_bytes: null,
-        process_count: 2,
-        thread_count: null,
-        phase: "drain",
-        scenario: null,
-        target_count: null,
-        fault_injection: false,
-        accounting_source: "host_cgroup_v2",
-        final_cumulative: true,
-      }],
+      over_time: [
+        {
+          elapsed_ms: 1000,
+          cpu_percent: 100,
+          cpu_time_seconds: 5,
+          memory_bytes: 0,
+          memory_limit_bytes: 2147483648,
+          memory_peak_bytes: 512,
+          gpu_percent: null,
+          vram_bytes: null,
+          disk_read_bytes: 50,
+          disk_write_bytes: 100,
+          network_rx_bytes: null,
+          network_tx_bytes: null,
+          process_count: 1,
+          thread_count: null,
+          phase: "delivery",
+          scenario: "public",
+          target_count: 1,
+          fault_injection: false,
+          accounting_source: "host_cgroup_v2",
+        },
+        {
+          elapsed_ms: 9000,
+          cpu_percent: 200,
+          cpu_time_seconds: 15,
+          memory_bytes: 1024,
+          memory_limit_bytes: 2147483648,
+          memory_peak_bytes: 1024,
+          gpu_percent: null,
+          vram_bytes: null,
+          disk_read_bytes: 100,
+          disk_write_bytes: 200,
+          network_rx_bytes: null,
+          network_tx_bytes: null,
+          process_count: 2,
+          thread_count: null,
+          phase: "drain",
+          scenario: null,
+          target_count: null,
+          fault_injection: false,
+          accounting_source: "host_cgroup_v2",
+          final_cumulative: true,
+        },
+      ],
       accounting_availability: {
         external_cgroup_v2: true,
         final_cumulative_cpu_sample: true,
@@ -937,7 +1024,7 @@ function scoredReport(runtimeIsolation = {}) {
       resolved_container_image_id: `sha256:${"b".repeat(64)}`,
       executed_container_image_id: `sha256:${"b".repeat(64)}`,
       command: "cvbench run",
-      system_command: ["tracker"],
+      system_command: validBody().argv,
       matching: {
         algorithm: "deterministic Hungarian assignment",
         minimum_iou: 0.5,
@@ -1017,6 +1104,12 @@ function scoredReport(runtimeIsolation = {}) {
       match_count: 12,
     },
     limitations: [],
+    runner: {
+      schema_version: "cvbench.runner/v1",
+      commit: "d".repeat(40),
+      workflow_run_url: "https://github.com/example/cvbench/actions/runs/1",
+      workflow_name: "Run public CVBench submission",
+    },
   };
 }
 
