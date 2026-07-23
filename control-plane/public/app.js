@@ -54,7 +54,9 @@ document.querySelector("#status-form")?.addEventListener("submit", async (event)
         ["Real-time factor", scores.real_time_factor],
         ["Teardown seconds", scores.teardown_seconds],
         ["Peak RAM bytes", scores.peak_ram_bytes],
-        ["Replay", `${scores.replay_profile} @ ${scores.replay_rate}x`],
+        ["Replay", scores.replay_profile != null && scores.replay_rate != null
+          ? `${scores.replay_profile} @ ${scores.replay_rate}x`
+          : null],
       ]) {
         const term = document.createElement("dt");
         term.textContent = label;
