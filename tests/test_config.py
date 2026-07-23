@@ -31,6 +31,8 @@ def test_shipped_definitions_validate() -> None:
     benchmark = load_benchmark(ROOT / "benchmarks/persistent-target-tracking.yaml")
     system = load_system(ROOT / "systems/example-good-local.yaml")
     assert benchmark.input_mode == "online_replay"
+    assert benchmark.replay_profile == "native"
+    assert benchmark.playback_rate == 1.0
     assert system.runtime_type == "local"
 
 
@@ -53,9 +55,68 @@ def test_playback_rate_must_be_typed_positive_and_finite(tmp_path: Path, value: 
         load_benchmark(path)
 
 
-@pytest.mark.parametrize("value", ["120", float("nan"), float("inf"), 0, -1])
-def test_max_run_seconds_must_be_typed_positive_and_finite(tmp_path: Path, value: Any) -> None:
-    path = _benchmark_file(tmp_path, lambda data: data.__setitem__("max_run_seconds", value))
+@pytest.mark.parametrize("value", [0.1, 0.75, 2, 10])
+def test_legacy_playback_rate_must_match_the_versioned_allowlist(
+    tmp_path: Path, value: Any
+) -> None:
+    path = _benchmark_file(
+        tmp_path,
+        lambda data: data["input"].update(
+            {"playback_rate": value, "replay_profile": None}
+        ),
+    )
+    with pytest.raises(ConfigurationError, match="versioned allowlist"):
+        load_benchmark(path)
+
+
+@pytest.mark.parametrize(
+    ("profile", "rate"),
+    [
+        ("quarter-speed", 0.25),
+        ("half-speed", 0.5),
+        ("native", 1.0),
+        ("accelerated-test-20x", 20.0),
+        ("accelerated-test-100x", 100.0),
+    ],
+)
+def test_versioned_replay_profiles_resolve_exact_rates(
+    tmp_path: Path, profile: str, rate: float
+) -> None:
+    path = _benchmark_file(
+        tmp_path,
+        lambda data: data["input"].update({"replay_profile": profile}),
+    )
+    benchmark = load_benchmark(path)
+    assert benchmark.replay_profile == profile
+    assert benchmark.playback_rate == rate
+
+
+def test_replay_profile_and_legacy_rate_cannot_disagree(tmp_path: Path) -> None:
+    path = _benchmark_file(
+        tmp_path,
+        lambda data: data["input"].update(
+            {"replay_profile": "half-speed", "playback_rate": 1.0}
+        ),
+    )
+    with pytest.raises(ConfigurationError, match="does not match"):
+        load_benchmark(path)
+
+
+@pytest.mark.parametrize("key", ["max_run_seconds", "max_drain_seconds"])
+@pytest.mark.parametrize("value", ["120", float("nan"), float("inf"), -1])
+def test_run_durations_must_be_typed_finite_and_nonnegative(
+    tmp_path: Path, key: str, value: Any
+) -> None:
+    path = _benchmark_file(tmp_path, lambda data: data.__setitem__(key, value))
+    with pytest.raises(ConfigurationError):
+        load_benchmark(path)
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_max_run_seconds_must_be_positive(tmp_path: Path, value: Any) -> None:
+    path = _benchmark_file(
+        tmp_path, lambda data: data.__setitem__("max_run_seconds", value)
+    )
     with pytest.raises(ConfigurationError):
         load_benchmark(path)
 
@@ -182,8 +243,9 @@ def test_system_durations_are_typed_finite_and_nonnegative(
 
 def test_numeric_boundaries_are_accepted(tmp_path: Path) -> None:
     def update_benchmark(data: dict[str, Any]) -> None:
-        data["input"]["playback_rate"] = 0.001
+        data["input"]["replay_profile"] = "quarter-speed"
         data["max_run_seconds"] = 0.001
+        data["max_drain_seconds"] = 0
         data["thresholds"].update(
             {
                 "confirmed_track_min_duration_ms": 0,
@@ -197,7 +259,8 @@ def test_numeric_boundaries_are_accepted(tmp_path: Path) -> None:
         )
 
     benchmark = load_benchmark(_benchmark_file(tmp_path, update_benchmark))
-    assert benchmark.playback_rate == 0.001
+    assert benchmark.playback_rate == 0.25
+    assert benchmark.max_drain_seconds == 0
     assert benchmark.thresholds.minimum_match_iou == 0
 
     def update_system(data: dict[str, Any]) -> None:

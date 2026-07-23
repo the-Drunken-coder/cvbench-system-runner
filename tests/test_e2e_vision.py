@@ -70,7 +70,11 @@ def test_good_tracker_decodes_novel_shifted_images(tmp_path: Path) -> None:
                 "schema_version": "cvbench.benchmark/v1",
                 "id": "novel-image-e2e",
                 "version": "1",
-                "input": {"mode": "online_replay", "protocol": "frame_socket_v1", "playback_rate": 20},
+                "input": {
+                    "mode": "online_replay",
+                    "protocol": "frame_socket_v1",
+                    "replay_profile": "accelerated-test-20x",
+                },
                 "thresholds": {"minimum_match_iou": 0.3, "max_match_center_error_px": 20},
                 "scenarios": [str(manifest)],
                 "reporting": {"generate_failure_packets": False},

@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from cvbench.reporting import validate_redacted_report
+
 HASH_LINE = re.compile(r"^[0-9a-f]{64}  [^\n]+$")
 FORBIDDEN_FRAGMENTS = (
     '"bbox_xyxy"',
@@ -26,7 +28,8 @@ def _assert_safe(path: Path) -> None:
     lowered = text.lower()
     assert not any(fragment in lowered for fragment in FORBIDDEN_FRAGMENTS), path
     if path.suffix == ".json":
-        json.loads(text)
+        report = json.loads(text)
+        validate_redacted_report(report)
 
 
 def main() -> None:

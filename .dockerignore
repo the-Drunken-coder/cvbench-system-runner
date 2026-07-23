@@ -9,3 +9,5 @@
 !scripts/hydrate_real_video_corpus.py
 !src/
 !src/**
+!schemas/
+!schemas/*.schema.json

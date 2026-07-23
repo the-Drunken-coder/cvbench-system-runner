@@ -152,6 +152,38 @@ def test_external_latency_uses_collector_timestamp() -> None:
     assert metrics["latency"]["maximum"] == 17
 
 
+def test_online_latency_uses_trusted_delivery_completion_not_native_source_time() -> None:
+    source_timestamp_ns = 1_000_000_000
+    delivered_timestamp_ns = 1_300_000_000
+    record = output(
+        source_timestamp_ns,
+        received_offset_ns=305_000_000,
+    )
+    metrics, _ = calculate_metrics(
+        [gt(source_timestamp_ns)],
+        [record],
+        Thresholds(latency_deadline_ms=50),
+        frame_delivery_ns={("seq", source_timestamp_ns): delivered_timestamp_ns},
+    )
+
+    assert metrics["latency"]["median"] == 5
+    assert metrics["latency"]["deadline_miss_rate"] == 0
+    assert metrics["latency"]["native_source_offset_ms"]["median"] == 305
+
+
+def test_online_latency_ignores_output_without_a_successful_delivery_boundary() -> None:
+    source_timestamp_ns = 1_000_000_000
+    metrics, _ = calculate_metrics(
+        [gt(source_timestamp_ns)],
+        [output(source_timestamp_ns, received_offset_ns=5_000_000)],
+        Thresholds(),
+        frame_delivery_ns={},
+    )
+
+    assert metrics["latency"]["sample_count"] == 0
+    assert metrics["latency"]["native_source_offset_ms"]["sample_count"] == 0
+
+
 def test_outputs_received_before_source_time_never_create_negative_latency() -> None:
     records = [
         output(1_000_000_000, state="tentative", received_offset_ns=-10_000_000),

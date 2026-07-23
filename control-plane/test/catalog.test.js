@@ -305,6 +305,7 @@ test("unknown and private-looking source fields fail preflight before output rep
 test("public surfaces use safe DOM rendering, strict CSP, and corrected system terminology", async () => {
   const javascript = await Promise.all(["app.js", "operator.js", "scenario-app.js"].map((name) => readFile(path.join(CONTROL_PLANE, "public", name), "utf8")));
   for (const source of javascript) assert.doesNotMatch(source, /\.innerHTML\s*=/i);
+  assert.match(javascript[0], /scores\.replay_profile != null && scores\.replay_rate != null/);
   const headers = await readFile(path.join(CONTROL_PLANE, "public/_headers"), "utf8");
   assert.match(headers, /object-src 'none'/);
   assert.match(headers, /media-src 'self'/);

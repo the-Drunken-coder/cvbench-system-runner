@@ -39,7 +39,35 @@ document.querySelector("#status-form")?.addEventListener("submit", async (event)
     heading.append(pill, `  ${body.model.name} · system version ${body.model.version}`);
     const pre = document.createElement("pre");
     pre.textContent = JSON.stringify(body, null, 2);
-    output.replaceChildren(heading, pre);
+    const axes = document.createElement("dl");
+    axes.className = "result-axes";
+    const scores = body.result?.scores;
+    if (scores) {
+      for (const [label, value] of [
+        ["Leaderboard class", scores.leaderboard_class],
+        ["Eligible", scores.leaderboard_eligible],
+        ["Accounting complete", scores.accounting_complete],
+        ["Acquisition", scores.acquisition_rate],
+        ["Observed coverage", scores.observed_coverage],
+        ["CPU seconds", scores.cpu_time_seconds],
+        ["CPU s/source s", scores.cpu_seconds_per_native_source_second],
+        ["Real-time factor", scores.real_time_factor],
+        ["Delivery latency p95 ms", scores.processing_latency_p95_ms],
+        ["Native-source offset p95 ms", scores.native_source_offset_p95_ms],
+        ["Teardown seconds", scores.teardown_seconds],
+        ["Peak RAM bytes", scores.peak_ram_bytes],
+        ["Replay", scores.replay_profile != null && scores.replay_rate != null
+          ? `${scores.replay_profile} @ ${scores.replay_rate}x`
+          : null],
+      ]) {
+        const term = document.createElement("dt");
+        term.textContent = label;
+        const detail = document.createElement("dd");
+        detail.textContent = value ?? "unavailable";
+        axes.append(term, detail);
+      }
+    }
+    output.replaceChildren(heading, ...(scores ? [axes] : []), pre);
     history.replaceState(null, "", `#results?submission=${id}`);
   } catch (error) {
     output.textContent = error.message;

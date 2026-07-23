@@ -8,7 +8,11 @@ from pathlib import Path
 from cvbench.protocol import receive_message
 
 child = subprocess.Popen(
-    [sys.executable, "-c", "import time; time.sleep(60)"],
+    [
+        sys.executable,
+        "-c",
+        "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)",
+    ],
     stdin=subprocess.DEVNULL,
     stdout=subprocess.DEVNULL,
     stderr=subprocess.DEVNULL,

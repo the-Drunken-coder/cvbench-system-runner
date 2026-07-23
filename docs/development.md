@@ -42,3 +42,5 @@ python scripts/assert_docker_report.py /tmp/cvbench-docker-runs
 ```
 
 The CI workflow covers install, lint, tests, scenario validation, and a real scored Linux Docker run. The Docker job builds the good image and asserts owner-only socket permissions, aligned non-root UID/GID execution, socket-only mounting, disabled networking, applied CPU/RAM limits, resource samples, an immutable image digest, scored matches, and complete container cleanup. Hardware accelerators are not required. NVIDIA collection degrades explicitly to unavailable.
+
+It also runs `benchmarks/timing-compute-evidence.yaml` against fast, CPU-heavy, idle, background-child, final-burst, and immediate-clean-exit variants of the same vision system. The immediate-exit harness deliberately holds the final stdout record in the collector until the half-close boundary is requested, then proves that the record is scored, a fresh retained-parent-cgroup sample is authoritative, and both the container and parent scope are removed. The compact evidence is checked by `scripts/assert_pacing_evidence.py` and uploaded as `timing-compute-docker-evidence`.

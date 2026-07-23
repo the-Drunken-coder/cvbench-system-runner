@@ -86,6 +86,30 @@ def main() -> None:
     }
     assert report["resources"]["sample_count"] > 0
     assert report["resources"]["peak_process_count"] >= 1
+    assert report["resources"]["accounting_scope"] == "container_cgroup_v2_external"
+    assert report["resources"]["authoritative"] is True, {
+        "accounting_availability": report["resources"]["accounting_availability"],
+        "sample_count": report["resources"]["sample_count"],
+        "cpu_time_seconds": report["resources"]["cpu_time_seconds"],
+        "average_cpu_percent": report["resources"]["average_cpu_percent"],
+        "peak_ram_bytes": report["resources"]["peak_ram_bytes"],
+        "disk_read_bytes": report["resources"]["disk_read_bytes"],
+        "disk_write_bytes": report["resources"]["disk_write_bytes"],
+    }
+    assert all(report["resources"]["accounting_availability"].values())
+    assert report["resources"]["cpu_time_seconds"] is not None
+    assert report["resources"]["cpu_seconds_per_native_source_second"] is not None
+    assert report["resources"]["gpu_accounting"]["isolated"] is False
+    assert report["timing"]["contract_version"] == "cvbench.timing-compute/v1"
+    assert report["timing"]["source"]["immutable"] is True
+    assert report["timing"]["replay"]["profile"] == "native"
+    assert report["timing"]["replay"]["rate"] == 1
+    assert report["timing"]["delivery"]["policy_version"] == "cvbench.delivery-lossless/v1"
+    assert report["timing"]["durations"]["real_time_factor"] is not None
+    assert report["leaderboard"]["policy_version"] == "cvbench.pareto/v1"
+    assert report["leaderboard"]["replay_class"] == "native"
+    assert report["leaderboard"]["composite_score"] is None
+    assert report["leaderboard"]["eligible"] is True
     identity = isolation["image_identity"]
     assert identity["configured_reference"] != identity["resolved_reference"]
     assert identity["resolved_reference"] == report["provenance"]["resolved_container_image"]

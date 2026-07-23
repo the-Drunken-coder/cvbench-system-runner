@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,9 @@ UNPRIVILEGED_SOCKET_UID = 65532
 CONTROL_PLANE_JOB_ID_PATTERN = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+ACCOUNTING_CGROUP_NAME_PATTERN = re.compile(r"cvbench-[0-9A-Za-z.-]{1,120}(?:\.slice)?")
+RETENTION_CGROUP_NAME = "cvbench-retain"
 
 
 @dataclass
@@ -30,12 +34,60 @@ class StartedRuntime:
     isolation: dict[str, object]
     process_group_id: int | None = None
     resolved_image_id: str | None = None
+    accounting_cgroup_parent: str | None = None
+    accounting_cgroup_name: str | None = None
+    accounting_cgroup_path: Path | None = None
+    container_name: str | None = None
 
 
 @dataclass(frozen=True)
 class ResolvedImage:
     reference: str
     image_id: str
+
+
+def not_started_isolation(config: SystemConfig, error: str) -> dict[str, object]:
+    """Describe requested isolation without claiming that any runtime fact was observed."""
+    return {
+        "runtime": config.runtime_type,
+        "requested": {
+            "cpu_limit": config.resources.get("cpu_limit"),
+            "memory_limit_mb": config.resources.get("memory_limit_mb"),
+            "network_access": config.resources.get("network_access", False),
+        },
+        "status": "not_started",
+        "future_frame_isolation": None,
+        "ground_truth_access": None,
+        "repository_access": None,
+        "media_access": None,
+        "container_id": None,
+        "mounts": None,
+        "network_mode": None,
+        "applied": None,
+        "image_identity_verified": None,
+        "executed_container_user": None,
+        "container_user_alignment_verified": None,
+        "expected_container_user": None,
+        "socket_access": None,
+        "expected_mount": None,
+        "image_identity": {
+            "configured_reference": config.image,
+            "resolved_reference": None,
+            "resolved_image_id": None,
+            "executed_reference": None,
+            "executed_image_id": None,
+        },
+        "error": error,
+    }
+
+
+@dataclass(frozen=True)
+class RuntimeStop:
+    exit_code: int | None
+    forced: bool
+    scoring_timed_out: bool
+    scoring_finished_ns: int
+    teardown_finished_ns: int
 
 
 def _align_docker_socket_owner(socket_dir: Path) -> tuple[int, int]:
@@ -71,6 +123,33 @@ def _resolve_image(image: str) -> ResolvedImage:
     return ResolvedImage(image_id, image_id)
 
 
+def _runtime_token(run_dir: Path) -> str:
+    token = re.sub(r"[^0-9A-Za-z.-]", "-", run_dir.name)[:100]
+    return f"cvbench-{token}"
+
+
+def _docker_accounting_scope(run_dir: Path) -> tuple[str | None, str | None, Path | None]:
+    if not (CGROUP_ROOT / "cgroup.controllers").is_file():
+        return None, None, None
+    result = subprocess.run(
+        ["docker", "info", "--format", "{{.CgroupDriver}}"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeFailure(result.stderr.strip() or "could not determine Docker cgroup driver")
+    name = _runtime_token(run_dir)
+    driver = result.stdout.strip()
+    if driver == "cgroupfs":
+        return f"/{name}", name, CGROUP_ROOT / name
+    if driver == "systemd":
+        name = f"{name}.slice"
+        return name, name, CGROUP_ROOT / name
+    raise RuntimeFailure(f"unsupported Docker cgroup driver for authoritative accounting: {driver}")
+
+
 def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> StartedRuntime:
     environment = os.environ.copy()
     environment.update(config.environment)
@@ -80,6 +159,10 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
     resolved_image_id: str | None = None
     container_user: str | None = None
     socket_access: dict[str, object] | None = None
+    accounting_cgroup_parent: str | None = None
+    accounting_cgroup_name: str | None = None
+    accounting_cgroup_path: Path | None = None
+    container_name: str | None = None
     if config.runtime_type == "local":
         command = [sys.executable if value == "{python}" else value for value in config.command]
         cwd = config.path.parent.parent
@@ -97,12 +180,19 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
             "socket_mode": oct((socket_dir / "input.sock").stat().st_mode & 0o777),
         }
         cidfile = run_dir / "container.cid"
+        container_name = _runtime_token(run_dir)
+        (
+            accounting_cgroup_parent,
+            accounting_cgroup_name,
+            accounting_cgroup_path,
+        ) = _docker_accounting_scope(run_dir)
         command = [
             "docker",
             "run",
-            "--rm",
             "--cidfile",
             str(cidfile),
+            "--name",
+            container_name,
             "--network",
             "none",
             "--user",
@@ -112,6 +202,8 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
             "--env",
             "CVBENCH_INPUT_SOCKET=/run/cvbench/input.sock",
         ]
+        if accounting_cgroup_parent is not None:
+            command.extend(["--cgroup-parent", accounting_cgroup_parent])
         cpu_limit = config.resources.get("cpu_limit")
         memory_limit = config.resources.get("memory_limit_mb")
         if cpu_limit:
@@ -182,6 +274,10 @@ def start_runtime(config: SystemConfig, socket_dir: Path, run_dir: Path) -> Star
         isolation,
         process.pid if config.runtime_type == "local" else None,
         resolved_image_id,
+        accounting_cgroup_parent,
+        accounting_cgroup_name,
+        accounting_cgroup_path,
+        container_name,
     )
 
 
@@ -194,12 +290,46 @@ def _signal_process_group(runtime: StartedRuntime, sig: signal.Signals) -> None:
         os.killpg(runtime.process_group_id, sig)
 
 
-def stop_runtime(runtime: StartedRuntime, grace: float) -> tuple[int | None, bool]:
-    """Stop the runtime and every local descendant owned by its process group."""
+def stop_runtime(
+    runtime: StartedRuntime,
+    grace: float,
+    checkpoint: Callable[[], None] | None = None,
+    on_scoring_finished: Callable[[], None] | None = None,
+    release_after_scoring: Callable[[], None] | None = None,
+    scoring_complete: Callable[[], bool] | None = None,
+) -> RuntimeStop:
+    """Enforce the scoring deadline, then tear down descendants out of band."""
     forced = False
-    try:
-        exit_code = runtime.process.wait(timeout=max(0, grace))
-    except subprocess.TimeoutExpired:
+    scoring_timed_out = False
+    deadline = time.monotonic() + max(0, grace)
+    exit_code = runtime.process.poll()
+    scoring_done = False
+    while time.monotonic() < deadline:
+        if scoring_complete is None:
+            if exit_code is not None:
+                break
+        else:
+            scoring_done = scoring_complete()
+            if scoring_done or exit_code not in {None, 0}:
+                break
+        if checkpoint is not None:
+            checkpoint()
+        time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+        exit_code = runtime.process.poll()
+    if scoring_complete is not None and not scoring_done:
+        scoring_done = scoring_complete()
+        scoring_timed_out = not scoring_done and exit_code in {None, 0}
+    if on_scoring_finished is not None:
+        on_scoring_finished()
+    elif checkpoint is not None:
+        checkpoint()
+    scoring_finished_ns = time.monotonic_ns()
+    if release_after_scoring is not None:
+        release_after_scoring()
+        if exit_code is None:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                exit_code = runtime.process.wait(timeout=0.25)
+    if exit_code is None:
         forced = True
         _signal_process_group(runtime, signal.SIGTERM)
         try:
@@ -213,7 +343,13 @@ def stop_runtime(runtime: StartedRuntime, grace: float) -> tuple[int | None, boo
         _signal_process_group(runtime, signal.SIGTERM)
         time.sleep(0.02)
         _signal_process_group(runtime, signal.SIGKILL)
-    return exit_code, forced
+    return RuntimeStop(
+        exit_code,
+        forced,
+        scoring_timed_out,
+        scoring_finished_ns,
+        time.monotonic_ns(),
+    )
 
 
 def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: float = 10) -> dict[str, object]:
@@ -348,15 +484,101 @@ def _verification_failed(runtime: StartedRuntime, error: str) -> dict[str, objec
     return runtime.isolation
 
 
-def cleanup_runtime(runtime: StartedRuntime) -> None:
-    if runtime.cidfile is None or not runtime.cidfile.exists() or not shutil.which("docker"):
-        return
-    container_id = runtime.cidfile.read_text().strip()
-    if container_id:
-        subprocess.run(
-            ["docker", "rm", "--force", container_id],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            check=False,
+def _remove_accounting_cgroup(path: Path, expected_name: str, cgroup_root: Path) -> str | None:
+    root = cgroup_root.resolve()
+    candidate = path.resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return f"refused to remove accounting cgroup outside {root}"
+    if (
+        candidate == root
+        or candidate.name != expected_name
+        or not ACCOUNTING_CGROUP_NAME_PATTERN.fullmatch(candidate.name)
+    ):
+        return "refused to remove an unexpected accounting cgroup"
+    for _ in range(3):
+        try:
+            candidate.rmdir()
+            return None
+        except FileNotFoundError:
+            return None
+        except OSError:
+            time.sleep(0.05)
+    if shutil.which("sudo"):
+        try:
+            result = subprocess.run(
+                ["sudo", "-n", "rmdir", "--", str(candidate)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+            if result.returncode == 0 or not candidate.exists():
+                return None
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return f"accounting cgroup cleanup failed: {candidate}"
+
+
+def cleanup_runtime(
+    runtime: StartedRuntime,
+    accounting_cgroup_path: Path | None = None,
+    *,
+    cgroup_root: Path = CGROUP_ROOT,
+) -> list[str]:
+    errors: list[str] = []
+    container_id = ""
+    docker = shutil.which("docker")
+    if runtime.cidfile is not None and runtime.cidfile.exists():
+        try:
+            container_id = runtime.cidfile.read_text().strip()
+        except OSError as exc:
+            errors.append(f"container ID file cleanup read failed: {exc}")
+    container_identifier = container_id or runtime.container_name or ""
+    if container_identifier and docker:
+        cleanup_detail = ""
+        for _ in range(3):
+            try:
+                subprocess.run(
+                    ["docker", "rm", "--force", container_identifier],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+                inspected = subprocess.run(
+                    ["docker", "inspect", container_identifier],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=10,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                cleanup_detail = str(exc)
+                time.sleep(0.05)
+                continue
+            if inspected.returncode != 0:
+                break
+            time.sleep(0.05)
+        else:
+            suffix = f": {cleanup_detail}" if cleanup_detail else ""
+            errors.append(f"container cleanup failed: {container_identifier}{suffix}")
+    elif container_identifier:
+        errors.append("container cleanup failed: docker is unavailable")
+    if accounting_cgroup_path is not None and runtime.accounting_cgroup_name is not None:
+        retention_error = _remove_accounting_cgroup(
+            accounting_cgroup_path / RETENTION_CGROUP_NAME,
+            RETENTION_CGROUP_NAME,
+            cgroup_root,
         )
+        if retention_error is not None:
+            errors.append(retention_error)
+        error = _remove_accounting_cgroup(
+            accounting_cgroup_path,
+            runtime.accounting_cgroup_name,
+            cgroup_root,
+        )
+        if error is not None and error not in errors:
+            errors.append(error)
+    return errors

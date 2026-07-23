@@ -1,3 +1,8 @@
+import Ajv2020 from "ajv/dist/2020.js";
+import addFormats from "ajv-formats";
+import REPORT_SCHEMA from "../../schemas/report-v1.schema.json" with { type: "json" };
+import TIMING_COMPUTE_SCHEMA from "../../schemas/timing-compute-v1.schema.json" with { type: "json" };
+
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const MAX_SUBMISSION_BYTES = 16 * 1024;
 const MAX_RESULT_BYTES = 1024 * 1024;
@@ -5,11 +10,23 @@ const MAX_OPERATOR_NOTE_BYTES = 8 * 1024;
 const VALID_JOB_STATUSES = new Set(["queued", "running", "succeeded", "failed"]);
 const IMAGE_PATTERN = /^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?\/)?[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$/;
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const REPORT_SCHEMA_AJV = new Ajv2020({ allErrors: true, strict: true, allowUnionTypes: true });
+addFormats(REPORT_SCHEMA_AJV);
+REPORT_SCHEMA_AJV.addSchema(TIMING_COMPUTE_SCHEMA);
+const validateReportSchema = REPORT_SCHEMA_AJV.compile(REPORT_SCHEMA);
+const OPENAPI_REPORT_SCHEMA = JSON.parse(JSON.stringify(REPORT_SCHEMA));
+const OPENAPI_TIMING_COMPUTE_SCHEMA = JSON.parse(JSON.stringify(TIMING_COMPUTE_SCHEMA));
+OPENAPI_REPORT_SCHEMA.properties.timing = { $ref: "#/components/schemas/TimingComputeV1" };
 
 export const PUBLIC_BENCHMARK = Object.freeze({
   id: "public-whole-system-tracking",
   version: "2.0.0",
   manifest: "benchmarks/public-whole-system-v2.yaml",
+  timing_compute_contract: "cvbench.timing-compute/v1",
+  delivery_policy: "cvbench.delivery-lossless/v1",
+  replay_profile: "native",
+  replay_rate: 1,
+  leaderboard_policy: "cvbench.pareto/v1",
   scenario_count: 16,
   scenario_ids: Object.freeze([
     "synthetic-acquisition",
@@ -158,6 +175,18 @@ async function route(request, config) {
     if (validation.value.report && !matchesPublicBenchmark(validation.value.report.benchmark)) {
       return problem(422, "invalid_result", "The report benchmark does not match the assigned public suite.");
     }
+    if (validation.value.report && !matchesPublicTimingContract(validation.value.report)) {
+      return problem(
+        422,
+        "invalid_result",
+        "The report timing/compute contract does not match the native public leaderboard class.",
+      );
+    }
+    const submission = await config.store.getSubmission(resultMatch[1]);
+    if (!submission) return problem(404, "not_found", "Submission not found.");
+    if (validation.value.report && !reportMatchesSubmission(validation.value.report, submission)) {
+      return problem(422, "invalid_result", "The report image or command does not match the leased submission.");
+    }
     const report = validation.value.report ? await authoritativeReport(validation.value.report) : null;
     const completed = await config.store.completeJob({
       id: resultMatch[1],
@@ -305,6 +334,12 @@ function validateResult(value) {
     return { error: "lease_token is invalid." };
   }
   if (value.status === "succeeded" && !isObject(value.report)) return { error: "A succeeded result requires a report object." };
+  if (value.status === "succeeded" && "error" in value) return { error: "A succeeded result cannot include error." };
+  if (value.status === "failed" && "report" in value) return { error: "A failed result cannot include report." };
+  if (value.status === "succeeded") {
+    const reportError = validateSuccessfulReport(value.report);
+    if (reportError) return { error: reportError };
+  }
   if (value.status === "failed" && (typeof value.error !== "string" || value.error.length < 1 || value.error.length > 2000)) {
     return { error: "A failed result requires an error string of at most 2000 characters." };
   }
@@ -316,6 +351,152 @@ function validateResult(value) {
       error: value.status === "failed" ? value.error : null,
     },
   };
+}
+
+function finiteNumber(value, { positive = false } = {}) {
+  return typeof value === "number" && Number.isFinite(value) && (positive ? value > 0 : value >= 0);
+}
+
+function sameNumber(left, right) {
+  if (!finiteNumber(left) || !finiteNumber(right)) return false;
+  return Math.abs(left - right) <= Math.max(1e-9, Math.abs(left), Math.abs(right)) * 1e-9;
+}
+
+function validateAuthoritativeResources(resources, sourceDurationSeconds) {
+  const samples = resources.over_time;
+  if (!Array.isArray(samples) || samples.length < 1 || resources.sample_count !== samples.length) {
+    return false;
+  }
+  if (samples.some((sample) => sample.accounting_source !== "host_cgroup_v2")) return false;
+  const finals = samples.filter((sample) => sample.final_cumulative === true);
+  if (finals.length !== 1 || finals[0] !== samples.at(-1)) return false;
+  const present = (field) => samples.map((sample) => sample[field]).filter(finiteNumber);
+  const cpuPercent = present("cpu_percent");
+  const memory = present("memory_bytes");
+  const peakMemory = [...memory, ...present("memory_peak_bytes")];
+  const diskRead = present("disk_read_bytes");
+  const diskWrite = present("disk_write_bytes");
+  const final = finals[0];
+  return (
+    cpuPercent.length > 0
+    && memory.length > 0
+    && diskRead.length > 0
+    && diskWrite.length > 0
+    && sameNumber(resources.cpu_time_seconds, final.cpu_time_seconds)
+    && sameNumber(
+      resources.cpu_seconds_per_native_source_second,
+      final.cpu_time_seconds / sourceDurationSeconds,
+    )
+    && sameNumber(resources.average_cpu_percent, cpuPercent.reduce((sum, value) => sum + value, 0) / cpuPercent.length)
+    && sameNumber(resources.peak_cpu_percent, Math.max(...cpuPercent))
+    && sameNumber(resources.average_ram_bytes, memory.reduce((sum, value) => sum + value, 0) / memory.length)
+    && sameNumber(resources.peak_ram_bytes, Math.max(...peakMemory))
+    && sameNumber(resources.disk_read_bytes, Math.max(...diskRead))
+    && sameNumber(resources.disk_write_bytes, Math.max(...diskWrite))
+  );
+}
+
+function validateSuccessfulReport(report) {
+  if (!validateReportSchema(report)) {
+    const first = validateReportSchema.errors?.[0];
+    const location = first?.instancePath || "<report>";
+    return `report violates cvbench.report/v1 at ${location}: ${first?.message || "invalid report"}.`;
+  }
+  if (!matchesPublicBenchmark(report.benchmark)) return "Report benchmark does not match the assigned public suite.";
+  if (
+    report.outcome.status !== "completed"
+    || report.outcome.exit_code !== 0
+    || report.outcome.timed_out !== false
+    || report.outcome.crashed !== false
+  ) return "A succeeded callback requires a completed report outcome.";
+  const isolation = report.runtime_isolation;
+  if (
+    isolation.runtime !== "docker"
+    || isolation.status !== "verified"
+    || isolation.network_mode !== "none"
+    || isolation.future_frame_isolation !== true
+    || isolation.ground_truth_access !== false
+    || isolation.repository_access !== false
+    || isolation.media_access !== false
+    || isolation.image_identity_verified !== true
+    || isolation.container_user_alignment_verified !== true
+  ) return "A succeeded callback requires fully verified Docker isolation.";
+
+  const timing = report.timing;
+  if (
+    timing.contract_version !== PUBLIC_BENCHMARK.timing_compute_contract
+    || timing.source.immutable !== true
+    || timing.replay.profile !== PUBLIC_BENCHMARK.replay_profile
+    || timing.replay.rate !== PUBLIC_BENCHMARK.replay_rate
+    || timing.replay.native_real_time !== true
+    || timing.replay.allowlisted !== true
+    || timing.delivery.policy_version !== PUBLIC_BENCHMARK.delivery_policy
+  ) return "report.timing is incomplete or violates the assigned timing contract.";
+
+  const resources = report.resources;
+  const accounting = resources?.accounting_availability;
+  const resourceAxes = [
+    "cpu_time_seconds", "cpu_seconds_per_native_source_second", "average_cpu_percent",
+    "peak_cpu_percent", "peak_ram_bytes", "disk_read_bytes", "disk_write_bytes",
+  ];
+  const accountingAxes = [
+    "external_cgroup_v2", "final_cumulative_cpu_sample", "cpu_time", "cpu_percent",
+    "peak_ram", "disk_io",
+  ];
+  if (
+    resources.accounting_scope !== "container_cgroup_v2_external"
+    || resources.authoritative !== true
+    || resourceAxes.some((key) => !finiteNumber(resources[key]))
+    || accountingAxes.some((key) => accounting[key] !== true)
+    || !validateAuthoritativeResources(resources, timing.source.duration_seconds)
+  ) return "report.resources lacks mandatory authoritative external cgroup axes.";
+
+  const leaderboard = report.leaderboard;
+  if (
+    leaderboard.policy_version !== PUBLIC_BENCHMARK.leaderboard_policy
+    || leaderboard.replay_class !== PUBLIC_BENCHMARK.replay_profile
+    || leaderboard.eligible !== true
+    || typeof leaderboard.class_id !== "string"
+    || leaderboard.class_id.length < 1
+    || leaderboard.disqualifications.length !== 0
+  ) return "report.leaderboard must be eligible with a non-null class and retained raw axes.";
+
+  const provenance = report.provenance;
+  if (
+    !/^[0-9a-f]{64}$/.test(provenance.comparison_fingerprint || "")
+    || provenance.leaderboard_class !== leaderboard.class_id
+    || provenance.resource_envelope.system?.cpu_limit !== 4
+    || provenance.resource_envelope.system?.memory_limit_mb !== 2048
+    || provenance.resource_envelope.system?.network_access !== false
+    || !finiteNumber(provenance.run_budgets.max_run_seconds, { positive: true })
+    || !finiteNumber(provenance.run_budgets.max_drain_seconds)
+    || !Number.isInteger(provenance.run_budgets.max_output_records)
+    || canonicalJson(provenance.accounting_availability) !== canonicalJson(accounting)
+  ) return "report provenance, metrics, or audit evidence is incomplete.";
+  if (
+    report.runner?.schema_version !== "cvbench.runner/v1"
+    || !Object.hasOwn(report.runner, "commit")
+    || !Object.hasOwn(report.runner, "workflow_run_url")
+    || !Object.hasOwn(report.runner, "workflow_name")
+  ) return "report.runner must contain complete trusted-runner metadata.";
+  return null;
+}
+
+function reportMatchesSubmission(report, submission) {
+  const image = submission.image;
+  const imageIdentity = report.runtime_isolation.image_identity;
+  const imageReferences = [
+    report.outcome.resolved_image,
+    report.provenance.resolved_container_image,
+    imageIdentity.configured_reference,
+    imageIdentity.resolved_reference,
+    imageIdentity.executed_reference,
+  ];
+  return (
+    imageReferences.every((value) => value === image)
+    && canonicalJson(report.system.command) === canonicalJson(submission.argv)
+    && canonicalJson(report.provenance.system_command) === canonicalJson(submission.argv)
+  );
 }
 
 async function authoritativeReport(report) {
@@ -441,6 +622,7 @@ function operatorEvidence(value) {
     schema_version: "cvbench.audit/v1",
     job_id: value.id,
     audit_evidence: report.audit_evidence || null,
+    timing_compute: report.audit_evidence?.timing_compute || null,
     artifacts: [],
     raw_evidence_available: report.provenance?.raw_evidence_available === true,
     bounded_audit_evidence_sha256: report.provenance?.bounded_audit_evidence_sha256 || null,
@@ -463,6 +645,35 @@ function scoreSummary(report) {
     reacquisition_same_id_rate: metrics.reacquisition?.same_id_rate ?? null,
     latency_p50_ms: metrics.latency?.median ?? null,
     latency_p99_ms: metrics.latency?.p99 ?? null,
+    native_source_duration_seconds: report?.timing?.source?.duration_seconds ?? null,
+    wall_seconds: report?.timing?.durations?.wall_seconds ?? null,
+    startup_seconds: report?.timing?.durations?.startup_seconds ?? null,
+    stream_delivery_seconds: report?.timing?.durations?.stream_delivery_seconds ?? null,
+    completion_seconds: report?.timing?.durations?.completion_seconds ?? null,
+    drain_seconds: report?.timing?.durations?.drain_seconds ?? null,
+    teardown_seconds: report?.timing?.durations?.teardown_seconds ?? null,
+    replay_profile: report?.timing?.replay?.profile ?? null,
+    replay_rate: report?.timing?.replay?.rate ?? null,
+    effective_replay_rate: report?.timing?.delivery?.effective_replay_rate ?? null,
+    delivered_frames_per_second: report?.timing?.delivery?.delivered_frames_per_second ?? null,
+    cpu_time_seconds: report?.resources?.cpu_time_seconds ?? null,
+    cpu_seconds_per_native_source_second: report?.resources?.cpu_seconds_per_native_source_second ?? null,
+    real_time_factor: report?.timing?.durations?.real_time_factor ?? null,
+    average_cpu_percent: report?.resources?.average_cpu_percent ?? null,
+    peak_cpu_percent: report?.resources?.peak_cpu_percent ?? null,
+    peak_ram_bytes: report?.resources?.peak_ram_bytes ?? null,
+    disk_read_bytes: report?.resources?.disk_read_bytes ?? null,
+    disk_write_bytes: report?.resources?.disk_write_bytes ?? null,
+    output_records_per_native_source_second: report?.timing?.output?.records_per_native_source_second ?? null,
+    processing_latency_p95_ms: report?.timing?.processing_latency_ms?.p95 ?? null,
+    native_source_offset_p95_ms: report?.timing?.native_source_offset_ms?.p95 ?? null,
+    delivery_backlog_max_ms: report?.timing?.delivery?.delivery_backlog_ms?.maximum ?? null,
+    delivery_deadline_missed_frames: report?.timing?.delivery?.deadline_missed_frames ?? null,
+    leaderboard_class: report?.leaderboard?.class_id ?? null,
+    leaderboard_eligible: report?.leaderboard?.eligible ?? false,
+    leaderboard_disqualifications: report?.leaderboard?.disqualifications ?? [],
+    accounting_complete: report?.resources?.authoritative === true
+      && Object.values(report?.resources?.accounting_availability || {}).every((value) => value === true),
     perfect: metrics.coverage?.overall_observed === 1 && metrics.localization?.mean_iou === 1 && metrics.identity?.id_switches === 0 && metrics.false_detections?.track_births === 0,
   };
 }
@@ -479,6 +690,11 @@ function publicResultSummary(report) {
     provenance: {
       comparison_fingerprint: report.provenance?.comparison_fingerprint || null,
       resolved_container_image: report.provenance?.resolved_container_image || null,
+      timing_compute_contract: report.provenance?.timing_compute_contract || null,
+      delivery_policy: report.provenance?.delivery_policy || null,
+      replay_profile: report.provenance?.replay_profile || null,
+      replay_rate: report.provenance?.replay_rate ?? null,
+      leaderboard_class: report.provenance?.leaderboard_class || null,
     },
   };
 }
@@ -554,6 +770,17 @@ function runnerSubmission(value) {
 
 function matchesPublicBenchmark(value) {
   return isObject(value) && value.id === PUBLIC_BENCHMARK.id && value.version === PUBLIC_BENCHMARK.version;
+}
+
+function matchesPublicTimingContract(report) {
+  return (
+    report?.provenance?.timing_compute_contract === PUBLIC_BENCHMARK.timing_compute_contract
+    && report?.provenance?.delivery_policy === PUBLIC_BENCHMARK.delivery_policy
+    && report?.provenance?.replay_profile === PUBLIC_BENCHMARK.replay_profile
+    && report?.provenance?.replay_rate === PUBLIC_BENCHMARK.replay_rate
+    && report?.leaderboard?.policy_version === PUBLIC_BENCHMARK.leaderboard_policy
+    && report?.leaderboard?.replay_class === PUBLIC_BENCHMARK.replay_profile
+  );
 }
 
 async function readJson(request, maxBytes) {
@@ -702,6 +929,14 @@ export const CONTRACT = {
     measures: ["class-aware detection and association", "HOTA", "IDF1", "misses", "false tracks", "ID switches", "fragmentation", "track completeness", "latency", "resource use", "diagnostics"],
     input: "Progressive timestamped JPEG frames over a Unix-domain socket; the system under test never receives future frames.",
     temporal_support: "The socket stays open across ordered frames. Detector, tracker, temporal-memory, association, filtering, and post-processing pipelines may retain multi-frame state and may use multiple processes.",
+    timing_compute: {
+      source_time: "Native source timestamps, FPS, and duration are immutable. Replay pace never rewrites camera truth.",
+      replay: "Public /api/v1 submissions are fixed to the allowlisted native profile at exactly 1.0x. The v1 request has no replay override; slower allowlisted profiles are separate benchmark classes, never native results.",
+      delivery: "An independent monotonic source schedule preserves ordering and never reveals future frames. The lossless-v1 policy reports sender pressure, delivery backlog, deadline misses, and explicit fault drops.",
+      completion: "Startup, stream delivery, bounded post-stream drain, wall duration, per-output processing latency, late-output counts, and out-of-band teardown are reported separately.",
+      compute: "The trusted host reads cgroup-v2 CPU time, CPU-seconds per native source-second, average/peak CPU, peak RAM, disk I/O, process count, and a final cumulative sample without executing inside the submitted image. Missing axes are ineligible. GPU/VRAM are omitted unless an isolated device is assigned.",
+      fairness: "cvbench.pareto/v1 has no hidden composite. Accuracy remains intact; replay profile, compute tier, completion tier, and raw efficiency axes define the leaderboard class.",
+    },
   },
   container: {
     image: "Prebuilt OCI image pinned as registry/repository@sha256:<64 lowercase hex characters>.",
@@ -716,7 +951,7 @@ export const CONTRACT = {
   },
   submission: {
     accepted: ["image", "argv", "name", "model_version", "contact", "notes"],
-    rejected: ["source repositories", "build instructions", "shell command strings", "Docker socket access", "custom environment variables"],
+    rejected: ["source repositories", "build instructions", "shell command strings", "Docker socket access", "custom environment variables", "replay or pacing overrides"],
     authentication: "Bearer submission API key plus a unique Idempotency-Key header.",
     terminology: "The submitted object is a complete system image. One linux/amd64 OCI image is a packaging, reproducibility, and security boundary, not a one-learned-model or one-process assumption.",
     compatibility_names: {
@@ -750,7 +985,43 @@ export const OPENAPI = {
       get: {
         operationId: "getSubmission",
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
-        responses: { 200: { description: "Public submission status/result" }, 404: { description: "Not found" } },
+        responses: {
+          200: {
+            description: "Public submission status/result with raw accuracy and timing/compute axes",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    result: {
+                      type: ["object", "null"],
+                      properties: {
+                        scores: { $ref: "#/components/schemas/TimingComputeSummary" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          404: { description: "Not found" },
+        },
+      },
+    },
+    "/api/v1/internal/submissions/{id}/result": {
+      post: {
+        operationId: "completeRunnerSubmission",
+        security: [{ runnerKey: [] }],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        requestBody: {
+          required: true,
+          content: {"application/json": {schema: {$ref: "#/components/schemas/RunnerResult"}}},
+        },
+        responses: {
+          200: {description: "Lease completed"},
+          409: {description: "Lease conflict"},
+          422: {description: "Invalid or incomplete report"},
+        },
       },
     },
     "/api/v1/operator/jobs": {
@@ -788,6 +1059,7 @@ export const OPENAPI = {
   components: {
     securitySchemes: {
       submissionKey: { type: "http", scheme: "bearer" },
+      runnerKey: { type: "http", scheme: "bearer" },
       operatorReadKey: { type: "http", scheme: "bearer", description: "Least-privilege operator read credential; never the submission, adjudicator, or runner token." },
       operatorAdjudicatorKey: { type: "http", scheme: "bearer", description: "Credential mapped to one stable actor identity; it cannot read operator routes and is never exposed or stored as a bearer value." },
     },
@@ -805,6 +1077,77 @@ export const OPENAPI = {
           notes: { type: "string", maxLength: 1000 },
         },
       },
+      TimingComputeSummary: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          sample_counts: { type: "object" },
+          acquisition_rate: { type: ["number", "null"] },
+          observed_coverage: { type: ["number", "null"] },
+          continuity_coverage: { type: ["number", "null"] },
+          mean_iou: { type: ["number", "null"] },
+          id_switches: { type: ["number", "null"] },
+          false_track_births: { type: ["number", "null"] },
+          reacquisition_same_id_rate: { type: ["number", "null"] },
+          latency_p50_ms: { type: ["number", "null"], minimum: 0 },
+          latency_p99_ms: { type: ["number", "null"], minimum: 0 },
+          native_source_duration_seconds: { type: ["number", "null"], minimum: 0 },
+          wall_seconds: { type: ["number", "null"], minimum: 0 },
+          startup_seconds: { type: ["number", "null"], minimum: 0 },
+          stream_delivery_seconds: { type: ["number", "null"], minimum: 0 },
+          completion_seconds: { type: ["number", "null"], minimum: 0 },
+          drain_seconds: { type: ["number", "null"], minimum: 0 },
+          teardown_seconds: { type: ["number", "null"], minimum: 0 },
+          replay_profile: { type: ["string", "null"], enum: ["native", null] },
+          replay_rate: { type: ["number", "null"], enum: [1, null] },
+          effective_replay_rate: { type: ["number", "null"], minimum: 0 },
+          delivered_frames_per_second: { type: ["number", "null"], minimum: 0 },
+          cpu_time_seconds: { type: ["number", "null"], minimum: 0 },
+          cpu_seconds_per_native_source_second: { type: ["number", "null"], minimum: 0 },
+          real_time_factor: { type: ["number", "null"], minimum: 0 },
+          average_cpu_percent: { type: ["number", "null"], minimum: 0 },
+          peak_cpu_percent: { type: ["number", "null"], minimum: 0 },
+          peak_ram_bytes: { type: ["number", "null"], minimum: 0 },
+          disk_read_bytes: { type: ["number", "null"], minimum: 0 },
+          disk_write_bytes: { type: ["number", "null"], minimum: 0 },
+          output_records_per_native_source_second: { type: ["number", "null"], minimum: 0 },
+          processing_latency_p95_ms: { type: ["number", "null"], minimum: 0 },
+          native_source_offset_p95_ms: { type: ["number", "null"] },
+          delivery_backlog_max_ms: { type: ["number", "null"], minimum: 0 },
+          delivery_deadline_missed_frames: { type: ["integer", "null"], minimum: 0 },
+          leaderboard_class: { type: ["string", "null"] },
+          leaderboard_eligible: { type: "boolean" },
+          leaderboard_disqualifications: { type: "array", items: { type: "string" } },
+          accounting_complete: { type: "boolean" },
+          perfect: { type: "boolean" },
+        },
+      },
+      RunnerResult: {
+        oneOf: [
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["status", "lease_token", "report"],
+            properties: {
+              status: { const: "succeeded" },
+              lease_token: { type: "string", minLength: 32, maxLength: 200 },
+              report: { $ref: "#/components/schemas/ReportV1" },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["status", "lease_token", "error"],
+            properties: {
+              status: { const: "failed" },
+              lease_token: { type: "string", minLength: 32, maxLength: 200 },
+              error: { type: "string", minLength: 1, maxLength: 2000 },
+            },
+          },
+        ],
+      },
+      TimingComputeV1: OPENAPI_TIMING_COMPUTE_SCHEMA,
+      ReportV1: OPENAPI_REPORT_SCHEMA,
     },
   },
 };

@@ -17,6 +17,11 @@ from scripts.run_control_plane_job import (
     PUBLIC_BENCHMARK_ID,
     PUBLIC_BENCHMARK_MANIFEST,
     PUBLIC_BENCHMARK_VERSION,
+    PUBLIC_DELIVERY_POLICY,
+    PUBLIC_LEADERBOARD_POLICY,
+    PUBLIC_REPLAY_PROFILE,
+    PUBLIC_REPLAY_RATE,
+    PUBLIC_TIMING_COMPUTE_CONTRACT,
     SECRET_ENVIRONMENT_KEYS,
     build_success_callback,
     callback_path,
@@ -35,6 +40,11 @@ BENCHMARK = {
     "id": PUBLIC_BENCHMARK_ID,
     "version": PUBLIC_BENCHMARK_VERSION,
     "manifest": PUBLIC_BENCHMARK_MANIFEST,
+    "timing_compute_contract": PUBLIC_TIMING_COMPUTE_CONTRACT,
+    "delivery_policy": PUBLIC_DELIVERY_POLICY,
+    "replay_profile": PUBLIC_REPLAY_PROFILE,
+    "replay_rate": PUBLIC_REPLAY_RATE,
+    "leaderboard_policy": PUBLIC_LEADERBOARD_POLICY,
 }
 
 
@@ -95,6 +105,26 @@ def test_validate_lease_revalidates_untrusted_control_plane_data() -> None:
                 "lease": {"token": "b" * 64},
             }
         )
+
+    for key, value in (
+        ("timing_compute_contract", "other"),
+        ("delivery_policy", "other"),
+        ("replay_profile", "half-speed"),
+        ("replay_rate", 0.5),
+        ("leaderboard_policy", "other"),
+    ):
+        with pytest.raises(ValueError, match="benchmark assignment"):
+            validate_lease(
+                {
+                    "submission": {
+                        "id": "12345678-1234-4123-8123-123456789abc",
+                        "image": IMAGE,
+                        "argv": ["python"],
+                        "benchmark": {**BENCHMARK, key: value},
+                    },
+                    "lease": {"token": "b" * 64},
+                }
+            )
 
 
 def test_generated_system_config_preserves_argv_without_a_shell(tmp_path: Path) -> None:
@@ -271,6 +301,49 @@ def test_worst_case_stderr_report_fits_callback_budget_and_records_success(
 
     assert terminal["status"] == "succeeded"
     assert terminal["report"]["metrics"] == original_metrics
+
+
+def test_large_per_frame_timing_evidence_is_compacted_without_losing_raw_axes() -> None:
+    report = {
+        "audit_evidence": {"schema_version": "cvbench.audit/v1"},
+        "timing": {
+            "source": {"duration_seconds": 10},
+            "durations": {"real_time_factor": 1.2},
+            "delivery": {
+                "per_frame": [
+                    {
+                        "sequence_id": "sequence",
+                        "frame_index": index,
+                        "native_source_timestamp_ns": index * 1_000_000,
+                        "delivery_backlog_ms": index / 10,
+                        "sender_call_ms": 0.1,
+                        "deadline_missed": False,
+                        "padding": "x" * 200,
+                    }
+                    for index in range(5000)
+                ]
+            },
+        },
+        "resources": {"cpu_seconds_per_native_source_second": 1.25},
+    }
+    callback = build_success_callback(report, "b" * 64, MAX_CALLBACK_BYTES)
+    assert len(callback_payload_bytes(callback)) <= MAX_CALLBACK_BYTES
+    compacted = callback["report"]
+    assert compacted["timing"]["source"] == report["timing"]["source"]
+    assert compacted["timing"]["durations"] == report["timing"]["durations"]
+    assert compacted["resources"] == report["resources"]
+    delivery = compacted["timing"]["delivery"]
+    assert len(delivery["per_frame"]) == 64
+    assert delivery["per_frame"][0]["frame_index"] == 0
+    assert delivery["per_frame"][-1]["frame_index"] == 4999
+    assert delivery["per_frame_compaction"] == {
+        "truncated": True,
+        "retention": "head_and_tail",
+        "original_frames": 5000,
+        "retained_frames": 64,
+        "omitted_frames": 4936,
+    }
+    assert len(report["timing"]["delivery"]["per_frame"]) == 5000
 
 
 def test_near_one_megabyte_model_record_fits_actual_callback_boundary() -> None:

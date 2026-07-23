@@ -2,8 +2,61 @@ from __future__ import annotations
 
 import html
 import json
+from functools import lru_cache
+from importlib import resources
 from pathlib import Path
 from typing import Any
+
+from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
+
+
+def _schema(name: str) -> dict[str, Any]:
+    source = Path(__file__).parents[2] / "schemas" / name
+    text = source.read_text() if source.exists() else resources.files("cvbench").joinpath("_schemas", name).read_text()
+    return json.loads(text)
+
+
+@lru_cache(maxsize=1)
+def _report_validator() -> Draft202012Validator:
+    timing_schema = _schema("timing-compute-v1.schema.json")
+    registry = Registry().with_resource(timing_schema["$id"], Resource.from_contents(timing_schema))
+    return Draft202012Validator(
+        _schema("report-v1.schema.json"),
+        registry=registry,
+        format_checker=FormatChecker(),
+    )
+
+
+@lru_cache(maxsize=1)
+def _redacted_report_validator() -> Draft202012Validator:
+    timing_schema = _schema("timing-compute-v1.schema.json")
+    report_schema = _schema("report-v1.schema.json")
+    registry = Registry()
+    registry = registry.with_resource(timing_schema["$id"], Resource.from_contents(timing_schema))
+    registry = registry.with_resource(report_schema["$id"], Resource.from_contents(report_schema))
+    return Draft202012Validator(
+        _schema("report-redacted-v1.schema.json"),
+        registry=registry,
+        format_checker=FormatChecker(),
+    )
+
+
+def _validate(report: dict[str, Any], validator: Draft202012Validator, schema_version: str) -> None:
+    wire_report = json.loads(json.dumps(report, allow_nan=False))
+    errors = sorted(validator.iter_errors(wire_report), key=lambda error: list(error.absolute_path))
+    if errors:
+        error = errors[0]
+        location = ".".join(str(part) for part in error.absolute_path) or "<report>"
+        raise ValueError(f"invalid {schema_version} at {location}: {error.message}")
+
+
+def validate_report(report: dict[str, Any]) -> None:
+    _validate(report, _report_validator(), "cvbench.report/v1")
+
+
+def validate_redacted_report(report: dict[str, Any]) -> None:
+    _validate(report, _redacted_report_validator(), "cvbench.report-redacted/v1")
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -27,6 +80,19 @@ def render_html(report: dict[str, Any]) -> str:
         ("Observed coverage", metrics["coverage"].get("overall_observed")),
         ("Continuity", metrics["coverage"].get("overall_continuity")),
         ("Median latency (ms)", metrics["latency"].get("median")),
+        (
+            "Native-source offset p95 (ms)",
+            report.get("timing", {}).get("native_source_offset_ms", {}).get("p95"),
+        ),
+        (
+            "CPU-s / native source-s",
+            report.get("resources", {}).get("cpu_seconds_per_native_source_second"),
+        ),
+        (
+            "Real-time factor",
+            report.get("timing", {}).get("durations", {}).get("real_time_factor"),
+        ),
+        ("Leaderboard class", report.get("leaderboard", {}).get("class_id")),
         ("Mean IoU", metrics["localization"].get("mean_iou")),
         ("ID switches", metrics["identity"].get("id_switches")),
         ("False track births", metrics["false_detections"].get("track_births")),
@@ -61,6 +127,7 @@ body{{font:16px/1.5 system-ui,sans-serif;max-width:1100px;margin:auto;padding:2r
 
 
 def write_report_files(run_dir: Path, report: dict[str, Any]) -> tuple[Path, Path]:
+    validate_report(report)
     json_path = run_dir / "report.json"
     html_path = run_dir / "report.html"
     write_json(json_path, report)

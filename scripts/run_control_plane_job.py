@@ -17,6 +17,7 @@ from typing import Any
 
 from cvbench.audit import AUDIT_EVIDENCE_MAX_BYTES
 from cvbench.json_contract import serialized_json_bytes
+from cvbench.reporting import validate_report
 
 try:
     from scripts.hydrate_real_video_corpus import hydrate
@@ -43,6 +44,11 @@ MAX_CALLBACK_BYTES = 1024 * 1024
 PUBLIC_BENCHMARK_ID = "public-whole-system-tracking"
 PUBLIC_BENCHMARK_VERSION = "2.0.0"
 PUBLIC_BENCHMARK_MANIFEST = "benchmarks/public-whole-system-v2.yaml"
+PUBLIC_TIMING_COMPUTE_CONTRACT = "cvbench.timing-compute/v1"
+PUBLIC_DELIVERY_POLICY = "cvbench.delivery-lossless/v1"
+PUBLIC_REPLAY_PROFILE = "native"
+PUBLIC_REPLAY_RATE = 1
+PUBLIC_LEADERBOARD_POLICY = "cvbench.pareto/v1"
 PUBLIC_SCENARIO_IDS = {
     "synthetic-acquisition",
     "synthetic-false-detection",
@@ -126,6 +132,11 @@ def validate_lease(lease: dict[str, Any]) -> tuple[dict[str, Any], str, int]:
         benchmark.get("id") != PUBLIC_BENCHMARK_ID
         or benchmark.get("version") != PUBLIC_BENCHMARK_VERSION
         or benchmark.get("manifest") != PUBLIC_BENCHMARK_MANIFEST
+        or benchmark.get("timing_compute_contract") != PUBLIC_TIMING_COMPUTE_CONTRACT
+        or benchmark.get("delivery_policy") != PUBLIC_DELIVERY_POLICY
+        or benchmark.get("replay_profile") != PUBLIC_REPLAY_PROFILE
+        or benchmark.get("replay_rate") != PUBLIC_REPLAY_RATE
+        or benchmark.get("leaderboard_policy") != PUBLIC_LEADERBOARD_POLICY
     ):
         raise ValueError("lease contains an unsupported benchmark assignment")
     if (
@@ -145,12 +156,41 @@ def build_success_callback(report: dict[str, Any], lease_token: str, max_bytes: 
     if len(callback_payload_bytes(body)) <= max_bytes:
         return body
 
-    diagnostics = report.get("diagnostics")
+    compact_report = dict(report)
+    timing = report.get("timing")
+    delivery = timing.get("delivery") if isinstance(timing, dict) else None
+    per_frame = delivery.get("per_frame") if isinstance(delivery, dict) else None
+    if isinstance(per_frame, list):
+        retained_count = min(64, len(per_frame))
+        head = (retained_count + 1) // 2
+        tail = retained_count // 2
+        compact_timing = dict(timing)
+        compact_delivery = dict(delivery)
+        compact_report["timing"] = compact_timing
+        compact_timing["delivery"] = compact_delivery
+        compact_delivery["per_frame"] = per_frame[:head] + (
+            per_frame[-tail:] if tail else []
+        )
+        compact_delivery["per_frame_compaction"] = {
+            "truncated": retained_count < len(per_frame),
+            "retention": "head_and_tail",
+            "original_frames": len(per_frame),
+            "retained_frames": retained_count,
+            "omitted_frames": len(per_frame) - retained_count,
+        }
+        body = {
+            "status": "succeeded",
+            "lease_token": lease_token,
+            "report": compact_report,
+        }
+        if len(callback_payload_bytes(body)) <= max_bytes:
+            return body
+
+    diagnostics = compact_report.get("diagnostics")
     stderr = diagnostics.get("sut_stderr") if isinstance(diagnostics, dict) else None
     if not isinstance(stderr, list) or not all(isinstance(line, str) for line in stderr):
         raise ValueError("report exceeds the callback budget without compactable stderr diagnostics")
 
-    compact_report = dict(report)
     compact_diagnostics = dict(diagnostics)
     compact_report["diagnostics"] = compact_diagnostics
     compact_diagnostics["sut_stderr"] = []
@@ -305,10 +345,12 @@ def execute_submission(repository: Path, submission: dict[str, Any], work: Path)
         if isolation.get("status") != "verified" or isolation.get("network_mode") != "none":
             raise RuntimeError("benchmark did not verify the required container isolation")
         report["runner"] = {
+            "schema_version": "cvbench.runner/v1",
             "commit": os.environ.get("GITHUB_SHA"),
             "workflow_run_url": _workflow_run_url(),
             "workflow_name": os.environ.get("GITHUB_WORKFLOW"),
         }
+        validate_report(report)
         return report
     finally:
         cleanup_benchmark_containers(job_id, environment)

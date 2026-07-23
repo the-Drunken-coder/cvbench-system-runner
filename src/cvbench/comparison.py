@@ -32,22 +32,45 @@ def compare_reports(baseline: dict[str, Any], candidate: dict[str, Any]) -> list
     candidate_samples = int(_get(candidate_metrics, "sample_counts.matches") or 0)
     baseline_fingerprint = _get(baseline, "provenance.comparison_fingerprint")
     candidate_fingerprint = _get(candidate, "provenance.comparison_fingerprint")
-    if not baseline_fingerprint or baseline_fingerprint != candidate_fingerprint:
-        names = [*METRICS, "resources.average_cpu_percent", "resources.peak_ram_bytes"]
+    baseline_class = _get(baseline, "leaderboard.class_id")
+    candidate_class = _get(candidate, "leaderboard.class_id")
+    baseline_eligible = _get(baseline, "leaderboard.eligible") is True
+    candidate_eligible = _get(candidate, "leaderboard.eligible") is True
+    if (
+        not baseline_fingerprint
+        or baseline_fingerprint != candidate_fingerprint
+        or not isinstance(baseline_class, str)
+        or not baseline_class
+        or baseline_class != candidate_class
+        or not baseline_eligible
+        or not candidate_eligible
+    ):
+        names = [
+            *METRICS,
+            "resources.average_cpu_percent",
+            "resources.cpu_seconds_per_native_source_second",
+            "resources.peak_ram_bytes",
+            "resources.disk_read_bytes",
+            "resources.disk_write_bytes",
+            "timing.durations.real_time_factor",
+        ]
         return [
             {
                 "metric": metric,
                 "baseline": _get(baseline, metric)
-                if metric.startswith("resources.")
+                if metric.startswith(("resources.", "timing."))
                 else _get(baseline_metrics, metric),
                 "candidate": _get(candidate, metric)
-                if metric.startswith("resources.")
+                if metric.startswith(("resources.", "timing."))
                 else _get(candidate_metrics, metric),
                 "delta": None,
                 "direction": "inconclusive",
                 "confidence": "low",
                 "sample_count": candidate_samples,
-                "reason": "benchmark scenarios or scoring configuration are incompatible",
+                "reason": (
+                    "both reports must be eligible and have identical non-null benchmark "
+                    "fingerprints and leaderboard classes"
+                ),
             }
             for metric in names
         ]
@@ -88,7 +111,11 @@ def compare_reports(baseline: dict[str, Any], candidate: dict[str, Any]) -> list
         )
     resource_pairs = {
         "resources.average_cpu_percent": "lower",
+        "resources.cpu_seconds_per_native_source_second": "lower",
         "resources.peak_ram_bytes": "lower",
+        "resources.disk_read_bytes": "lower",
+        "resources.disk_write_bytes": "lower",
+        "timing.durations.real_time_factor": "lower",
     }
     for metric, preferred in resource_pairs.items():
         old = _get(baseline, metric)

@@ -219,7 +219,9 @@ def test_identity_switch_misses_and_false_tracks_reduce_mot_scores() -> None:
 def test_real_ground_truth_is_never_part_of_frame_protocol_metadata() -> None:
     runner = (ROOT / "src" / "cvbench" / "runner.py").read_text()
     metadata_block = runner[runner.index('metadata = {', runner.index("def _deliver_scenarios")) :]
-    metadata_block = metadata_block[: metadata_block.index("send_message(connection, metadata")]
+    metadata_block = metadata_block[
+        : metadata_block.index("_send_before_deadline(connection, metadata")
+    ]
     assert "bbox_xyxy" not in metadata_block
     assert "ground_truth" not in metadata_block
     assert "target_id" not in metadata_block
