@@ -72,11 +72,13 @@ jobs:
           cvbench run --benchmark benchmarks/timing-compute-evidence.yaml --system systems/pacing-cpu-heavy-docker.yaml --output pacing-cpu-heavy-runs
           cvbench run --benchmark benchmarks/timing-compute-evidence.yaml --system systems/pacing-idle-docker.yaml --output pacing-idle-runs
           cvbench run --benchmark benchmarks/timing-compute-evidence.yaml --system systems/pacing-background-child-docker.yaml --output pacing-background-child-runs
+          cvbench run --benchmark benchmarks/timing-compute-evidence.yaml --system systems/pacing-final-burst-docker.yaml --output pacing-final-burst-runs
           python scripts/assert_pacing_evidence.py \
             --fast pacing-fast-runs \
             --cpu-heavy pacing-cpu-heavy-runs \
             --idle pacing-idle-runs \
             --background-child pacing-background-child-runs \
+            --final-burst pacing-final-burst-runs \
             --output timing-compute-docker-evidence.json
       - name: Upload timing and compute Docker evidence
         uses: actions/upload-artifact@v4

@@ -1,3 +1,4 @@
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -74,15 +75,82 @@ def test_external_cgroup_v2_accounting_never_executes_in_submitted_image(
     assert monitor.capture_checkpoint()
     (group / "cpu.stat").write_text("usage_usec 1200000\n")
     assert monitor.capture_checkpoint()
-    monitor.finalize_accounting()
+    (group / "cpu.stat").write_text("usage_usec 1500000\n")
+    (group / "io.stat").write_text("8:0 rbytes=30 wbytes=80 rios=2 wios=3\n")
+    assert monitor.finalize_accounting()
     summary = monitor.summary(1)
 
     assert cgroup_v2_path("0::/docker/test\n", cgroup_root) == group
     assert parse_io_stat("8:0 rbytes=4 wbytes=5\n") == (4, 5)
-    assert summary["cpu_time_seconds"] == 1.2
+    assert summary["cpu_time_seconds"] == 1.5
+    assert summary["disk_read_bytes"] == 30
+    assert summary["disk_write_bytes"] == 80
     assert summary["peak_ram_bytes"] == 1536
     assert summary["accounting_scope"] == "container_cgroup_v2_external"
     assert summary["authoritative"] is True
     assert all(sample.get("accounting_source") == "host_cgroup_v2" for sample in summary["over_time"])
+    assert [sample.get("final_cumulative", False) for sample in summary["over_time"]] == [
+        False,
+        False,
+        True,
+    ]
     assert commands == [["docker", "inspect", "--format", "{{.State.Pid}}", "container-id"]]
     assert not any("exec" in command for command in commands)
+
+
+def test_final_accounting_never_certifies_a_stale_sample_after_cgroup_disappears(
+    tmp_path, monkeypatch
+) -> None:
+    proc_root = tmp_path / "proc"
+    cgroup_root = tmp_path / "cgroup"
+    (proc_root / "123").mkdir(parents=True)
+    (proc_root / "123" / "cgroup").write_text("0::/docker/test\n")
+    group = cgroup_root / "docker/test"
+    group.mkdir(parents=True)
+    (group / "cpu.stat").write_text("usage_usec 1000000\n")
+    (group / "io.stat").write_text("8:0 rbytes=10 wbytes=20\n")
+    (group / "memory.current").write_text("1024\n")
+    (group / "memory.max").write_text("2048\n")
+    (group / "memory.peak").write_text("1536\n")
+    (group / "pids.current").write_text("1\n")
+    cidfile = tmp_path / "container.cid"
+    cidfile.write_text("container-id")
+    monkeypatch.setattr(
+        "cvbench.resources.subprocess.run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="123\n", stderr=""),
+    )
+    monitor = ResourceMonitor(
+        SimpleNamespace(pid=1),
+        cidfile=cidfile,
+        proc_root=proc_root,
+        cgroup_root=cgroup_root,
+    )
+    assert monitor.capture_checkpoint()
+
+    # Work occurs after the genuine sample, but Docker removes the cgroup before
+    # the scoring-boundary read can observe its cumulative CPU and I/O totals.
+    (group / "cpu.stat").write_text("usage_usec 2500000\n")
+    (group / "io.stat").write_text("8:0 rbytes=30 wbytes=4096\n")
+    shutil.rmtree(group)
+
+    assert monitor.finalize_accounting() is False
+    summary = monitor.summary(1)
+    assert summary["cpu_time_seconds"] == 1
+    assert summary["disk_write_bytes"] == 20
+    assert summary["accounting_availability"]["final_cumulative_cpu_sample"] is False
+    assert summary["authoritative"] is False
+    assert not any(sample.get("final_cumulative") for sample in summary["over_time"])
+
+
+def test_immediate_cgroup_disappearance_has_no_synthetic_final_sample(tmp_path) -> None:
+    monitor = ResourceMonitor(
+        SimpleNamespace(pid=1),
+        cidfile=tmp_path / "missing.cid",
+        proc_root=tmp_path / "proc",
+        cgroup_root=tmp_path / "cgroup",
+    )
+    assert monitor.finalize_accounting() is False
+    summary = monitor.summary(0)
+    assert summary["over_time"] == []
+    assert summary["accounting_availability"]["final_cumulative_cpu_sample"] is False
+    assert summary["authoritative"] is False

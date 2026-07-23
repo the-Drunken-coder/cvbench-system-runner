@@ -208,6 +208,7 @@ def stop_runtime(
     grace: float,
     checkpoint: Callable[[], None] | None = None,
     on_scoring_finished: Callable[[], None] | None = None,
+    release_after_scoring: Callable[[], None] | None = None,
 ) -> RuntimeStop:
     """Enforce the scoring deadline, then tear down descendants out of band."""
     forced = False
@@ -220,9 +221,14 @@ def stop_runtime(
         exit_code = runtime.process.poll()
     if checkpoint is not None:
         checkpoint()
-    scoring_finished_ns = time.monotonic_ns()
     if on_scoring_finished is not None:
         on_scoring_finished()
+    scoring_finished_ns = time.monotonic_ns()
+    if release_after_scoring is not None:
+        release_after_scoring()
+        if exit_code is None:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                exit_code = runtime.process.wait(timeout=0.25)
     if exit_code is None:
         forced = True
         _signal_process_group(runtime, signal.SIGTERM)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -372,6 +373,11 @@ def _finish_scoring(monitor: ResourceMonitor, collector: OutputCollector) -> Non
     monitor.finalize_accounting()
 
 
+def _release_input(connection: socket.socket) -> None:
+    with contextlib.suppress(OSError):
+        connection.shutdown(socket.SHUT_WR)
+
+
 def _load_unique_scenarios(
     paths: tuple[Path, ...], run_id: str, evaluation_order_seed: str | int | None = None
 ) -> list[Scenario]:
@@ -550,18 +556,19 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                     frame_delivery_ns,
                     delivery,
                 )
-            monitor.set_context(None, None, False, phase="drain")
-            drain_budget = min(
-                system.grace_period_seconds,
-                benchmark.max_drain_seconds,
-                max(0.0, run_deadline - time.monotonic()),
-            )
-            stopped = stop_runtime(
-                runtime,
-                drain_budget,
-                monitor.capture_checkpoint,
-                lambda: _finish_scoring(monitor, collector),
-            )
+                monitor.set_context(None, None, False, phase="drain")
+                drain_budget = min(
+                    system.grace_period_seconds,
+                    benchmark.max_drain_seconds,
+                    max(0.0, run_deadline - time.monotonic()),
+                )
+                stopped = stop_runtime(
+                    runtime,
+                    drain_budget,
+                    monitor.capture_checkpoint,
+                    lambda: _finish_scoring(monitor, collector),
+                    lambda: _release_input(connection),
+                )
             runtime_stopped = True
             finished_ns = stopped.scoring_finished_ns
             teardown_finished_ns = stopped.teardown_finished_ns

@@ -85,6 +85,7 @@ def main() -> int:
     parser.add_argument("--cpu-heavy", type=Path, required=True)
     parser.add_argument("--idle", type=Path, required=True)
     parser.add_argument("--background-child", type=Path, required=True)
+    parser.add_argument("--final-burst", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     reports = {
@@ -92,6 +93,7 @@ def main() -> int:
         "cpu_heavy": _report(args.cpu_heavy),
         "idle": _report(args.idle),
         "background_child": _report(args.background_child),
+        "final_burst": _report(args.final_burst),
     }
     for report in reports.values():
         assert report["outcome"]["status"] == "completed", report["outcome"]
@@ -113,6 +115,7 @@ def main() -> int:
     cpu_heavy = reports["cpu_heavy"]
     idle = reports["idle"]
     child = reports["background_child"]
+    final_burst = reports["final_burst"]
     assert cpu_heavy["timing"]["durations"]["real_time_factor"] > fast["timing"]["durations"]["real_time_factor"]
     assert idle["timing"]["durations"]["real_time_factor"] > fast["timing"]["durations"]["real_time_factor"]
     assert (
@@ -128,6 +131,12 @@ def main() -> int:
         child["resources"]["cpu_seconds_per_native_source_second"]
         > fast["resources"]["cpu_seconds_per_native_source_second"]
     )
+    burst_samples = final_burst["resources"]["over_time"]
+    first_drain = next(sample for sample in burst_samples if sample["phase"] == "drain")
+    final_sample = burst_samples[-1]
+    assert final_sample["final_cumulative"] is True
+    assert final_sample["cpu_time_seconds"] > first_drain["cpu_time_seconds"]
+    assert final_sample["disk_write_bytes"] > first_drain["disk_write_bytes"]
     accuracy = {
         (
             report["metrics"]["acquisition"]["rate"],
@@ -146,6 +155,7 @@ def main() -> int:
         "cpu_heavy": False,
         "idle": False,
         "background_child": False,
+        "final_burst": False,
     }
 
     evidence = {

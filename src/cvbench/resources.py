@@ -117,7 +117,6 @@ class ResourceMonitor:
         self._container_id: str | None = None
         self._cgroup_path: Path | None = None
         self._last_cpu: tuple[int, float] | None = None
-        self._last_external_sample_ns: int | None = None
         self._final_sample_complete = False
 
     def start(self) -> None:
@@ -248,7 +247,7 @@ class ResourceMonitor:
         with self._capture_lock:
             return self._capture_cgroup_checkpoint()
 
-    def _capture_cgroup_checkpoint(self) -> bool:
+    def _capture_cgroup_checkpoint(self, *, final_cumulative: bool = False) -> bool:
         if self.cidfile is None:
             return False
         if self._container_id is None and self.cidfile.exists():
@@ -274,7 +273,6 @@ class ResourceMonitor:
             if elapsed > 0:
                 cpu_percent = max(0.0, (cpu_time - previous_cpu) / elapsed * 100)
         self._last_cpu = (sampled_ns, cpu_time)
-        self._last_external_sample_ns = sampled_ns
         sample = {
             "elapsed_ms": (sampled_ns - self._started_ns) / 1_000_000,
             "cpu_percent": cpu_percent,
@@ -293,22 +291,20 @@ class ResourceMonitor:
             "accounting_source": "host_cgroup_v2",
             **self.context,
         }
+        if final_cumulative:
+            sample["final_cumulative"] = True
         with self._lock:
             self.samples.append(sample)
         return True
 
-    def finalize_accounting(self) -> None:
-        fresh = (
-            self._last_external_sample_ns is not None
-            and time.monotonic_ns() - self._last_external_sample_ns
-            <= max(500_000_000, int(self.interval_seconds * 3 * 1_000_000_000))
-        )
-        with self._lock:
-            for sample in reversed(self.samples):
-                if sample.get("accounting_source") == "host_cgroup_v2":
-                    sample["final_cumulative"] = fresh
-                    self._final_sample_complete = fresh
-                    break
+    def finalize_accounting(self) -> bool:
+        """Capture and certify a new cumulative sample at the scoring boundary."""
+        with self._capture_lock:
+            if self._final_sample_complete:
+                return True
+            captured = self._capture_cgroup_checkpoint(final_cumulative=True)
+            self._final_sample_complete = captured
+            return captured
 
     def add_gpu_snapshot(self) -> None:
         if not shutil.which("nvidia-smi"):

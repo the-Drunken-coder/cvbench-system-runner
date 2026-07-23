@@ -94,7 +94,7 @@ def _connect(path: str) -> socket.socket:
 
 def _pacing_mode() -> tuple[str, float]:
     mode = os.environ.get("CVBENCH_PACING_EVIDENCE_MODE", "fast")
-    if mode not in {"fast", "cpu-heavy", "idle", "background-child-cpu"}:
+    if mode not in {"fast", "cpu-heavy", "idle", "background-child-cpu", "final-burst"}:
         raise ValueError("CVBENCH_PACING_EVIDENCE_MODE is invalid")
     try:
         delay = float(os.environ.get("CVBENCH_PACING_EVIDENCE_DELAY_SECONDS", "0.15"))
@@ -128,6 +128,23 @@ def _background_cpu_worker(mode: str) -> subprocess.Popen[bytes] | None:
     )
 
 
+def _final_accounting_burst(mode: str) -> None:
+    if mode != "final-burst":
+        return
+    time.sleep(0.12)
+    deadline = time.perf_counter() + 0.15
+    value = 1
+    while time.perf_counter() < deadline:
+        value = (value * 1_664_525 + 1_013_904_223) & 0xFFFFFFFF
+    with open("/tmp/cvbench-final-burst.bin", "wb") as handle:
+        for _ in range(64):
+            handle.write(bytes(64 * 1024))
+        handle.flush()
+        os.fsync(handle.fileno())
+    if value < 0:  # pragma: no cover - keeps the loop result observable
+        raise AssertionError
+
+
 def _stop_background_worker(worker: subprocess.Popen[bytes]) -> None:
     worker.terminate()
     try:
@@ -145,6 +162,7 @@ def main() -> int:
     background_worker = _background_cpu_worker(pacing_mode)
     tracks: dict[str, Track] = {}
     next_identifier = 1
+    benchmark_ended = False
     try:
         with sock, sock.makefile("rb") as stream:
             while True:
@@ -154,7 +172,11 @@ def main() -> int:
                     break
                 event = metadata.get("event")
                 if event == "benchmark_end":
-                    break
+                    _final_accounting_burst(pacing_mode)
+                    benchmark_ended = True
+                    continue
+                if benchmark_ended:
+                    continue
                 if event == "stream_start":
                     tracks.clear()
                     continue

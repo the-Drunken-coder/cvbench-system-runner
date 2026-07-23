@@ -119,6 +119,7 @@ def main() -> int:
     previous: np.ndarray | None = None
     tracks: dict[str, Track] = {}
     next_id = 1
+    benchmark_ended = False
     with sock, sock.makefile("rb") as stream:
         while True:
             try:
@@ -127,7 +128,10 @@ def main() -> int:
                 break
             event = metadata.get("event")
             if event == "benchmark_end":
-                break
+                benchmark_ended = True
+                continue
+            if benchmark_ended:
+                continue
             if event == "stream_start":
                 previous = None
                 tracks.clear()

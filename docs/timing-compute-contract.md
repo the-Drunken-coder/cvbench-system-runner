@@ -60,7 +60,7 @@ Output is causal only when its `(sequence_id, source_timestamp_ns)` names a fram
 
 ## Container compute accounting
 
-Leaderboard resource evidence is read by the trusted host runner directly from the container's cgroup-v2 files, never from SUT self-report and never by executing a command inside the submitted image. This works for distroless and `scratch` images. The runner retains a final cumulative sample at the scoring boundary. It includes:
+Leaderboard resource evidence is read by the trusted host runner directly from the container's cgroup-v2 files, never from SUT self-report and never by executing a command inside the submitted image. This works for distroless and `scratch` images. During bounded drain, a system may keep reading until the runner releases input EOF. The runner stops its sampler, captures a new cumulative cgroup sample at the scoring boundary, then releases EOF and performs teardown. If the system exits and Docker removes the cgroup before that new read succeeds, the run is ineligible; a recent ordinary sample is never relabeled as final. Evidence includes:
 
 - wall, startup, delivery, completion, and drain duration;
 - cgroup CPU time and CPU-seconds per native source-second;
@@ -98,8 +98,9 @@ The Linux Docker gate runs the same scored acquisition workload as:
 - the fast OpenCV baseline;
 - a 150 ms/frame CPU-bound system;
 - a 150 ms/frame idle system;
-- the fast system with a CPU-bound child process.
+- the fast system with a CPU-bound child process;
+- a system that performs a delayed CPU and synchronous disk-write burst after `benchmark_end`.
 
-`scripts/assert_pacing_evidence.py` requires identical accuracy and native source duration, verifies cgroup authority, proves the slow systems' real-time-factor cost, proves sleeping trades CPU for completion time, and proves child CPU/process use remains charged. It publishes the compact `cvbench.timing-compute-evidence/v1` artifact in CI.
+`scripts/assert_pacing_evidence.py` requires identical accuracy and native source duration, verifies cgroup authority, proves the slow systems' real-time-factor cost, proves sleeping trades CPU for completion time, proves child CPU/process use remains charged, and checks that the newly captured final sample includes the post-stream CPU and disk-write burst. It publishes the compact `cvbench.timing-compute-evidence/v1` artifact in CI.
 
 Public-safe Docker report artifacts are not mislabeled core reports. Sanitization changes their identity to `cvbench.report-redacted/v1`, records `cvbench.report/v1` as the source contract, and replaces restricted audit and diagnostic sections with versioned redaction markers. Both the sanitizer and upload verifier validate `schemas/report-redacted-v1.schema.json`; an artifact that claims the core report version after redaction is rejected.
