@@ -216,6 +216,35 @@ async function selectExactFrame(page, index) {
   }, index);
 }
 
+async function samplePresentation(page, durationMs, intervalMs = 8) {
+  return page.evaluate(async ({ durationMs: duration, intervalMs: interval }) => {
+    const canvas = document.querySelector("#scenario-frame");
+    const stage = document.querySelector("#frame-stage");
+    const overlay = document.querySelector("#scenario-overlay");
+    const mediaState = document.querySelector("#media-state");
+    const initialBounds = stage.getBoundingClientRect();
+    const samples = [];
+    const started = performance.now();
+    do {
+      const bounds = stage.getBoundingClientRect();
+      samples.push({
+        blank: canvas.dataset.frameReady !== "true" || bounds.width === 0 || bounds.height === 0,
+        canvasFrame: canvas.dataset.frameIndex,
+        layoutDelta: Math.max(
+          Math.abs(bounds.width - initialBounds.width),
+          Math.abs(bounds.height - initialBounds.height),
+        ),
+        mediaClass: mediaState.className,
+        mediaText: mediaState.textContent,
+        mediaVisible: !mediaState.hidden,
+        overlay: overlay.innerHTML,
+      });
+      await new Promise((resolve) => setTimeout(resolve, interval));
+    } while (performance.now() - started < duration);
+    return samples;
+  }, { durationMs, intervalMs });
+}
+
 async function installBitmapAccounting(page) {
   await page.addInitScript(() => {
     const closedBitmaps = new WeakSet();
@@ -305,9 +334,22 @@ test("native playback uses a monotonic source clock without blank or shifted pre
     const canvas = document.querySelector("#scenario-frame");
     const stage = document.querySelector("#frame-stage");
     const initial = stage.getBoundingClientRect();
-    window.__visualProbe = { blankFrames: 0, maxLayoutDelta: 0, running: true };
+    window.__visualProbe = {
+      blankFrames: 0,
+      maxLayoutDelta: 0,
+      running: true,
+      errorClassFrames: 0,
+      visibleStatusFrames: 0,
+      visibleStatusText: new Set(),
+    };
     const sample = () => {
       if (canvas.dataset.frameReady !== "true") window.__visualProbe.blankFrames += 1;
+      const mediaState = document.querySelector("#media-state");
+      if (mediaState.classList.contains("error")) window.__visualProbe.errorClassFrames += 1;
+      if (!mediaState.hidden) {
+        window.__visualProbe.visibleStatusFrames += 1;
+        window.__visualProbe.visibleStatusText.add(mediaState.textContent);
+      }
       const current = stage.getBoundingClientRect();
       window.__visualProbe.maxLayoutDelta = Math.max(
         window.__visualProbe.maxLayoutDelta,
@@ -342,10 +384,16 @@ test("native playback uses a monotonic source clock without blank or shifted pre
 
   const visual = await page.evaluate(() => {
     window.__visualProbe.running = false;
-    return window.__visualProbe;
+    return {
+      ...window.__visualProbe,
+      visibleStatusText: [...window.__visualProbe.visibleStatusText],
+    };
   });
   assert.equal(visual.blankFrames, 0);
   assert.equal(visual.maxLayoutDelta, 0);
+  assert.equal(visual.errorClassFrames, 0, "routine playback must not flicker the persistent-error class");
+  assert.equal(visual.visibleStatusFrames, 0,
+    `routine playback must never cover the verified frame; saw ${visual.visibleStatusText.join(", ")}`);
   assert.equal(await page.locator("#scenario-frame").getAttribute("role"), "img");
   assert.match(await page.locator("#scenario-frame").getAttribute("aria-label"), /exact frame \d+ of 150/);
   const synchronized = await page.evaluate(() => ({
@@ -357,6 +405,123 @@ test("native playback uses a monotonic source clock without blank or shifted pre
   }));
   assert.equal(synchronized.label.includes(`exact frame ${synchronized.frame} of`), true);
   assert.equal(synchronized.viewBox, `0 0 ${synchronized.canvasWidth} ${synchronized.canvasHeight}`);
+});
+
+test("hash verification and transient buffering hold the last good presentation without visible progress", async (context) => {
+  const { browser, fixture } = await buildBrowserFixture(context, "nonvisual-progress");
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "connection", { configurable: true, value: { saveData: true } });
+    const originalDigest = SubtleCrypto.prototype.digest;
+    const originalCreateImageBitmap = window.createImageBitmap;
+    const probe = {
+      holdDecode: false,
+      holdDigest: false,
+      decodePending: 0,
+      decodeReleases: [],
+      digestPending: 0,
+      digestReleases: [],
+      releaseDecodes() {
+        for (const release of this.decodeReleases.splice(0)) release();
+      },
+      releaseDigests() {
+        for (const release of this.digestReleases.splice(0)) release();
+      },
+    };
+    window.__presentationProbe = probe;
+    SubtleCrypto.prototype.digest = async function digest(...args) {
+      if (probe.holdDigest) {
+        probe.digestPending += 1;
+        await new Promise((resolve) => probe.digestReleases.push(resolve));
+        probe.digestPending -= 1;
+      }
+      return Reflect.apply(originalDigest, this, args);
+    };
+    window.createImageBitmap = async (...args) => {
+      const bitmap = await Reflect.apply(originalCreateImageBitmap, window, args);
+      if (probe.holdDecode) {
+        probe.decodePending += 1;
+        await new Promise((resolve) => probe.decodeReleases.push(resolve));
+        probe.decodePending -= 1;
+      }
+      return bitmap;
+    };
+  });
+  await loadScenario(page, fixture.origin, "rvmot-a1c9");
+
+  const lastGood = await page.evaluate(() => ({
+    frame: document.querySelector("#scenario-frame").dataset.frameIndex,
+    overlay: document.querySelector("#scenario-overlay").innerHTML,
+    pixels: document.querySelector("#scenario-frame").toDataURL(),
+  }));
+  await page.evaluate(() => {
+    window.__presentationProbe.holdDigest = true;
+    const scrubber = document.querySelector("#frame-scrubber");
+    scrubber.value = "100";
+    scrubber.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(() => window.__presentationProbe.digestPending === 1);
+  const verificationSamples = await samplePresentation(page, 160);
+  assert.ok(verificationSamples.length >= 12, "verification must be sampled faster than a 60 FPS frame");
+  assert.ok(verificationSamples.every((sample) => !sample.mediaVisible
+    && sample.mediaClass === "media-state"
+    && sample.mediaText === ""
+    && sample.canvasFrame === lastGood.frame
+    && sample.overlay === lastGood.overlay
+    && sample.layoutDelta === 0
+    && !sample.blank),
+  "delayed SHA verification must leave the last good pixels and overlay visually untouched");
+  assert.deepEqual(await page.evaluate(() => ({
+    frame: document.querySelector("#scenario-frame").dataset.frameIndex,
+    overlay: document.querySelector("#scenario-overlay").innerHTML,
+    pixels: document.querySelector("#scenario-frame").toDataURL(),
+  })), lastGood, "delayed verification must not redraw the last good presentation");
+  await page.evaluate(() => {
+    window.__presentationProbe.holdDigest = false;
+    window.__presentationProbe.releaseDigests();
+  });
+  await selectExactFrame(page, 100);
+
+  await page.locator("#play-pause").click();
+  await page.waitForFunction(() => document.querySelector("#viewer-announcement")?.textContent.startsWith("Playing from frame"));
+  await page.evaluate(() => { window.__presentationProbe.holdDecode = true; });
+  await page.waitForFunction(() => window.__presentationProbe.decodePending > 0);
+  await page.waitForTimeout(300);
+  assert.notEqual(await page.locator("#viewer-announcement").textContent(),
+    "Playback buffering. The current frame remains visible.",
+  "short decode stalls must not immediately spam the assistive live region");
+  await page.waitForFunction(() => document.querySelector("#viewer-announcement")?.textContent ===
+    "Playback buffering. The current frame remains visible.");
+  const bufferingGood = await page.evaluate(() => ({
+    frame: document.querySelector("#scenario-frame").dataset.frameIndex,
+    overlay: document.querySelector("#scenario-overlay").innerHTML,
+    pixels: document.querySelector("#scenario-frame").toDataURL(),
+  }));
+  const bufferingSamples = await samplePresentation(page, 160);
+  assert.ok(bufferingSamples.length >= 12, "buffering must be sampled faster than a 60 FPS frame");
+  assert.ok(bufferingSamples.every((sample) => !sample.mediaVisible
+    && sample.mediaClass === "media-state"
+    && sample.mediaText === ""
+    && sample.canvasFrame === bufferingSamples[0].canvasFrame
+    && sample.overlay === bufferingSamples[0].overlay
+    && sample.layoutDelta === 0
+    && !sample.blank),
+  "transient buffering must leave the last good pixels and overlay visually untouched");
+  assert.deepEqual(await page.evaluate(() => ({
+    frame: document.querySelector("#scenario-frame").dataset.frameIndex,
+    overlay: document.querySelector("#scenario-overlay").innerHTML,
+    pixels: document.querySelector("#scenario-frame").toDataURL(),
+  })), bufferingGood, "transient buffering must not redraw the last good presentation");
+  await page.evaluate(() => {
+    window.__presentationProbe.holdDecode = false;
+    window.__presentationProbe.releaseDecodes();
+  });
+  await page.waitForFunction((frame) => Number(document.querySelector("#scenario-frame").dataset.frameIndex) > Number(frame),
+    bufferingSamples[0].canvasFrame);
+  await page.waitForFunction(() => document.querySelector("#viewer-announcement")?.textContent === "Playback resumed.");
+  await page.locator("#play-pause").click();
+  context.diagnostic(`sub-frame probes: ${verificationSamples.length} delayed-verification samples and `
+    + `${bufferingSamples.length} buffering samples, zero visible status/blank/layout changes`);
 });
 
 test("real-browser playback follows exact 24, 30, and 60 FPS source timestamps", async (context) => {
@@ -641,6 +806,7 @@ test("a one-time 503 retries the exact frame without blanking or reloading the s
       await route.fulfill({ body: "temporary outage", contentType: "text/plain", status: 503 });
       return;
     }
+    await new Promise((resolve) => setTimeout(resolve, 180));
     await route.continue();
   });
   await loadScenario(page, fixture.origin, "rvmot-a1c9");
@@ -666,12 +832,33 @@ test("a one-time 503 retries the exact frame without blanking or reloading the s
   assert.deepEqual(visibleAfterFailure, visibleBefore,
     "the honest transient error must preserve the last good frame and synchronized overlay");
 
-  await selectExactFrame(page, targetIndex);
+  await page.locator("#frame-scrubber").evaluate((scrubber, index) => {
+    scrubber.value = String(index);
+    scrubber.dispatchEvent(new Event("input", { bubbles: true }));
+  }, targetIndex);
+  const retrySamples = await samplePresentation(page, 120);
+  assert.ok(retrySamples.every((sample) => !sample.mediaVisible
+    && sample.mediaClass === "media-state"
+    && sample.mediaText === ""
+    && sample.canvasFrame === visibleBefore.frameIndex
+    && sample.overlay === visibleBefore.overlay
+    && sample.layoutDelta === 0
+    && !sample.blank),
+  "retry verification must preserve and never cover the last good presentation");
+  assert.equal(await page.locator("#scenario-frame").evaluate((canvas) => canvas.toDataURL()), visibleBefore.pixels,
+    "retry verification must not redraw the last good pixels before success");
+  await page.waitForFunction((value) => {
+    const canvas = document.querySelector("#scenario-frame");
+    return Number(document.querySelector("#frame-scrubber").value) === value
+      && canvas?.dataset.frameReady === "true"
+      && canvas.getAttribute("aria-label")?.includes(`exact frame ${value + 1} of`);
+  }, targetIndex);
   assert.equal(page.url(), initialUrl, "retry must not reload or replace the scenario");
   assert.equal(targetRequests, 2, "the failed exact frame must be fetched again");
   assert.equal(await page.locator("#media-state").isHidden(), true);
   context.diagnostic(`transient frame ${targetIndex}: one 503, ${targetRequests} requests, `
-    + `preserved visible frame ${visibleBefore.frameIndex}, retry presented exact frame ${targetIndex}`);
+    + `${retrySamples.length} sub-frame retry samples preserved visible frame ${visibleBefore.frameIndex}, `
+    + `retry presented exact frame ${targetIndex}`);
 });
 
 test("missing and corrupt exact media keep an honest non-blank failure state", async (context) => {

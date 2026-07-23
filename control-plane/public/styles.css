@@ -179,6 +179,7 @@ footer > div a { font: 700 .72rem var(--mono); text-transform: uppercase; }
 .frame-stage canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
 .frame-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .media-state { position: absolute; inset: auto 1rem 1rem; margin: 0; padding: .6rem .8rem; background: rgba(16,20,16,.88); color: white; font: .72rem var(--mono); }
+.media-state:not(.error) { display: none; }
 .media-state.error { background: #9f1d1d; }
 .overlay-box { fill: none; vector-effect: non-scaling-stroke; stroke-width: 2.5; }
 .overlay-box.target { stroke: #d8ff32; }

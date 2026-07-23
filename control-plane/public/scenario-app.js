@@ -6,6 +6,7 @@ const MAX_DECODE_CONCURRENCY = 4;
 const PLAYBACK_AHEAD_NS = 750_000_000;
 const PLAYBACK_START_BUFFER_NS = 250_000_000;
 const SAVE_DATA_AHEAD_NS = 150_000_000;
+const BUFFERING_ANNOUNCEMENT_DELAY_MS = 500;
 const detailLoader = createLatestScenarioLoader();
 const state = {
   catalog: null,
@@ -21,6 +22,8 @@ const state = {
   playbackAnchorSourceNs: null,
   playbackGeneration: 0,
   buffering: false,
+  bufferingAnnouncementTimer: null,
+  bufferingAnnounced: false,
   frameCache: new Map(),
   decodedBytes: 0,
   decodeQueue: [],
@@ -207,17 +210,11 @@ function sameOriginUrl(url) {
   return resolved.href;
 }
 
-function mediaStatus(message, error = false) {
-  const mediaState = byId("media-state");
-  mediaState.hidden = false;
-  mediaState.classList.toggle("error", error);
-  mediaState.textContent = message;
-}
-
 function hideMediaStatus() {
   const mediaState = byId("media-state");
-  mediaState.hidden = true;
-  mediaState.classList.remove("error");
+  if (!mediaState.hidden) mediaState.hidden = true;
+  if (mediaState.classList.contains("error")) mediaState.classList.remove("error");
+  if (mediaState.textContent) mediaState.textContent = "";
 }
 
 function reportDecodeState() {
@@ -429,7 +426,7 @@ async function showFrame(index, announcement = true) {
   const selected = Math.max(0, Math.min(index, state.frames.frames.length - 1));
   cancelPendingFramesExcept(selected);
   const generation = ++state.playbackGeneration;
-  mediaStatus("Verifying and decoding exact frame…");
+  hideMediaStatus();
   try {
     const entry = await requestDecodedFrame(selected);
     if (generation !== state.playbackGeneration || entry.generation !== state.generation) return;
@@ -449,10 +446,13 @@ function annotationsSummary() {
 
 function stopPlayback() {
   if (state.animationFrame) window.cancelAnimationFrame(state.animationFrame);
+  if (state.bufferingAnnouncementTimer) window.clearTimeout(state.bufferingAnnouncementTimer);
   state.animationFrame = null;
   state.playbackAnchorMs = null;
   state.playbackAnchorSourceNs = null;
   state.buffering = false;
+  state.bufferingAnnouncementTimer = null;
+  state.bufferingAnnounced = false;
   state.playing = false;
   const button = byId("play-pause");
   if (button) {
@@ -462,15 +462,28 @@ function stopPlayback() {
   if (byId("scenario-frame")?.dataset.frameReady === "true") hideMediaStatus();
 }
 
-function setBuffering(buffering) {
+function setBuffering(buffering, playbackGeneration) {
   if (state.buffering === buffering) return;
   state.buffering = buffering;
-  if (buffering) {
-    mediaStatus("Buffering verified exact frames…");
-    byId("viewer-announcement").textContent = "Playback buffering. The current frame remains visible.";
-  } else {
-    hideMediaStatus();
+  if (state.bufferingAnnouncementTimer) {
+    window.clearTimeout(state.bufferingAnnouncementTimer);
+    state.bufferingAnnouncementTimer = null;
   }
+  if (!buffering) {
+    if (state.bufferingAnnounced) {
+      state.bufferingAnnounced = false;
+      byId("viewer-announcement").textContent = "Playback resumed.";
+    }
+    return;
+  }
+  state.bufferingAnnouncementTimer = window.setTimeout(() => {
+    state.bufferingAnnouncementTimer = null;
+    if (!state.playing
+      || !state.buffering
+      || playbackGeneration !== state.playbackGeneration) return;
+    state.bufferingAnnounced = true;
+    byId("viewer-announcement").textContent = "Playback buffering. The current frame remains visible.";
+  }, BUFFERING_ANNOUNCEMENT_DELAY_MS);
 }
 
 function handlePlaybackDecodeError(error, scenarioGeneration, playbackGeneration) {
@@ -516,7 +529,7 @@ function playbackTick(now, playbackGeneration) {
     }
   }
   if (presentable) presentFrame(presentable.index, presentable);
-  setBuffering(expectedIndex > state.selected);
+  setBuffering(expectedIndex > state.selected, playbackGeneration);
 
   const lastIndex = state.frames.frames.length - 1;
   if (expectedIndex === lastIndex && state.selected === lastIndex) {
@@ -538,7 +551,7 @@ async function startPlayback() {
   state.playing = true;
   byId("play-pause").textContent = "Pause";
   byId("play-pause").setAttribute("aria-label", "Pause sequence");
-  setBuffering(true);
+  setBuffering(true, requestGeneration);
   const lastIndex = state.frames.frames.length - 1;
   const bufferEnd = Math.min(frameIndexThroughDuration(state.selected, PLAYBACK_START_BUFFER_NS), lastIndex);
   try {
@@ -550,7 +563,7 @@ async function startPlayback() {
   if (!state.playing || requestGeneration !== state.playbackGeneration) return;
   state.playbackAnchorMs = performance.now();
   state.playbackAnchorSourceNs = state.frames.frames[state.selected].source_timestamp_ns;
-  setBuffering(false);
+  setBuffering(false, requestGeneration);
   byId("viewer-announcement").textContent = `Playing from frame ${state.selected + 1} at ${state.playbackSpeed} times speed.`;
   prefetchPlayback(state.selected, requestGeneration);
   state.animationFrame = window.requestAnimationFrame(
