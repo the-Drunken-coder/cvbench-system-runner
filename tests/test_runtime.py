@@ -46,7 +46,7 @@ def test_normal_exit_is_released_only_after_final_scoring_checkpoint() -> None:
         lambda: True,
     )
 
-    assert events == ["checkpoint", "final-accounting", "release"]
+    assert events == ["final-accounting", "release"]
     assert stopped.exit_code == 0
     assert stopped.forced is False
     assert process.signals == []
@@ -121,7 +121,7 @@ def test_timeout_uses_terminate_then_kill_after_scoring_is_closed() -> None:
         lambda: events.append("release"),
     )
 
-    assert events == ["checkpoint", "final-accounting", "release"]
+    assert events == ["final-accounting", "release"]
     assert stopped.forced is True
     assert stopped.exit_code == -signal.SIGKILL
     assert process.signals == [signal.SIGTERM, signal.SIGKILL]
@@ -152,7 +152,6 @@ def test_docker_cleanup_happens_after_accounting_and_removes_the_container(
     assert cleanup_runtime(runtime) == []
 
     assert events == [
-        "checkpoint",
         "final-accounting",
         "release",
         ["docker", "rm", "--force", "container-id"],

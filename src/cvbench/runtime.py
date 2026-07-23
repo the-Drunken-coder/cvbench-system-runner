@@ -318,10 +318,10 @@ def stop_runtime(
     if scoring_complete is not None and not scoring_done:
         scoring_done = scoring_complete()
         scoring_timed_out = not scoring_done and exit_code in {None, 0}
-    if checkpoint is not None:
-        checkpoint()
     if on_scoring_finished is not None:
         on_scoring_finished()
+    elif checkpoint is not None:
+        checkpoint()
     scoring_finished_ns = time.monotonic_ns()
     if release_after_scoring is not None:
         release_after_scoring()
