@@ -39,6 +39,41 @@ class ResolvedImage:
     image_id: str
 
 
+def not_started_isolation(config: SystemConfig, error: str) -> dict[str, object]:
+    """Describe requested isolation without claiming that any runtime fact was observed."""
+    return {
+        "runtime": config.runtime_type,
+        "requested": {
+            "cpu_limit": config.resources.get("cpu_limit"),
+            "memory_limit_mb": config.resources.get("memory_limit_mb"),
+            "network_access": config.resources.get("network_access", False),
+        },
+        "status": "not_started",
+        "future_frame_isolation": None,
+        "ground_truth_access": None,
+        "repository_access": None,
+        "media_access": None,
+        "container_id": None,
+        "mounts": None,
+        "network_mode": None,
+        "applied": None,
+        "image_identity_verified": None,
+        "executed_container_user": None,
+        "container_user_alignment_verified": None,
+        "expected_container_user": None,
+        "socket_access": None,
+        "expected_mount": None,
+        "image_identity": {
+            "configured_reference": config.image,
+            "resolved_reference": None,
+            "resolved_image_id": None,
+            "executed_reference": None,
+            "executed_image_id": None,
+        },
+        "error": error,
+    }
+
+
 @dataclass(frozen=True)
 class RuntimeStop:
     exit_code: int | None

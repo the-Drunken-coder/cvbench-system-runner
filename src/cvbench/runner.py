@@ -30,8 +30,15 @@ from .metrics import calculate_metrics
 from .model import CollectedRecord, RunArtifacts, RuntimeOutcome, Scenario
 from .protocol import send_message
 from .reporting import write_report_files
-from .resources import ResourceMonitor
-from .runtime import StartedRuntime, cleanup_runtime, start_runtime, stop_runtime, verify_docker_isolation
+from .resources import ResourceMonitor, unavailable_resource_summary
+from .runtime import (
+    StartedRuntime,
+    cleanup_runtime,
+    not_started_isolation,
+    start_runtime,
+    stop_runtime,
+    verify_docker_isolation,
+)
 from .scenario import load_scenario
 from .stability import evaluate_long_run_assertions
 from .timing import (
@@ -524,6 +531,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     started_wall = datetime.now(UTC).isoformat()
     outcome = RuntimeOutcome(status="failed")
     runtime: StartedRuntime | None = None
+    startup_error: str | None = None
     monitor: ResourceMonitor | None = None
     collector: OutputCollector | None = None
     collected: list[CollectedRecord] = []
@@ -635,7 +643,8 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                 "completed" if stopped.exit_code == 0 and not outcome.timed_out else "failed"
             )
     except (OSError, RuntimeFailure, TimeoutError) as exc:
-        outcome.errors.append(str(exc))
+        startup_error = str(exc)
+        outcome.errors.append(startup_error)
         outcome.timed_out = isinstance(exc, TimeoutError) or outcome.timed_out
         if runtime is not None:
             stopped = stop_runtime(
@@ -721,12 +730,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     resource_data = (
         monitor.summary(runtime_seconds)
         if monitor
-        else {
-            "sample_count": 0,
-            "runtime_seconds": runtime_seconds,
-            "gpu_available": False,
-            "over_time": [],
-        }
+        else unavailable_resource_summary(runtime_seconds, system.runtime_type)
     )
     timing_data = build_timing_summary(
         benchmark=benchmark,
@@ -819,14 +823,10 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         "leaderboard": leaderboard,
         "runtime_isolation": runtime.isolation
         if runtime
-        else {
-            "runtime": system.runtime_type,
-            "status": "not_started",
-            "future_frame_isolation": None,
-            "ground_truth_access": None,
-            "repository_access": None,
-            "media_access": None,
-        },
+        else not_started_isolation(
+            system,
+            startup_error or "runtime did not start",
+        ),
         "findings": findings,
         "comparison": [],
         "provenance": {

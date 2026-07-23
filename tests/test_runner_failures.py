@@ -4,16 +4,21 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 import yaml
 
+import cvbench.cli as cli_module
 import cvbench.runner as runner_module
+import cvbench.runtime as runtime_module
 from cvbench.collector import OutputCollector
 from cvbench.comparison import compare_reports
-from cvbench.reporting import validate_report
+from cvbench.errors import RuntimeFailure
+from cvbench.reporting import validate_redacted_report, validate_report
 from cvbench.runner import run_benchmark
 from cvbench.synthetic import generate_synthetic_pack
+from scripts.sanitize_ci_report import sanitize_runs
 
 ROOT = Path(__file__).parents[1]
 
@@ -93,6 +98,106 @@ def _report(
     return json.loads(artifacts.report_json.read_text())
 
 
+def _docker_definitions(tmp_path: Path, image: str = "unavailable:test") -> tuple[Path, Path]:
+    benchmark, system = _definitions(tmp_path, ROOT / "tests/fixtures/sut_reader.py")
+    data = yaml.safe_load(system.read_text())
+    data["runtime"] = {
+        "type": "docker",
+        "image": image,
+        "command": ["python", "-m", "cvbench.examples.good_tracker"],
+    }
+    system.write_text(yaml.safe_dump(data))
+    return benchmark, system
+
+
+def _run_cli_startup_failure(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    benchmark: Path,
+    system: Path,
+    expected_error: str,
+) -> dict:
+    socket_dirs: list[Path] = []
+    original_mkdtemp = runner_module.tempfile.mkdtemp
+
+    def tracked_mkdtemp(*args, **kwargs):
+        path = Path(original_mkdtemp(*args, **kwargs))
+        socket_dirs.append(path)
+        return str(path)
+
+    monkeypatch.setattr(runner_module.tempfile, "mkdtemp", tracked_mkdtemp)
+    output_root = tmp_path / "runs"
+    exit_code = cli_module.main(
+        [
+            "run",
+            "--benchmark",
+            str(benchmark),
+            "--system",
+            str(system),
+            "--output",
+            str(output_root),
+        ]
+    )
+    console = capsys.readouterr()
+
+    assert exit_code == 0
+    assert console.err == ""
+    paths = json.loads(console.out)
+    report_path = Path(paths["report_json"])
+    report = json.loads(report_path.read_text())
+    validate_report(report)
+    assert report["outcome"]["status"] == "failed"
+    assert report["outcome"]["errors"] == [expected_error]
+    assert report["resources"]["sample_count"] == 0
+    assert report["resources"]["over_time"] == []
+    assert report["resources"]["authoritative"] is False
+    assert all(
+        available is False
+        for available in report["resources"]["accounting_availability"].values()
+    )
+    for axis in (
+        "cpu_time_seconds",
+        "cpu_seconds_per_native_source_second",
+        "average_cpu_percent",
+        "peak_cpu_percent",
+        "peak_ram_bytes",
+        "disk_read_bytes",
+        "disk_write_bytes",
+    ):
+        assert report["resources"][axis] is None
+    isolation = report["runtime_isolation"]
+    assert isolation["status"] == "not_started"
+    assert isolation["error"] == expected_error
+    assert isolation["container_id"] is None
+    assert isolation["mounts"] is None
+    assert isolation["network_mode"] is None
+    assert isolation["applied"] is None
+    assert isolation["image_identity_verified"] is None
+    assert isolation["future_frame_isolation"] is None
+    assert isolation["ground_truth_access"] is None
+    assert report["leaderboard"]["eligible"] is False
+    assert report["leaderboard"]["ranking_method"] == "pareto"
+    assert report["leaderboard"]["composite_score"] is None
+    assert report["leaderboard"]["compute_tier"] == "unclassified"
+    assert report["leaderboard"]["completion_tier"] == "unclassified"
+    comparisons = compare_reports(copy.deepcopy(report), report)
+    assert comparisons
+    assert all(item["direction"] == "inconclusive" for item in comparisons)
+    assert all("both reports must be eligible" in item["reason"] for item in comparisons)
+
+    safe_run = sanitize_runs(output_root, tmp_path / "safe")
+    safe = json.loads((safe_run / "report.json").read_text())
+    validate_redacted_report(safe)
+    assert safe["schema_version"] == "cvbench.report-redacted/v1"
+    assert safe["outcome"]["status"] == "failed"
+    assert safe["outcome"]["errors"] == ["<redacted diagnostic error>"]
+    assert safe["resources"] == report["resources"]
+    assert not (report_path.parent / "container.cid").exists()
+    assert socket_dirs and all(not path.exists() for path in socket_dirs)
+    return report
+
+
 def _emulate_authoritative_docker_accounting(monkeypatch) -> None:
     original_build = runner_module.build_leaderboard_semantics
 
@@ -128,6 +233,103 @@ def _emulate_authoritative_docker_accounting(monkeypatch) -> None:
         "build_leaderboard_semantics",
         build_with_authoritative_resources,
     )
+
+
+def test_cli_unavailable_image_writes_strict_failed_and_redacted_reports(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    benchmark, system = _docker_definitions(tmp_path)
+    monkeypatch.setattr(runtime_module.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        runtime_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="image lookup sentinel",
+        ),
+    )
+
+    report = _run_cli_startup_failure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        benchmark,
+        system,
+        "Docker image is unavailable: unavailable:test: image lookup sentinel",
+    )
+
+    assert report["runtime_isolation"]["runtime"] == "docker"
+    assert report["runtime_isolation"]["image_identity"]["configured_reference"] == (
+        "unavailable:test"
+    )
+    assert report["resources"]["accounting_scope"] == "container_cgroup_v2_external"
+
+
+def test_cli_missing_docker_writes_strict_failed_and_redacted_reports(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    benchmark, system = _docker_definitions(tmp_path)
+    monkeypatch.setattr(runtime_module.shutil, "which", lambda _name: None)
+
+    report = _run_cli_startup_failure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        benchmark,
+        system,
+        "Docker runtime requested, but docker is not installed",
+    )
+
+    assert report["runtime_isolation"]["runtime"] == "docker"
+    assert report["resources"]["accounting_scope"] == "container_cgroup_v2_external"
+
+
+def test_cli_start_runtime_failure_before_monitor_writes_strict_artifacts(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    benchmark, system = _definitions(tmp_path, ROOT / "tests/fixtures/sut_reader.py")
+
+    def fail_start_runtime(*_args, **_kwargs):
+        raise RuntimeFailure("pre-monitor startup sentinel")
+
+    monkeypatch.setattr(runner_module, "start_runtime", fail_start_runtime)
+    report = _run_cli_startup_failure(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        benchmark,
+        system,
+        "pre-monitor startup sentinel",
+    )
+
+    assert report["runtime_isolation"]["runtime"] == "local"
+    assert report["resources"]["accounting_scope"] == "local_process_tree_best_effort"
+
+
+def test_cli_valid_run_remains_strict_and_sanitizable(
+    tmp_path: Path, capsys
+) -> None:
+    benchmark, system = _definitions(tmp_path, ROOT / "tests/fixtures/sut_reader.py")
+    output_root = tmp_path / "runs"
+
+    assert cli_module.main(
+        [
+            "run",
+            "--benchmark",
+            str(benchmark),
+            "--system",
+            str(system),
+            "--output",
+            str(output_root),
+        ]
+    ) == 0
+    paths = json.loads(capsys.readouterr().out)
+    report = json.loads(Path(paths["report_json"]).read_text())
+    validate_report(report)
+    assert report["outcome"]["status"] == "completed"
+    safe_run = sanitize_runs(output_root, tmp_path / "safe")
+    validate_redacted_report(json.loads((safe_run / "report.json").read_text()))
 
 
 def test_sut_crash_is_reported(tmp_path: Path) -> None:

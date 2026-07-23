@@ -13,6 +13,55 @@ from typing import Any
 import psutil
 
 
+def unavailable_resource_summary(runtime_seconds: float, runtime_type: str) -> dict[str, Any]:
+    """Return a complete, explicitly non-authoritative summary for an unstarted runtime."""
+    return {
+        "sample_count": 0,
+        "runtime_seconds": runtime_seconds,
+        "average_cpu_percent": None,
+        "peak_cpu_percent": None,
+        "cpu_time_seconds": None,
+        "cpu_seconds_per_native_source_second": None,
+        "average_ram_bytes": None,
+        "peak_ram_bytes": None,
+        "gpu_available": False,
+        "peak_vram_bytes": None,
+        "gpu_accounting": {
+            "available": False,
+            "isolated": False,
+            "authoritative": False,
+            "note": "No isolated GPU device was assigned; host-wide GPU data is not reported.",
+        },
+        "disk_read_bytes": None,
+        "disk_write_bytes": None,
+        "network_rx_bytes": None,
+        "network_tx_bytes": None,
+        "peak_process_count": None,
+        "peak_thread_count": None,
+        "memory_growth_bytes": None,
+        "by_scenario": {},
+        "by_target_count": {},
+        "by_phase": {},
+        "cpu_time_by_phase_seconds": {},
+        "fault_injection_samples": 0,
+        "accounting_scope": (
+            "container_cgroup_v2_external"
+            if runtime_type == "docker"
+            else "local_process_tree_best_effort"
+        ),
+        "accounting_availability": {
+            "external_cgroup_v2": False,
+            "final_cumulative_cpu_sample": False,
+            "cpu_time": False,
+            "cpu_percent": False,
+            "peak_ram": False,
+            "disk_io": False,
+        },
+        "authoritative": False,
+        "over_time": [],
+    }
+
+
 def parse_size(value: str) -> float:
     match = re.fullmatch(r"\s*([0-9.]+)\s*([kKmMgGtT]?i?[bB])?\s*", value)
     if not match:
