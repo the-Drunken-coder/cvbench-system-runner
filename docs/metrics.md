@@ -18,7 +18,7 @@ The report keeps categories separate:
   denominator, and reported separately as `neutral_ignored_predictions`.
 - Real-video-v2 uses the complete image as the scoring region with exhaustive supported-mover labels and no ignore rows. Every prediction participates in class-aware full-scene scoring. The runner never exposes public annotations or identities to the system under test.
 - Robustness: controlled loss intervals, correct and same-ID reacquisition, gap duration, and latency.
-- Latency: externally measured first and per-update values, percentiles, deadline misses, count groups, and time series.
+- Latency: externally measured from successful complete-frame delivery to collected output, with first and per-update values, percentiles, deadline misses, count groups, and time series. Native-source offset is retained separately as non-scoring provenance, so slower replay pace is visible without becoming SUT latency.
 - Resources: cgroup CPU time, CPU-seconds per native source-second, wall/phase time, RAM, disk, process/thread count, output rate, and memory growth. GPU/VRAM is omitted unless an isolated device is assigned.
 - Long-running stability: track-ID cardinality/exhaustion signals, cross-stream state contamination, first/second-half false-positive rate, interruption recovery, latency drift, memory growth, and declared assertion results. Assertions with unavailable evidence report `evaluated: false` and `passed: null`; they are never coerced to zero or counted as failures.
 
@@ -37,5 +37,5 @@ No overall score is computed. `cvbench.pareto/v1` retains accuracy plus CPU-seco
 - Predicted/coasting matches contribute to continuity and occlusion survival only. They never contribute to observed coverage, acquisition, or reacquisition.
 - Output at a timestamp absent from the scenario is stale/unmatched, even if its box overlaps a target from another frame.
 - Output naming a frame that has not yet been released is malformed and excluded before scoring.
-- Slower replay changes only the delivery schedule. Native source timestamp deltas, FPS, and duration are not scaled.
+- Slower replay changes only the delivery schedule. Native source timestamp deltas, FPS, and duration are not scaled. Online latency deadlines use the trusted delivery-completion clock, while the report separately exposes collector offset from native source time.
 - Exact post-stream output is accepted only during bounded drain and retains external latency.

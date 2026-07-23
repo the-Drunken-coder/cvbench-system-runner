@@ -59,6 +59,10 @@ test("health and machine-readable metadata are public", async () => {
   assert.match(openapi.components.schemas.CreateSubmission.properties.model_version.description, /submitted system version/);
   assert.ok(openapi.components.schemas.TimingComputeSummary);
   assert.equal(openapi.components.schemas.TimingComputeSummary.additionalProperties, false);
+  assert.deepEqual(
+    openapi.components.schemas.TimingComputeSummary.properties.native_source_offset_p95_ms,
+    { type: ["number", "null"] },
+  );
   const reportSchema = JSON.parse(await readFile(path.join(ROOT, "schemas/report-v1.schema.json"), "utf8"));
   const timingSchema = JSON.parse(await readFile(path.join(ROOT, "schemas/timing-compute-v1.schema.json"), "utf8"));
   reportSchema.properties.timing = { $ref: "#/components/schemas/TimingComputeV1" };
@@ -857,6 +861,7 @@ function scoredReport(runtimeIsolation = {}) {
         per_frame: [],
       },
       processing_latency_ms: { sample_count: 12, minimum: 1, median: 2, p95: 3, maximum: 4 },
+      native_source_offset_ms: { sample_count: 12, minimum: 1, median: 2, p95: 3, maximum: 4 },
       output: {
         records: 12,
         records_per_native_source_second: 1.2,

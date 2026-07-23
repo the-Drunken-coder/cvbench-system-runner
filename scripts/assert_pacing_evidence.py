@@ -44,6 +44,7 @@ def _summary(report: dict[str, Any]) -> dict[str, Any]:
             "records_per_completion_second"
         ],
         "processing_latency_p95_ms": report["timing"]["processing_latency_ms"]["p95"],
+        "native_source_offset_p95_ms": report["timing"]["native_source_offset_ms"]["p95"],
         "delivery_deadline_missed_frames": report["timing"]["delivery"][
             "deadline_missed_frames"
         ],

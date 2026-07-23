@@ -145,6 +145,7 @@ def test_timing_compute_schema_requires_immutable_source_and_allowlisted_replay(
             "per_frame": [],
         },
         "processing_latency_ms": {"sample_count": 0, "minimum": None, "median": None, "p95": None, "maximum": None},
+        "native_source_offset_ms": {"sample_count": 0, "minimum": None, "median": None, "p95": None, "maximum": None},
         "output": {
             "records": 0,
             "records_per_native_source_second": 0,

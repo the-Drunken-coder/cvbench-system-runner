@@ -6,6 +6,7 @@ from typing import Any
 
 from .config import PUBLIC_REPLAY_PROFILES, BenchmarkConfig
 from .model import CollectedRecord, Scenario
+from .protocol import TRACK_EVENTS
 
 LEADERBOARD_POLICY_VERSION = "cvbench.pareto/v1"
 SENDER_PRESSURE_THRESHOLD_NS = 5_000_000
@@ -140,6 +141,11 @@ class DeliveryRecorder:
                 "scheduled_delivery_offset_ms": _milliseconds(
                     scheduled_ns - self.first_scheduled_ns
                 ),
+                "scoring_delivery_offset_ms": (
+                    _milliseconds(send_completed_ns - self.first_scheduled_ns)
+                    if delivered
+                    else None
+                ),
                 "delivery_backlog_ms": _milliseconds(backlog_ns),
                 "sender_call_ms": _milliseconds(sender_call_ns),
                 "sender_pressure": sender_call_ns > SENDER_PRESSURE_THRESHOLD_NS,
@@ -209,8 +215,16 @@ def build_timing_summary(
     source = native_source_metadata(scenarios)
     delivery = recorder.summary()
     processing_latencies = []
+    native_source_offsets = []
     late_outputs = 0
     for item in collected:
+        if (
+            recorder.benchmark_end_sent_ns is not None
+            and item.collector_received_timestamp_ns > recorder.benchmark_end_sent_ns
+        ):
+            late_outputs += 1
+        if item.system_record.get("event") not in TRACK_EVENTS:
+            continue
         key = (
             str(item.system_record.get("sequence_id")),
             int(item.system_record.get("source_timestamp_ns", -1)),
@@ -220,11 +234,9 @@ def build_timing_summary(
             processing_latencies.append(
                 max(0.0, (item.collector_received_timestamp_ns - delivered_ns) / 1_000_000)
             )
-        if (
-            recorder.benchmark_end_sent_ns is not None
-            and item.collector_received_timestamp_ns > recorder.benchmark_end_sent_ns
-        ):
-            late_outputs += 1
+            native_source_offsets.append(
+                (item.collector_received_timestamp_ns - key[1]) / 1_000_000
+            )
     delivery_started_ns = recorder.first_send_started_ns
     delivery_finished_ns = recorder.benchmark_end_sent_ns or recorder.last_send_completed_ns
     native_duration = source["duration_seconds"]
@@ -285,6 +297,7 @@ def build_timing_summary(
         },
         "delivery": delivery,
         "processing_latency_ms": _summary(processing_latencies),
+        "native_source_offset_ms": _summary(native_source_offsets),
         "output": {
             "records": len(collected),
             "records_per_native_source_second": (
@@ -300,8 +313,14 @@ def build_timing_summary(
             ),
         },
         "clocks": {
-            "source": "immutable native scenario time",
-            "delivery": "independent monotonic replay schedule",
+            "source": (
+                "immutable native scenario time; source_timestamp_ns is the causal frame "
+                "identity and is not the online latency origin"
+            ),
+            "delivery": (
+                "independent monotonic replay schedule; successful frame-send completion "
+                "is the online scoring origin"
+            ),
             "completion": "external collector and runner monotonic time",
         },
     }

@@ -376,6 +376,7 @@ def calculate_metrics(
     collected: list[CollectedRecord],
     thresholds: Thresholds,
     *,
+    frame_delivery_ns: dict[tuple[str, int], int] | None = None,
     sequence_timestamps: dict[str, list[int]] | None = None,
     scenario_families: dict[str, str] | None = None,
     fault_timestamps: set[tuple[str, int]] | None = None,
@@ -813,15 +814,37 @@ def calculate_metrics(
         else None,
     }
 
-    timed_outputs = [
-        (
-            item,
-            (item.collector_received_timestamp_ns - item.system_record["source_timestamp_ns"]) / 1_000_000,
+    timed_outputs: list[tuple[CollectedRecord, float]] = []
+    native_source_offsets_ms: list[float] = []
+    for item in collected:
+        record = item.system_record
+        if record.get("event") not in TRACK_EVENTS:
+            continue
+        source_timestamp_ns = int(record["source_timestamp_ns"])
+        if frame_delivery_ns is None:
+            if item.collector_received_timestamp_ns < source_timestamp_ns:
+                continue
+            latency_origin_ns = source_timestamp_ns
+        else:
+            latency_origin_ns = frame_delivery_ns.get(
+                (str(record["sequence_id"]), source_timestamp_ns)
+            )
+            if latency_origin_ns is None:
+                continue
+            native_source_offsets_ms.append(
+                (item.collector_received_timestamp_ns - source_timestamp_ns)
+                / 1_000_000
+            )
+        timed_outputs.append(
+            (
+                item,
+                max(
+                    0.0,
+                    (item.collector_received_timestamp_ns - latency_origin_ns)
+                    / 1_000_000,
+                ),
+            )
         )
-        for item in collected
-        if item.system_record.get("event") in TRACK_EVENTS
-        and item.collector_received_timestamp_ns >= item.system_record["source_timestamp_ns"]
-    ]
     latency_ms = [value for _item, value in timed_outputs]
     latency_lookup = {id(item.system_record): value for item, value in timed_outputs}
     latency = _summary(latency_ms)
@@ -844,6 +867,16 @@ def calculate_metrics(
                 default=None,
             ),
             "over_time_ms": latency_ms,
+            "clock": (
+                "successful_frame_delivery_completion"
+                if frame_delivery_ns is not None
+                else "source_timestamp_compatibility"
+            ),
+            "native_source_offset_ms": (
+                _summary(native_source_offsets_ms)
+                if frame_delivery_ns is not None
+                else None
+            ),
         }
     )
     if len(latency_ms) >= 2:

@@ -8,7 +8,11 @@
     "schema_version": {"const": "cvbench.track/v1"},
     "event": {"enum": ["track_started", "track_update", "track_reacquired", "track_ended", "system_status", "system_error"]},
     "sequence_id": {"type": "string", "minLength": 1},
-    "source_timestamp_ns": {"type": "integer", "minimum": 0},
+    "source_timestamp_ns": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Exact causal frame identity copied from an already presented frame; the trusted runner, not this value, supplies the online latency origin."
+    },
     "track_id": {"type": "string", "minLength": 1},
     "state": {"enum": ["tentative", "confirmed", "coasting", "reacquired", "lost"]},
     "support": {"enum": ["observed", "predicted"]},

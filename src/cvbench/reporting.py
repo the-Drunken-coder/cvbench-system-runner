@@ -81,6 +81,10 @@ def render_html(report: dict[str, Any]) -> str:
         ("Continuity", metrics["coverage"].get("overall_continuity")),
         ("Median latency (ms)", metrics["latency"].get("median")),
         (
+            "Native-source offset p95 (ms)",
+            report.get("timing", {}).get("native_source_offset_ms", {}).get("p95"),
+        ),
+        (
             "CPU-s / native source-s",
             report.get("resources", {}).get("cpu_seconds_per_native_source_second"),
         ),

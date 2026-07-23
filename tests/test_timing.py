@@ -65,6 +65,7 @@ def test_delivery_policy_reports_backlog_sender_pressure_and_deadline_miss() -> 
     assert summary["sender_blocking_time_ms"] == 10
     assert summary["delivery_backlog_ms"]["maximum"] == 20
     assert summary["policy_dropped_frames"] == 0
+    assert summary["per_frame"][0]["scoring_delivery_offset_ms"] == 30
 
 
 def test_sleeping_cannot_improve_both_efficiency_axes_or_share_a_class() -> None:

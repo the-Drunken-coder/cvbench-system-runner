@@ -62,8 +62,16 @@
         "event": {"const": "frame"},
         "sequence_id": {"type": "string", "minLength": 1},
         "frame_index": {"type": "integer", "minimum": 0},
-        "source_timestamp_ns": {"type": "integer", "minimum": 0},
-        "native_source_timestamp_ns": {"type": "integer", "minimum": 0},
+        "source_timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Run-scoped causal frame identity echoed by outputs. It preserves native cadence but is not the online latency origin when replay pace differs."
+        },
+        "native_source_timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Immutable scenario-relative native source timestamp used for provenance and source-duration normalization."
+        },
         "width": {"type": "integer", "minimum": 1},
         "height": {"type": "integer", "minimum": 1},
         "pixel_format": {"const": "rgb24"},

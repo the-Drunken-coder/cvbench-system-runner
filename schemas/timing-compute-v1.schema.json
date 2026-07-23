@@ -3,7 +3,7 @@
   "$id": "https://cvbench.dev/schemas/timing-compute-v1.schema.json",
   "title": "CVBench timing and compute accounting v1",
   "type": "object",
-  "required": ["contract_version", "source", "replay", "durations", "delivery", "processing_latency_ms", "output", "clocks"],
+  "required": ["contract_version", "source", "replay", "durations", "delivery", "processing_latency_ms", "native_source_offset_ms", "output", "clocks"],
   "properties": {
     "contract_version": {"const": "cvbench.timing-compute/v1"},
     "source": {
@@ -122,12 +122,16 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["sequence_id", "frame_index", "native_source_timestamp_ns", "scheduled_delivery_offset_ms", "delivery_backlog_ms", "sender_call_ms", "sender_pressure", "deadline_missed", "delivered", "drop_reason"],
+            "required": ["sequence_id", "frame_index", "native_source_timestamp_ns", "scheduled_delivery_offset_ms", "scoring_delivery_offset_ms", "delivery_backlog_ms", "sender_call_ms", "sender_pressure", "deadline_missed", "delivered", "drop_reason"],
             "properties": {
               "sequence_id": {"type": "string"},
               "frame_index": {"type": "integer", "minimum": 0},
               "native_source_timestamp_ns": {"type": "integer", "minimum": 0},
               "scheduled_delivery_offset_ms": {"type": "number", "minimum": 0},
+              "scoring_delivery_offset_ms": {
+                "type": ["number", "null"],
+                "description": "Successful complete-frame send boundary relative to the first scheduled frame; accelerated/offline delivery may be negative, and failed or intentionally dropped delivery is null."
+              },
               "delivery_backlog_ms": {"type": "number", "minimum": 0},
               "sender_call_ms": {"type": "number", "minimum": 0},
               "sender_pressure": {"type": "boolean"},
@@ -139,7 +143,14 @@
         }
       }
     },
-    "processing_latency_ms": {"$ref": "#/$defs/distribution"},
+    "processing_latency_ms": {
+      "$ref": "#/$defs/distribution",
+      "description": "Scored online latency from successful complete-frame delivery to externally collected output."
+    },
+    "native_source_offset_ms": {
+      "$ref": "#/$defs/signedDistribution",
+      "description": "Non-scoring collector offset from the immutable native source timeline; positive values include intentionally slower replay pacing."
+    },
     "output": {
       "type": "object",
       "additionalProperties": false,
@@ -174,6 +185,18 @@
         "median": {"type": ["number", "null"], "minimum": 0},
         "p95": {"type": ["number", "null"], "minimum": 0},
         "maximum": {"type": ["number", "null"], "minimum": 0}
+      }
+    },
+    "signedDistribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sample_count", "minimum", "median", "p95", "maximum"],
+      "properties": {
+        "sample_count": {"type": "integer", "minimum": 0},
+        "minimum": {"type": ["number", "null"]},
+        "median": {"type": ["number", "null"]},
+        "p95": {"type": ["number", "null"]},
+        "maximum": {"type": ["number", "null"]}
       }
     }
   },

@@ -119,6 +119,7 @@
           "sample_count": 7
         }
       },
+      "clock": "source_timestamp_compatibility",
       "deadline_miss_rate": 0.0,
       "deadline_ms": 250.0,
       "drift_ms": 0.0,
@@ -126,6 +127,7 @@
       "first_tentative_ms": null,
       "maximum": 5.0,
       "median": 5.0,
+      "native_source_offset_ms": null,
       "output_update_rate_hz": 1.468189233278956,
       "over_time_ms": [
         5.0,

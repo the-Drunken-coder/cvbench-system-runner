@@ -21,7 +21,7 @@ The completion clock is external `time.monotonic_ns()` observed by the runner an
 - total wall and completion duration;
 - runner teardown duration, reported separately and excluded from scoring completion/drain;
 - real-time factor = completion seconds / native source seconds;
-- source-time latency and processing latency after frame delivery.
+- non-scoring native-source offset and scored processing latency after successful frame delivery.
 
 Frames stay ordered and progressive. The SUT receives no future frame, scenario annotation, scoring ROI, or ground-truth hint. Its socket remains open across frames so temporal state and multiple cooperating processes are allowed.
 
@@ -53,7 +53,7 @@ Public `/api/v1` submissions remain compatible and fixed to `native` at 1.0x. Th
 - a frame misses its delivery deadline when completion is later than one scheduled median frame interval, with a 5 ms minimum tolerance;
 - portable Unix sockets do not expose a reliable queue-depth value, so queue depth is reported unavailable rather than invented.
 
-Per-frame delivery records retain native timestamp, scheduled offset, sender-call duration, backlog, delivery status, drop reason, and deadline status.
+Per-frame delivery records retain native timestamp, scheduled offset, successful scoring-delivery offset, sender-call duration, backlog, delivery status, drop reason, and deadline status. `processing_latency_ms` starts at the trusted complete-frame delivery boundary. `native_source_offset_ms` separately shows how far collector receipt is from the immutable native timeline; intentional half/quarter-speed pacing therefore remains visible but cannot trigger SUT latency deadlines.
 The aggregate reports both configured replay rate and measured effective replay rate (native source seconds delivered per wall second), plus delivered frames per wall second.
 
 Output is causal only when its `(sequence_id, source_timestamp_ns)` names a frame whose complete socket send succeeded. An immediate output racing an in-flight send is held pending until send success; transport failure rejects it. Guessed future, unknown, failed-delivery, or rewritten timestamps are malformed output. The benchmark-end boundary is recorded only after the potentially blocking marker send succeeds. Exact outputs may arrive after that boundary during the bounded drain window and remain scored with their external latency. The hard overall run deadline, `max_drain_seconds`, record count, line bytes, total stdout bytes, and output-rate limits define scoring; terminate/kill and Docker cleanup time is reported separately as teardown.

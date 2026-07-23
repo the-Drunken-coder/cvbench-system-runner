@@ -734,6 +734,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         ground_truth,
         scored_collected,
         benchmark.thresholds,
+        frame_delivery_ns=frame_delivery_ns,
         sequence_timestamps=sequence_timestamps or None,
         scenario_families=scenario_families,
         fault_timestamps=set(fault_events),
@@ -921,6 +922,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             if key != "per_frame"
         },
         "processing_latency_ms": timing_data["processing_latency_ms"],
+        "native_source_offset_ms": timing_data["native_source_offset_ms"],
         "output": timing_data["output"],
         "resources": {
             key: resource_data.get(key)
