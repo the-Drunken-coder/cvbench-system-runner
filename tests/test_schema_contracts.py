@@ -46,6 +46,17 @@ def test_frame_event_requires_complete_frame_metadata() -> None:
             validator.validate(incomplete)
     validator.validate({"schema_version": "cvbench.frame/v1", "event": "benchmark_end"})
     with pytest.raises(ValidationError):
+        validator.validate({
+            "schema_version": "cvbench.frame/v1",
+            "event": "benchmark_end",
+            "frame_index": 0,
+        })
+    with pytest.raises(ValidationError):
+        validator.validate({
+            **frame,
+            "timing_compute_contract": "cvbench.timing-compute/v1",
+        })
+    with pytest.raises(ValidationError):
         validator.validate({**frame, "unexpected": True})
     with pytest.raises(ValidationError):
         validator.validate({"schema_version": "cvbench.frame/v1", "event": "stream_start", "sequence_id": "sequence"})
@@ -149,9 +160,21 @@ def test_timing_compute_schema_requires_immutable_source_and_allowlisted_replay(
         validator.validate(timing)
 
 
-def test_report_schema_is_top_level_strict() -> None:
+def test_report_schema_has_no_unconstrained_object_contracts() -> None:
     schema = json.loads((ROOT / "schemas" / "report-v1.schema.json").read_text())
     Draft202012Validator.check_schema(schema)
     assert schema["additionalProperties"] is False
     assert "timing" in schema["required"]
     assert "resources" in schema["required"]
+
+    def walk(value: object) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "object":
+                assert "additionalProperties" in value
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(schema)

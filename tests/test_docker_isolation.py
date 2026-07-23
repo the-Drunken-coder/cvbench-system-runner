@@ -264,8 +264,10 @@ def test_example_image_does_not_copy_scenarios_or_workspace() -> None:
     assert "COPY ." not in dockerfile
     assert "scenarios" not in dockerfile
     assert "USER cvbench" in dockerfile
+    assert "COPY schemas /app/schemas" in dockerfile
     assert dockerignore.splitlines()[0] == "*"
     assert "!src/**" in dockerignore
+    assert "!schemas/*.schema.json" in dockerignore
 
 
 def test_real_video_image_has_no_scenario_or_media_mount_contract() -> None:

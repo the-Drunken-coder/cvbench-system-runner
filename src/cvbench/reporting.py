@@ -2,8 +2,39 @@ from __future__ import annotations
 
 import html
 import json
+from functools import lru_cache
+from importlib import resources
 from pathlib import Path
 from typing import Any
+
+from jsonschema import Draft202012Validator, FormatChecker
+from referencing import Registry, Resource
+
+
+def _schema(name: str) -> dict[str, Any]:
+    source = Path(__file__).parents[2] / "schemas" / name
+    text = source.read_text() if source.exists() else resources.files("cvbench").joinpath("_schemas", name).read_text()
+    return json.loads(text)
+
+
+@lru_cache(maxsize=1)
+def _report_validator() -> Draft202012Validator:
+    timing_schema = _schema("timing-compute-v1.schema.json")
+    registry = Registry().with_resource(timing_schema["$id"], Resource.from_contents(timing_schema))
+    return Draft202012Validator(
+        _schema("report-v1.schema.json"),
+        registry=registry,
+        format_checker=FormatChecker(),
+    )
+
+
+def validate_report(report: dict[str, Any]) -> None:
+    wire_report = json.loads(json.dumps(report, allow_nan=False))
+    errors = sorted(_report_validator().iter_errors(wire_report), key=lambda error: list(error.absolute_path))
+    if errors:
+        error = errors[0]
+        location = ".".join(str(part) for part in error.absolute_path) or "<report>"
+        raise ValueError(f"invalid cvbench.report/v1 at {location}: {error.message}")
 
 
 def write_json(path: Path, data: Any) -> None:
@@ -70,6 +101,7 @@ body{{font:16px/1.5 system-ui,sans-serif;max-width:1100px;margin:auto;padding:2r
 
 
 def write_report_files(run_dir: Path, report: dict[str, Any]) -> tuple[Path, Path]:
+    validate_report(report)
     json_path = run_dir / "report.json"
     html_path = run_dir / "report.html"
     write_json(json_path, report)

@@ -1,3 +1,8 @@
+import Ajv2020 from "ajv/dist/2020.js";
+import addFormats from "ajv-formats";
+import REPORT_SCHEMA from "../../schemas/report-v1.schema.json" with { type: "json" };
+import TIMING_COMPUTE_SCHEMA from "../../schemas/timing-compute-v1.schema.json" with { type: "json" };
+
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const MAX_SUBMISSION_BYTES = 16 * 1024;
 const MAX_RESULT_BYTES = 1024 * 1024;
@@ -5,6 +10,13 @@ const MAX_OPERATOR_NOTE_BYTES = 8 * 1024;
 const VALID_JOB_STATUSES = new Set(["queued", "running", "succeeded", "failed"]);
 const IMAGE_PATTERN = /^(?:[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?\/)?[a-z0-9]+(?:[._/-][a-z0-9]+)*@sha256:[a-f0-9]{64}$/;
 const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const REPORT_SCHEMA_AJV = new Ajv2020({ allErrors: true, strict: true, allowUnionTypes: true });
+addFormats(REPORT_SCHEMA_AJV);
+REPORT_SCHEMA_AJV.addSchema(TIMING_COMPUTE_SCHEMA);
+const validateReportSchema = REPORT_SCHEMA_AJV.compile(REPORT_SCHEMA);
+const OPENAPI_REPORT_SCHEMA = JSON.parse(JSON.stringify(REPORT_SCHEMA));
+const OPENAPI_TIMING_COMPUTE_SCHEMA = JSON.parse(JSON.stringify(TIMING_COMPUTE_SCHEMA));
+OPENAPI_REPORT_SCHEMA.properties.timing = { $ref: "#/components/schemas/TimingComputeV1" };
 
 export const PUBLIC_BENCHMARK = Object.freeze({
   id: "public-whole-system-tracking",
@@ -317,6 +329,8 @@ function validateResult(value) {
     return { error: "lease_token is invalid." };
   }
   if (value.status === "succeeded" && !isObject(value.report)) return { error: "A succeeded result requires a report object." };
+  if (value.status === "succeeded" && "error" in value) return { error: "A succeeded result cannot include error." };
+  if (value.status === "failed" && "report" in value) return { error: "A failed result cannot include report." };
   if (value.status === "succeeded") {
     const reportError = validateSuccessfulReport(value.report);
     if (reportError) return { error: reportError };
@@ -339,28 +353,21 @@ function finiteNumber(value, { positive = false } = {}) {
 }
 
 function validateSuccessfulReport(report) {
-  const topLevel = [
-    "schema_version", "run_id", "started_at", "mode", "benchmark", "system", "outcome",
-    "feed", "timing", "metrics", "resources", "leaderboard", "runtime_isolation", "findings",
-    "comparison", "provenance", "diagnostics", "limitations", "audit_evidence", "runner",
-  ];
-  const required = topLevel.filter((key) => key !== "runner");
-  if (report.schema_version !== "cvbench.report/v1") return "report.schema_version must be cvbench.report/v1.";
-  const unexpected = unknownKeys(report, topLevel);
-  if (unexpected.length) return `report contains unknown fields: ${unexpected.join(", ")}.`;
-  if (required.some((key) => !(key in report))) return "report is incomplete for cvbench.report/v1.";
+  if (!validateReportSchema(report)) {
+    const first = validateReportSchema.errors?.[0];
+    const location = first?.instancePath || "<report>";
+    return `report violates cvbench.report/v1 at ${location}: ${first?.message || "invalid report"}.`;
+  }
   if (!matchesPublicBenchmark(report.benchmark)) return "Report benchmark does not match the assigned public suite.";
   if (
-    !isObject(report.outcome)
-    || report.outcome.status !== "completed"
+    report.outcome.status !== "completed"
     || report.outcome.exit_code !== 0
     || report.outcome.timed_out !== false
     || report.outcome.crashed !== false
   ) return "A succeeded callback requires a completed report outcome.";
   const isolation = report.runtime_isolation;
   if (
-    !isObject(isolation)
-    || isolation.runtime !== "docker"
+    isolation.runtime !== "docker"
     || isolation.status !== "verified"
     || isolation.network_mode !== "none"
     || isolation.future_frame_isolation !== true
@@ -373,28 +380,13 @@ function validateSuccessfulReport(report) {
 
   const timing = report.timing;
   if (
-    !isObject(timing)
-    || timing.contract_version !== PUBLIC_BENCHMARK.timing_compute_contract
-    || !isObject(timing.source)
+    timing.contract_version !== PUBLIC_BENCHMARK.timing_compute_contract
     || timing.source.immutable !== true
-    || !finiteNumber(timing.source.duration_seconds, { positive: true })
-    || !Number.isInteger(timing.source.frame_count)
-    || timing.source.frame_count < 1
-    || !isObject(timing.replay)
     || timing.replay.profile !== PUBLIC_BENCHMARK.replay_profile
     || timing.replay.rate !== PUBLIC_BENCHMARK.replay_rate
     || timing.replay.native_real_time !== true
     || timing.replay.allowlisted !== true
-    || !isObject(timing.durations)
-    || !["wall_seconds", "stream_delivery_seconds", "completion_seconds", "drain_seconds", "real_time_factor", "teardown_seconds"].every((key) => finiteNumber(timing.durations[key]))
-    || !isObject(timing.delivery)
     || timing.delivery.policy_version !== PUBLIC_BENCHMARK.delivery_policy
-    || !finiteNumber(timing.delivery.effective_replay_rate, { positive: true })
-    || !finiteNumber(timing.delivery.delivered_frames_per_second, { positive: true })
-    || !Number.isInteger(timing.delivery.deadline_missed_frames)
-    || !isObject(timing.processing_latency_ms)
-    || !isObject(timing.output)
-    || !finiteNumber(timing.output.records_per_native_source_second)
   ) return "report.timing is incomplete or violates the assigned timing contract.";
 
   const resources = report.resources;
@@ -408,47 +400,33 @@ function validateSuccessfulReport(report) {
     "peak_ram", "disk_io",
   ];
   if (
-    !isObject(resources)
-    || resources.accounting_scope !== "container_cgroup_v2_external"
+    resources.accounting_scope !== "container_cgroup_v2_external"
     || resources.authoritative !== true
     || resourceAxes.some((key) => !finiteNumber(resources[key]))
-    || !isObject(accounting)
     || accountingAxes.some((key) => accounting[key] !== true)
   ) return "report.resources lacks mandatory authoritative external cgroup axes.";
 
   const leaderboard = report.leaderboard;
   if (
-    !isObject(leaderboard)
-    || leaderboard.policy_version !== PUBLIC_BENCHMARK.leaderboard_policy
+    leaderboard.policy_version !== PUBLIC_BENCHMARK.leaderboard_policy
     || leaderboard.replay_class !== PUBLIC_BENCHMARK.replay_profile
     || leaderboard.eligible !== true
     || typeof leaderboard.class_id !== "string"
     || leaderboard.class_id.length < 1
-    || !Array.isArray(leaderboard.disqualifications)
     || leaderboard.disqualifications.length !== 0
-    || !isObject(leaderboard.raw_axes)
   ) return "report.leaderboard must be eligible with a non-null class and retained raw axes.";
 
   const provenance = report.provenance;
   if (
-    !isObject(provenance)
-    || !/^[0-9a-f]{64}$/.test(provenance.comparison_fingerprint || "")
+    !/^[0-9a-f]{64}$/.test(provenance.comparison_fingerprint || "")
     || provenance.leaderboard_class !== leaderboard.class_id
-    || !isObject(provenance.resource_envelope)
     || provenance.resource_envelope.system?.cpu_limit !== 4
     || provenance.resource_envelope.system?.memory_limit_mb !== 2048
     || provenance.resource_envelope.system?.network_access !== false
-    || !isObject(provenance.run_budgets)
     || !finiteNumber(provenance.run_budgets.max_run_seconds, { positive: true })
     || !finiteNumber(provenance.run_budgets.max_drain_seconds)
     || !Number.isInteger(provenance.run_budgets.max_output_records)
-    || !isObject(provenance.accounting_availability)
     || canonicalJson(provenance.accounting_availability) !== canonicalJson(accounting)
-    || !isObject(report.metrics)
-    || !isObject(report.metrics.sample_counts)
-    || Object.keys(report.metrics.sample_counts).length === 0
-    || !isObject(report.audit_evidence)
-    || report.audit_evidence.schema_version !== "cvbench.audit/v1"
   ) return "report provenance, metrics, or audit evidence is incomplete.";
   return null;
 }
@@ -1098,33 +1076,8 @@ export const OPENAPI = {
           },
         ],
       },
-      ReportV1: {
-        type: "object",
-        additionalProperties: false,
-        required: ["schema_version", "run_id", "started_at", "mode", "benchmark", "system", "outcome", "feed", "timing", "metrics", "resources", "leaderboard", "runtime_isolation", "findings", "comparison", "provenance", "diagnostics", "limitations", "audit_evidence"],
-        properties: {
-          schema_version: { const: "cvbench.report/v1" },
-          run_id: { type: "string", minLength: 1 },
-          started_at: { type: "string", format: "date-time" },
-          mode: { const: "online_replay" },
-          benchmark: { type: "object" },
-          system: { type: "object" },
-          outcome: { type: "object" },
-          feed: { type: "object" },
-          timing: { type: "object" },
-          metrics: { type: "object" },
-          resources: { type: "object" },
-          leaderboard: { type: "object" },
-          runtime_isolation: { type: "object" },
-          findings: { type: "array" },
-          comparison: { type: "array" },
-          provenance: { type: "object" },
-          diagnostics: { type: "object" },
-          limitations: { type: "array" },
-          audit_evidence: { type: "object" },
-          runner: { type: "object" },
-        },
-      },
+      TimingComputeV1: OPENAPI_TIMING_COMPUTE_SCHEMA,
+      ReportV1: OPENAPI_REPORT_SCHEMA,
     },
   },
 };

@@ -66,6 +66,7 @@ def _comparison_fingerprint(
     system_resources: dict[str, Any] | None = None,
     accounting_availability: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
+    system_resources = system_resources or {}
     scenario_inputs = []
     for scenario in scenarios:
         manifest = next(path for path in benchmark.scenarios if path.parent == scenario.root)
@@ -98,8 +99,16 @@ def _comparison_fingerprint(
         "replay_profile": benchmark.replay_profile,
         "playback_rate": benchmark.playback_rate,
         "resource_envelope": {
-            "benchmark": benchmark.resources,
-            "system": system_resources,
+            "benchmark": {
+                "cpu_limit": benchmark.resources.get("cpu_limit"),
+                "memory_limit_mb": benchmark.resources.get("memory_limit_mb"),
+                "network_access": benchmark.resources.get("network_access", False),
+            },
+            "system": {
+                "cpu_limit": system_resources.get("cpu_limit"),
+                "memory_limit_mb": system_resources.get("memory_limit_mb"),
+                "network_access": system_resources.get("network_access", False),
+            },
         },
         "run_budgets": {
             "max_run_seconds": benchmark.max_run_seconds,
