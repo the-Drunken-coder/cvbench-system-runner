@@ -45,3 +45,35 @@ def test_output_for_transport_failed_frame_is_rejected() -> None:
     records, errors, _stderr = collector.snapshot()
     assert records == []
     assert any("delivery failed" in error for error in errors)
+
+
+def test_output_boundary_uses_one_fixed_snapshot_and_cannot_be_extended(monkeypatch) -> None:
+    collector = _collector()
+    collector._stdout_fd = 9
+    collector._stdout_read_bytes = 10
+    pending_bytes = 64
+
+    def snapshot(_fd, _request, pending, _mutate):
+        pending[0] = pending_bytes
+
+    monkeypatch.setattr("cvbench.collector.fcntl.ioctl", snapshot)
+
+    assert collector.request_output_boundary() is False
+    assert collector._output_boundary_target == 74
+    pending_bytes = 1_000
+    assert collector.request_output_boundary() is False
+    assert collector._output_boundary_target == 74
+
+
+def test_output_boundary_snapshot_failure_fails_closed(monkeypatch) -> None:
+    collector = _collector()
+    collector._stdout_fd = 9
+
+    def fail_snapshot(*_args):
+        raise OSError("unavailable")
+
+    monkeypatch.setattr("cvbench.collector.fcntl.ioctl", fail_snapshot)
+
+    assert collector.request_output_boundary() is False
+    assert collector.flooded.is_set()
+    assert collector.limit_reason == "stdout completion boundary snapshot failed: unavailable"

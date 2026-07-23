@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import array
+import fcntl
 import json
 import os
 import select
+import termios
 import threading
 import time
 from collections import deque
@@ -45,6 +48,11 @@ class OutputCollector:
         self.limit_reason: str | None = None
         self.first_output_timestamp_ns: int | None = None
         self._lock = threading.Lock()
+        self._stdout_state_lock = threading.Lock()
+        self._stdout_fd: int | None = None
+        self._stdout_read_bytes = 0
+        self._stdout_processed_bytes = 0
+        self._output_boundary_target: int | None = None
         self._frames: dict[tuple[str, int], tuple[str, tuple[int, int]]] = {}
         self._pending: dict[tuple[str, int], list[tuple[int, Any, str]]] = {}
         self._output_record_count = 0
@@ -59,26 +67,47 @@ class OutputCollector:
         assert self.process.stdout is not None
         file_descriptor = self.process.stdout.fileno()
         os.set_blocking(file_descriptor, False)
+        with self._stdout_state_lock:
+            self._stdout_fd = file_descriptor
         buffer = bytearray()
         total_bytes = 0
         recent_records: deque[int] = deque()
         boundary_acknowledged = False
         try:
             while not self.flooded.is_set():
+                if (
+                    self.output_boundary_requested.is_set()
+                    and self._output_boundary_target is None
+                ):
+                    self._snapshot_output_boundary()
+                with self._stdout_state_lock:
+                    boundary_target = self._output_boundary_target
+                    boundary_ready = (
+                        boundary_target is not None
+                        and self._stdout_processed_bytes >= boundary_target
+                    )
+                if boundary_ready and not boundary_acknowledged:
+                    if buffer:
+                        self._consume_line(bytes(buffer), recent_records)
+                        buffer.clear()
+                    self.close_scoring()
+                    self.output_boundary_drained.set()
+                    boundary_acknowledged = True
                 readable, _, _ = select.select([file_descriptor], [], [], 0.02)
                 if not readable:
-                    if self.output_boundary_requested.is_set() and not boundary_acknowledged:
-                        if buffer:
-                            self._consume_line(bytes(buffer), recent_records)
-                            buffer.clear()
-                        self.close_scoring()
-                        self.output_boundary_drained.set()
-                        boundary_acknowledged = True
                     continue
-                try:
-                    chunk = os.read(file_descriptor, 65536)
-                except BlockingIOError:
-                    continue
+                with self._stdout_state_lock:
+                    read_limit = 65536
+                    if self._output_boundary_target is not None and not boundary_acknowledged:
+                        remaining = self._output_boundary_target - self._stdout_read_bytes
+                        if remaining <= 0:
+                            continue
+                        read_limit = min(read_limit, remaining)
+                    try:
+                        chunk = os.read(file_descriptor, read_limit)
+                    except BlockingIOError:
+                        continue
+                    self._stdout_read_bytes += len(chunk)
                 if not chunk:
                     if buffer:
                         self._consume_line(bytes(buffer), recent_records)
@@ -103,6 +132,8 @@ class OutputCollector:
                 if len(buffer) > self.max_line_bytes:
                     self._set_limit(f"stdout line byte limit exceeded ({self.max_line_bytes})")
                     return
+                with self._stdout_state_lock:
+                    self._stdout_processed_bytes += len(chunk)
         finally:
             self.stdout_closed.set()
 
@@ -250,7 +281,20 @@ class OutputCollector:
     def request_output_boundary(self) -> bool:
         """Drain stdout already written before a socket half-close, then close scoring."""
         self.output_boundary_requested.set()
+        self._snapshot_output_boundary()
         return self.output_boundary_drained.is_set()
+
+    def _snapshot_output_boundary(self) -> None:
+        with self._stdout_state_lock:
+            if self._output_boundary_target is not None or self._stdout_fd is None:
+                return
+            pending = array.array("i", [0])
+            try:
+                fcntl.ioctl(self._stdout_fd, termios.FIONREAD, pending, True)
+            except OSError as exc:
+                self._set_limit(f"stdout completion boundary snapshot failed: {exc}")
+                return
+            self._output_boundary_target = self._stdout_read_bytes + max(0, pending[0])
 
     def join(self, timeout: float = 2.0) -> None:
         self._stdout_thread.join(timeout)
