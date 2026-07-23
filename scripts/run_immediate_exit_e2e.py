@@ -56,7 +56,10 @@ def main() -> int:
     assert track_lines == 12
     assert report["outcome"]["status"] == "completed"
     assert report["metrics"]["sample_counts"]["output_records"] > 0
-    assert report["resources"]["authoritative"] is True
+    assert report["resources"]["authoritative"] is True, json.dumps(
+        report["resources"],
+        sort_keys=True,
+    )
     assert report["resources"]["over_time"][-1]["final_cumulative"] is True
     assert report["leaderboard"]["eligible"] is True
 
