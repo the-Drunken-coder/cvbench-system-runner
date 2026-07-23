@@ -56,6 +56,29 @@ def _summary(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _efficiency_dominates(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    axes = (
+        ("resources", "cpu_seconds_per_native_source_second"),
+        ("timing", "durations", "real_time_factor"),
+        ("resources", "peak_ram_bytes"),
+        ("resources", "disk_read_bytes"),
+        ("resources", "disk_write_bytes"),
+    )
+
+    def value(report: dict[str, Any], path: tuple[str, ...]) -> float:
+        current: Any = report
+        for part in path:
+            current = current[part]
+        if not isinstance(current, (int, float)):
+            raise AssertionError(f"missing Pareto axis: {'.'.join(path)}")
+        return float(current)
+
+    pairs = [(value(left, path), value(right, path)) for path in axes]
+    return all(candidate <= baseline for candidate, baseline in pairs) and any(
+        candidate < baseline for candidate, baseline in pairs
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fast", type=Path, required=True)
@@ -73,8 +96,9 @@ def main() -> int:
     for report in reports.values():
         assert report["outcome"]["status"] == "completed", report["outcome"]
         assert report["runtime_isolation"]["status"] == "verified"
-        assert report["resources"]["accounting_scope"] == "container_cgroup"
+        assert report["resources"]["accounting_scope"] == "container_cgroup_v2_external"
         assert report["resources"]["authoritative"] is True
+        assert all(report["resources"]["accounting_availability"].values())
         assert report["resources"]["cpu_time_seconds"] is not None
         assert report["resources"]["cpu_seconds_per_native_source_second"] is not None
         assert report["timing"]["replay"] == {
@@ -83,7 +107,7 @@ def main() -> int:
             "native_real_time": True,
             "allowlisted": True,
         }
-        assert report["timing"]["source"]["duration_seconds"] == 2.2
+        assert report["timing"]["source"]["duration_seconds"] == 1.1
 
     fast = reports["fast"]
     cpu_heavy = reports["cpu_heavy"]
@@ -113,6 +137,16 @@ def main() -> int:
     }
     assert len(accuracy) == 1
     assert len({report["leaderboard"]["class_id"] for report in reports.values()}) >= 3
+    tactic_dominates_fast = {
+        name: _efficiency_dominates(report, fast)
+        for name, report in reports.items()
+        if name != "fast"
+    }
+    assert tactic_dominates_fast == {
+        "cpu_heavy": False,
+        "idle": False,
+        "background_child": False,
+    }
 
     evidence = {
         "schema_version": "cvbench.timing-compute-evidence/v1",
@@ -121,6 +155,7 @@ def main() -> int:
         "delivery_policy": "cvbench.delivery-lossless/v1",
         "leaderboard_policy": "cvbench.pareto/v1",
         "runs": {name: _summary(report) for name, report in reports.items()},
+        "pareto": {"tactic_dominates_fast": tactic_dominates_fast},
         "conclusion": (
             "Sleeping does not erase the system's required CPU work and increases completion "
             "time; CPU-heavy work consumes CPU-seconds per native source-second; background "

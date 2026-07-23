@@ -99,6 +99,7 @@ class DeliveryRecorder:
     first_scheduled_ns: int | None = None
     first_send_started_ns: int | None = None
     last_send_completed_ns: int | None = None
+    benchmark_end_send_started_ns: int | None = None
     benchmark_end_sent_ns: int | None = None
 
     def record_frame(
@@ -173,6 +174,14 @@ class DeliveryRecorder:
             "deadline_missed_frames": sum(bool(frame["deadline_missed"]) for frame in self.frames),
             "sender_pressure_frames": len(pressure_calls),
             "sender_blocking_time_ms": sum(pressure_calls),
+            "benchmark_end_sender_call_ms": (
+                _milliseconds(
+                    self.benchmark_end_sent_ns - self.benchmark_end_send_started_ns
+                )
+                if self.benchmark_end_sent_ns is not None
+                and self.benchmark_end_send_started_ns is not None
+                else None
+            ),
             "delivery_backlog_ms": _summary(backlog),
             "sender_call_ms": _summary(sender_calls),
             "input_queue_depth": None,
@@ -193,6 +202,7 @@ def build_timing_summary(
     started_ns: int,
     ready_ns: int | None,
     finished_ns: int,
+    teardown_finished_ns: int | None,
     collected: list[CollectedRecord],
     frame_delivery_ns: dict[tuple[str, int], int],
 ) -> dict[str, Any]:
@@ -249,6 +259,16 @@ def build_timing_summary(
         },
         "durations": {
             "wall_seconds": _seconds(finished_ns - started_ns),
+            "runner_total_seconds": (
+                _seconds(teardown_finished_ns - started_ns)
+                if teardown_finished_ns is not None
+                else None
+            ),
+            "teardown_seconds": (
+                _seconds(teardown_finished_ns - finished_ns)
+                if teardown_finished_ns is not None
+                else None
+            ),
             "startup_seconds": _seconds(ready_ns - started_ns) if ready_ns is not None else None,
             "stream_delivery_seconds": stream_delivery_seconds,
             "completion_seconds": completion_seconds,
@@ -313,10 +333,13 @@ def build_leaderboard_semantics(
         else None
     )
     resources["cpu_seconds_per_native_source_second"] = cpu_per_source
-    resources["accounting_scope"] = (
-        "container_cgroup" if runtime_type == "docker" else "local_process_tree_best_effort"
+    resources.setdefault(
+        "accounting_scope",
+        "container_cgroup_v2_external"
+        if runtime_type == "docker"
+        else "local_process_tree_best_effort",
     )
-    resources["authoritative"] = runtime_type == "docker"
+    resources.setdefault("authoritative", False)
     resources["gpu_accounting"] = {
         "available": False,
         "isolated": False,
@@ -341,6 +364,39 @@ def build_leaderboard_semantics(
         disqualifications.append("accelerated test replay is not a leaderboard pace")
     if runtime_type != "docker":
         disqualifications.append("resource accounting is not container/cgroup authoritative")
+    availability = resources.get("accounting_availability")
+    required_accounting = (
+        "external_cgroup_v2",
+        "final_cumulative_cpu_sample",
+        "cpu_time",
+        "cpu_percent",
+        "peak_ram",
+        "disk_io",
+    )
+    if (
+        not resources.get("authoritative")
+        or not isinstance(availability, dict)
+        or not all(availability.get(key) is True for key in required_accounting)
+    ):
+        disqualifications.append("mandatory external cgroup accounting is incomplete")
+    required_axes = {
+        "CPU time": cpu_time,
+        "CPU-seconds/native-source-second": cpu_per_source,
+        "average CPU": resources.get("average_cpu_percent"),
+        "peak CPU": resources.get("peak_cpu_percent"),
+        "peak RAM": resources.get("peak_ram_bytes"),
+        "disk read I/O": resources.get("disk_read_bytes"),
+        "disk write I/O": resources.get("disk_write_bytes"),
+        "real-time factor": real_time_factor,
+    }
+    missing_axes = [
+        name for name, value in required_axes.items()
+        if not isinstance(value, (int, float))
+    ]
+    if missing_axes:
+        disqualifications.append(
+            f"mandatory timing/compute axes are missing: {', '.join(missing_axes)}"
+        )
     if outcome_status != "completed":
         disqualifications.append("run did not complete")
     return {

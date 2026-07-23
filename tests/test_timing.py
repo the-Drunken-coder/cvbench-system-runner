@@ -127,3 +127,32 @@ def test_local_process_tree_measurements_are_never_leaderboard_authoritative() -
     assert resources["authoritative"] is False
     assert semantics["eligible"] is False
     assert "container/cgroup" in semantics["disqualifications"][0]
+
+
+def test_missing_mandatory_compute_axes_make_docker_result_ineligible() -> None:
+    benchmark = load_benchmark(ROOT / "benchmarks/persistent-target-tracking.yaml")
+    resources = {
+        "cpu_time_seconds": None,
+        "average_cpu_percent": None,
+        "peak_cpu_percent": None,
+        "peak_ram_bytes": None,
+        "disk_read_bytes": None,
+        "disk_write_bytes": None,
+        "authoritative": False,
+        "accounting_availability": {},
+    }
+    semantics = build_leaderboard_semantics(
+        benchmark=benchmark,
+        timing={
+            "source": {"duration_seconds": 10.0},
+            "durations": {"real_time_factor": None},
+        },
+        resources=resources,
+        metrics={},
+        outcome_status="completed",
+        runtime_type="docker",
+    )
+    assert semantics["eligible"] is False
+    assert semantics["compute_tier"] == "unclassified"
+    assert semantics["completion_tier"] == "unclassified"
+    assert any("mandatory timing/compute axes" in reason for reason in semantics["disqualifications"])

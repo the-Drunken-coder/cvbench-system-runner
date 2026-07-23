@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cvbench.dev/schemas/report-v1.schema.json",
+  "title": "CVBench benchmark report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "started_at", "mode", "benchmark", "system", "outcome", "feed", "timing", "metrics", "resources", "leaderboard", "runtime_isolation", "findings", "comparison", "provenance", "diagnostics", "limitations", "audit_evidence"],
+  "properties": {
+    "schema_version": {"const": "cvbench.report/v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "started_at": {"type": "string", "format": "date-time"},
+    "mode": {"enum": ["online_replay", "offline_sequence"]},
+    "benchmark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1}
+      }
+    },
+    "system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "revision", "runtime", "command"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1},
+        "runtime": {"enum": ["docker", "local"]},
+        "command": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {"status": {"enum": ["completed", "failed"]}}
+    },
+    "feed": {"type": "object"},
+    "timing": {"$ref": "timing-compute-v1.schema.json"},
+    "metrics": {
+      "type": "object",
+      "required": ["sample_counts"],
+      "properties": {"sample_counts": {"type": "object", "minProperties": 1}}
+    },
+    "resources": {
+      "type": "object",
+      "required": ["cpu_time_seconds", "cpu_seconds_per_native_source_second", "average_cpu_percent", "peak_cpu_percent", "peak_ram_bytes", "disk_read_bytes", "disk_write_bytes", "accounting_scope", "accounting_availability", "authoritative"],
+      "properties": {
+        "cpu_time_seconds": {"type": ["number", "null"], "minimum": 0},
+        "cpu_seconds_per_native_source_second": {"type": ["number", "null"], "minimum": 0},
+        "average_cpu_percent": {"type": ["number", "null"], "minimum": 0},
+        "peak_cpu_percent": {"type": ["number", "null"], "minimum": 0},
+        "peak_ram_bytes": {"type": ["number", "null"], "minimum": 0},
+        "disk_read_bytes": {"type": ["number", "null"], "minimum": 0},
+        "disk_write_bytes": {"type": ["number", "null"], "minimum": 0},
+        "accounting_scope": {"enum": ["container_cgroup_v2_external", "local_process_tree_best_effort"]},
+        "authoritative": {"type": "boolean"},
+        "accounting_availability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["external_cgroup_v2", "final_cumulative_cpu_sample", "cpu_time", "cpu_percent", "peak_ram", "disk_io"],
+          "properties": {
+            "external_cgroup_v2": {"type": "boolean"},
+            "final_cumulative_cpu_sample": {"type": "boolean"},
+            "cpu_time": {"type": "boolean"},
+            "cpu_percent": {"type": "boolean"},
+            "peak_ram": {"type": "boolean"},
+            "disk_io": {"type": "boolean"}
+          }
+        }
+      }
+    },
+    "leaderboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy_version", "ranking_method", "composite_score", "class_id", "replay_class", "compute_tier", "completion_tier", "eligible", "disqualifications", "raw_axes", "comparison_rule"],
+      "properties": {
+        "policy_version": {"const": "cvbench.pareto/v1"},
+        "ranking_method": {"const": "pareto"},
+        "composite_score": {"type": "null"},
+        "class_id": {"type": "string", "minLength": 1},
+        "replay_class": {"type": "string", "minLength": 1},
+        "compute_tier": {"type": "string", "minLength": 1},
+        "completion_tier": {"type": "string", "minLength": 1},
+        "eligible": {"type": "boolean"},
+        "disqualifications": {"type": "array", "items": {"type": "string"}},
+        "raw_axes": {"type": "object", "required": ["accuracy", "efficiency"]},
+        "comparison_rule": {"type": "string", "minLength": 1}
+      }
+    },
+    "runtime_isolation": {"type": "object", "required": ["runtime", "status"]},
+    "findings": {"type": "array"},
+    "comparison": {"type": "array"},
+    "provenance": {
+      "type": "object",
+      "required": ["timing_compute_contract", "delivery_policy", "replay_profile", "replay_rate", "leaderboard_class", "comparison_fingerprint", "resource_envelope", "run_budgets", "accounting_availability"],
+      "properties": {
+        "timing_compute_contract": {"const": "cvbench.timing-compute/v1"},
+        "delivery_policy": {"const": "cvbench.delivery-lossless/v1"},
+        "replay_profile": {"type": "string"},
+        "replay_rate": {"type": "number", "exclusiveMinimum": 0},
+        "leaderboard_class": {"type": "string", "minLength": 1},
+        "comparison_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "resource_envelope": {"type": "object"},
+        "run_budgets": {"type": "object"},
+        "accounting_availability": {"type": "object"}
+      }
+    },
+    "diagnostics": {"type": "object"},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "audit_evidence": {
+      "type": "object",
+      "required": ["schema_version"],
+      "properties": {"schema_version": {"const": "cvbench.audit/v1"}}
+    },
+    "runner": {"type": "object"}
+  }
+}

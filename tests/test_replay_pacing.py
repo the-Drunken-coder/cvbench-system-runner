@@ -4,10 +4,22 @@ from pathlib import Path
 
 import pytest
 import yaml
+from jsonschema import Draft202012Validator
+from referencing import Registry, Resource
 
 from cvbench.runner import run_benchmark
 
 ROOT = Path(__file__).parents[1]
+
+
+def _validate_report(report: dict) -> None:
+    report_schema = json.loads((ROOT / "schemas/report-v1.schema.json").read_text())
+    timing_schema = json.loads((ROOT / "schemas/timing-compute-v1.schema.json").read_text())
+    registry = Registry().with_resource(
+        "timing-compute-v1.schema.json",
+        Resource.from_contents(timing_schema),
+    )
+    Draft202012Validator(report_schema, registry=registry).validate(report)
 
 
 def _run(tmp_path: Path, profile: str) -> dict:
@@ -81,7 +93,9 @@ def _run(tmp_path: Path, profile: str) -> dict:
         )
     )
     artifacts = run_benchmark(benchmark, system, tmp_path / f"runs-{profile}")
-    return json.loads(artifacts.report_json.read_text())
+    report = json.loads(artifacts.report_json.read_text())
+    _validate_report(report)
+    return report
 
 
 def test_native_and_slower_replay_keep_identical_source_truth_but_separate_delivery_class(
@@ -196,3 +210,5 @@ def test_slow_reader_creates_reported_sender_pressure_without_rewriting_source_t
     assert delivery["deadline_missed_frames"] > 0
     assert delivery["input_queue_depth_available"] is False
     assert delivery["transport_failed_frames"] == 0
+    assert delivery["benchmark_end_sender_call_ms"] is not None
+    assert delivery["benchmark_end_sender_call_ms"] >= 0

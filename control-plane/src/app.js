@@ -317,6 +317,10 @@ function validateResult(value) {
     return { error: "lease_token is invalid." };
   }
   if (value.status === "succeeded" && !isObject(value.report)) return { error: "A succeeded result requires a report object." };
+  if (value.status === "succeeded") {
+    const reportError = validateSuccessfulReport(value.report);
+    if (reportError) return { error: reportError };
+  }
   if (value.status === "failed" && (typeof value.error !== "string" || value.error.length < 1 || value.error.length > 2000)) {
     return { error: "A failed result requires an error string of at most 2000 characters." };
   }
@@ -328,6 +332,125 @@ function validateResult(value) {
       error: value.status === "failed" ? value.error : null,
     },
   };
+}
+
+function finiteNumber(value, { positive = false } = {}) {
+  return typeof value === "number" && Number.isFinite(value) && (positive ? value > 0 : value >= 0);
+}
+
+function validateSuccessfulReport(report) {
+  const topLevel = [
+    "schema_version", "run_id", "started_at", "mode", "benchmark", "system", "outcome",
+    "feed", "timing", "metrics", "resources", "leaderboard", "runtime_isolation", "findings",
+    "comparison", "provenance", "diagnostics", "limitations", "audit_evidence", "runner",
+  ];
+  const required = topLevel.filter((key) => key !== "runner");
+  if (report.schema_version !== "cvbench.report/v1") return "report.schema_version must be cvbench.report/v1.";
+  const unexpected = unknownKeys(report, topLevel);
+  if (unexpected.length) return `report contains unknown fields: ${unexpected.join(", ")}.`;
+  if (required.some((key) => !(key in report))) return "report is incomplete for cvbench.report/v1.";
+  if (!matchesPublicBenchmark(report.benchmark)) return "Report benchmark does not match the assigned public suite.";
+  if (
+    !isObject(report.outcome)
+    || report.outcome.status !== "completed"
+    || report.outcome.exit_code !== 0
+    || report.outcome.timed_out !== false
+    || report.outcome.crashed !== false
+  ) return "A succeeded callback requires a completed report outcome.";
+  const isolation = report.runtime_isolation;
+  if (
+    !isObject(isolation)
+    || isolation.runtime !== "docker"
+    || isolation.status !== "verified"
+    || isolation.network_mode !== "none"
+    || isolation.future_frame_isolation !== true
+    || isolation.ground_truth_access !== false
+    || isolation.repository_access !== false
+    || isolation.media_access !== false
+    || isolation.image_identity_verified !== true
+    || isolation.container_user_alignment_verified !== true
+  ) return "A succeeded callback requires fully verified Docker isolation.";
+
+  const timing = report.timing;
+  if (
+    !isObject(timing)
+    || timing.contract_version !== PUBLIC_BENCHMARK.timing_compute_contract
+    || !isObject(timing.source)
+    || timing.source.immutable !== true
+    || !finiteNumber(timing.source.duration_seconds, { positive: true })
+    || !Number.isInteger(timing.source.frame_count)
+    || timing.source.frame_count < 1
+    || !isObject(timing.replay)
+    || timing.replay.profile !== PUBLIC_BENCHMARK.replay_profile
+    || timing.replay.rate !== PUBLIC_BENCHMARK.replay_rate
+    || timing.replay.native_real_time !== true
+    || timing.replay.allowlisted !== true
+    || !isObject(timing.durations)
+    || !["wall_seconds", "stream_delivery_seconds", "completion_seconds", "drain_seconds", "real_time_factor", "teardown_seconds"].every((key) => finiteNumber(timing.durations[key]))
+    || !isObject(timing.delivery)
+    || timing.delivery.policy_version !== PUBLIC_BENCHMARK.delivery_policy
+    || !finiteNumber(timing.delivery.effective_replay_rate, { positive: true })
+    || !finiteNumber(timing.delivery.delivered_frames_per_second, { positive: true })
+    || !Number.isInteger(timing.delivery.deadline_missed_frames)
+    || !isObject(timing.processing_latency_ms)
+    || !isObject(timing.output)
+    || !finiteNumber(timing.output.records_per_native_source_second)
+  ) return "report.timing is incomplete or violates the assigned timing contract.";
+
+  const resources = report.resources;
+  const accounting = resources?.accounting_availability;
+  const resourceAxes = [
+    "cpu_time_seconds", "cpu_seconds_per_native_source_second", "average_cpu_percent",
+    "peak_cpu_percent", "peak_ram_bytes", "disk_read_bytes", "disk_write_bytes",
+  ];
+  const accountingAxes = [
+    "external_cgroup_v2", "final_cumulative_cpu_sample", "cpu_time", "cpu_percent",
+    "peak_ram", "disk_io",
+  ];
+  if (
+    !isObject(resources)
+    || resources.accounting_scope !== "container_cgroup_v2_external"
+    || resources.authoritative !== true
+    || resourceAxes.some((key) => !finiteNumber(resources[key]))
+    || !isObject(accounting)
+    || accountingAxes.some((key) => accounting[key] !== true)
+  ) return "report.resources lacks mandatory authoritative external cgroup axes.";
+
+  const leaderboard = report.leaderboard;
+  if (
+    !isObject(leaderboard)
+    || leaderboard.policy_version !== PUBLIC_BENCHMARK.leaderboard_policy
+    || leaderboard.replay_class !== PUBLIC_BENCHMARK.replay_profile
+    || leaderboard.eligible !== true
+    || typeof leaderboard.class_id !== "string"
+    || leaderboard.class_id.length < 1
+    || !Array.isArray(leaderboard.disqualifications)
+    || leaderboard.disqualifications.length !== 0
+    || !isObject(leaderboard.raw_axes)
+  ) return "report.leaderboard must be eligible with a non-null class and retained raw axes.";
+
+  const provenance = report.provenance;
+  if (
+    !isObject(provenance)
+    || !/^[0-9a-f]{64}$/.test(provenance.comparison_fingerprint || "")
+    || provenance.leaderboard_class !== leaderboard.class_id
+    || !isObject(provenance.resource_envelope)
+    || provenance.resource_envelope.system?.cpu_limit !== 4
+    || provenance.resource_envelope.system?.memory_limit_mb !== 2048
+    || provenance.resource_envelope.system?.network_access !== false
+    || !isObject(provenance.run_budgets)
+    || !finiteNumber(provenance.run_budgets.max_run_seconds, { positive: true })
+    || !finiteNumber(provenance.run_budgets.max_drain_seconds)
+    || !Number.isInteger(provenance.run_budgets.max_output_records)
+    || !isObject(provenance.accounting_availability)
+    || canonicalJson(provenance.accounting_availability) !== canonicalJson(accounting)
+    || !isObject(report.metrics)
+    || !isObject(report.metrics.sample_counts)
+    || Object.keys(report.metrics.sample_counts).length === 0
+    || !isObject(report.audit_evidence)
+    || report.audit_evidence.schema_version !== "cvbench.audit/v1"
+  ) return "report provenance, metrics, or audit evidence is incomplete.";
+  return null;
 }
 
 async function authoritativeReport(report) {
@@ -477,10 +600,17 @@ function scoreSummary(report) {
     latency_p50_ms: metrics.latency?.median ?? null,
     latency_p99_ms: metrics.latency?.p99 ?? null,
     native_source_duration_seconds: report?.timing?.source?.duration_seconds ?? null,
+    wall_seconds: report?.timing?.durations?.wall_seconds ?? null,
+    startup_seconds: report?.timing?.durations?.startup_seconds ?? null,
+    stream_delivery_seconds: report?.timing?.durations?.stream_delivery_seconds ?? null,
+    completion_seconds: report?.timing?.durations?.completion_seconds ?? null,
+    drain_seconds: report?.timing?.durations?.drain_seconds ?? null,
+    teardown_seconds: report?.timing?.durations?.teardown_seconds ?? null,
     replay_profile: report?.timing?.replay?.profile ?? null,
     replay_rate: report?.timing?.replay?.rate ?? null,
     effective_replay_rate: report?.timing?.delivery?.effective_replay_rate ?? null,
     delivered_frames_per_second: report?.timing?.delivery?.delivered_frames_per_second ?? null,
+    cpu_time_seconds: report?.resources?.cpu_time_seconds ?? null,
     cpu_seconds_per_native_source_second: report?.resources?.cpu_seconds_per_native_source_second ?? null,
     real_time_factor: report?.timing?.durations?.real_time_factor ?? null,
     average_cpu_percent: report?.resources?.average_cpu_percent ?? null,
@@ -494,6 +624,9 @@ function scoreSummary(report) {
     delivery_deadline_missed_frames: report?.timing?.delivery?.deadline_missed_frames ?? null,
     leaderboard_class: report?.leaderboard?.class_id ?? null,
     leaderboard_eligible: report?.leaderboard?.eligible ?? false,
+    leaderboard_disqualifications: report?.leaderboard?.disqualifications ?? [],
+    accounting_complete: report?.resources?.authoritative === true
+      && Object.values(report?.resources?.accounting_availability || {}).every((value) => value === true),
     perfect: metrics.coverage?.overall_observed === 1 && metrics.localization?.mean_iou === 1 && metrics.identity?.id_switches === 0 && metrics.false_detections?.track_births === 0,
   };
 }
@@ -753,8 +886,8 @@ export const CONTRACT = {
       source_time: "Native source timestamps, FPS, and duration are immutable. Replay pace never rewrites camera truth.",
       replay: "Public /api/v1 submissions are fixed to the allowlisted native profile at exactly 1.0x. The v1 request has no replay override; slower allowlisted profiles are separate benchmark classes, never native results.",
       delivery: "An independent monotonic source schedule preserves ordering and never reveals future frames. The lossless-v1 policy reports sender pressure, delivery backlog, deadline misses, and explicit fault drops.",
-      completion: "Startup, stream delivery, bounded post-stream drain, wall duration, per-output processing latency, and late-output counts are reported separately.",
-      compute: "Container/cgroup CPU time, CPU-seconds per native source-second, average/peak CPU, peak RAM, disk I/O, process count, and output rate are raw axes. GPU/VRAM are omitted unless an isolated device is assigned.",
+      completion: "Startup, stream delivery, bounded post-stream drain, wall duration, per-output processing latency, late-output counts, and out-of-band teardown are reported separately.",
+      compute: "The trusted host reads cgroup-v2 CPU time, CPU-seconds per native source-second, average/peak CPU, peak RAM, disk I/O, process count, and a final cumulative sample without executing inside the submitted image. Missing axes are ineligible. GPU/VRAM are omitted unless an isolated device is assigned.",
       fairness: "cvbench.pareto/v1 has no hidden composite. Accuracy remains intact; replay profile, compute tier, completion tier, and raw efficiency axes define the leaderboard class.",
     },
   },
@@ -828,6 +961,22 @@ export const OPENAPI = {
         },
       },
     },
+    "/api/v1/internal/submissions/{id}/result": {
+      post: {
+        operationId: "completeRunnerSubmission",
+        security: [{ runnerKey: [] }],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
+        requestBody: {
+          required: true,
+          content: {"application/json": {schema: {$ref: "#/components/schemas/RunnerResult"}}},
+        },
+        responses: {
+          200: {description: "Lease completed"},
+          409: {description: "Lease conflict"},
+          422: {description: "Invalid or incomplete report"},
+        },
+      },
+    },
     "/api/v1/operator/jobs": {
       get: {
         operationId: "listOperatorJobs",
@@ -863,6 +1012,7 @@ export const OPENAPI = {
   components: {
     securitySchemes: {
       submissionKey: { type: "http", scheme: "bearer" },
+      runnerKey: { type: "http", scheme: "bearer" },
       operatorReadKey: { type: "http", scheme: "bearer", description: "Least-privilege operator read credential; never the submission, adjudicator, or runner token." },
       operatorAdjudicatorKey: { type: "http", scheme: "bearer", description: "Credential mapped to one stable actor identity; it cannot read operator routes and is never exposed or stored as a bearer value." },
     },
@@ -882,13 +1032,30 @@ export const OPENAPI = {
       },
       TimingComputeSummary: {
         type: "object",
-        additionalProperties: true,
+        additionalProperties: false,
         properties: {
+          sample_counts: { type: "object" },
+          acquisition_rate: { type: ["number", "null"] },
+          observed_coverage: { type: ["number", "null"] },
+          continuity_coverage: { type: ["number", "null"] },
+          mean_iou: { type: ["number", "null"] },
+          id_switches: { type: ["number", "null"] },
+          false_track_births: { type: ["number", "null"] },
+          reacquisition_same_id_rate: { type: ["number", "null"] },
+          latency_p50_ms: { type: ["number", "null"], minimum: 0 },
+          latency_p99_ms: { type: ["number", "null"], minimum: 0 },
           native_source_duration_seconds: { type: ["number", "null"], minimum: 0 },
+          wall_seconds: { type: ["number", "null"], minimum: 0 },
+          startup_seconds: { type: ["number", "null"], minimum: 0 },
+          stream_delivery_seconds: { type: ["number", "null"], minimum: 0 },
+          completion_seconds: { type: ["number", "null"], minimum: 0 },
+          drain_seconds: { type: ["number", "null"], minimum: 0 },
+          teardown_seconds: { type: ["number", "null"], minimum: 0 },
           replay_profile: { type: ["string", "null"], enum: ["native", null] },
           replay_rate: { type: ["number", "null"], enum: [1, null] },
           effective_replay_rate: { type: ["number", "null"], minimum: 0 },
           delivered_frames_per_second: { type: ["number", "null"], minimum: 0 },
+          cpu_time_seconds: { type: ["number", "null"], minimum: 0 },
           cpu_seconds_per_native_source_second: { type: ["number", "null"], minimum: 0 },
           real_time_factor: { type: ["number", "null"], minimum: 0 },
           average_cpu_percent: { type: ["number", "null"], minimum: 0 },
@@ -902,6 +1069,60 @@ export const OPENAPI = {
           delivery_deadline_missed_frames: { type: ["integer", "null"], minimum: 0 },
           leaderboard_class: { type: ["string", "null"] },
           leaderboard_eligible: { type: "boolean" },
+          leaderboard_disqualifications: { type: "array", items: { type: "string" } },
+          accounting_complete: { type: "boolean" },
+          perfect: { type: "boolean" },
+        },
+      },
+      RunnerResult: {
+        oneOf: [
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["status", "lease_token", "report"],
+            properties: {
+              status: { const: "succeeded" },
+              lease_token: { type: "string", minLength: 32, maxLength: 200 },
+              report: { $ref: "#/components/schemas/ReportV1" },
+            },
+          },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["status", "lease_token", "error"],
+            properties: {
+              status: { const: "failed" },
+              lease_token: { type: "string", minLength: 32, maxLength: 200 },
+              error: { type: "string", minLength: 1, maxLength: 2000 },
+            },
+          },
+        ],
+      },
+      ReportV1: {
+        type: "object",
+        additionalProperties: false,
+        required: ["schema_version", "run_id", "started_at", "mode", "benchmark", "system", "outcome", "feed", "timing", "metrics", "resources", "leaderboard", "runtime_isolation", "findings", "comparison", "provenance", "diagnostics", "limitations", "audit_evidence"],
+        properties: {
+          schema_version: { const: "cvbench.report/v1" },
+          run_id: { type: "string", minLength: 1 },
+          started_at: { type: "string", format: "date-time" },
+          mode: { const: "online_replay" },
+          benchmark: { type: "object" },
+          system: { type: "object" },
+          outcome: { type: "object" },
+          feed: { type: "object" },
+          timing: { type: "object" },
+          metrics: { type: "object" },
+          resources: { type: "object" },
+          leaderboard: { type: "object" },
+          runtime_isolation: { type: "object" },
+          findings: { type: "array" },
+          comparison: { type: "array" },
+          provenance: { type: "object" },
+          diagnostics: { type: "object" },
+          limitations: { type: "array" },
+          audit_evidence: { type: "object" },
+          runner: { type: "object" },
         },
       },
     },

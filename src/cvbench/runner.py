@@ -60,7 +60,12 @@ def _portable_path(path: Path) -> str:
     return path.name or "<path>"
 
 
-def _comparison_fingerprint(benchmark: BenchmarkConfig, scenarios: list[Scenario]) -> tuple[str, dict[str, Any]]:
+def _comparison_fingerprint(
+    benchmark: BenchmarkConfig,
+    scenarios: list[Scenario],
+    system_resources: dict[str, Any] | None = None,
+    accounting_availability: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
     scenario_inputs = []
     for scenario in scenarios:
         manifest = next(path for path in benchmark.scenarios if path.parent == scenario.root)
@@ -92,6 +97,19 @@ def _comparison_fingerprint(benchmark: BenchmarkConfig, scenarios: list[Scenario
         "delivery_policy": benchmark.delivery_policy,
         "replay_profile": benchmark.replay_profile,
         "playback_rate": benchmark.playback_rate,
+        "resource_envelope": {
+            "benchmark": benchmark.resources,
+            "system": system_resources,
+        },
+        "run_budgets": {
+            "max_run_seconds": benchmark.max_run_seconds,
+            "max_drain_seconds": benchmark.max_drain_seconds,
+            "max_output_records": benchmark.max_output_records,
+            "max_output_line_bytes": benchmark.max_output_line_bytes,
+            "max_total_output_bytes": benchmark.max_total_output_bytes,
+            "max_output_records_per_second": benchmark.max_output_records_per_second,
+        },
+        "accounting_availability": accounting_availability,
         "thresholds": asdict(benchmark.thresholds),
         "evaluation_order": {
             "algorithm": EVALUATION_ORDER_ALGORITHM,
@@ -146,7 +164,6 @@ def _deliver_scenarios(
     scenarios: list[Scenario],
     config: BenchmarkConfig,
     run_deadline: float,
-    frame_sizes: dict[tuple[str, int], tuple[int, int]],
     monitor: ResourceMonitor,
     collector: OutputCollector,
     frame_delivery_ns: dict[tuple[str, int], int],
@@ -276,7 +293,7 @@ def _deliver_scenarios(
                 "payload_encoding": "jpeg",
             }
             frame_key = (frame.sequence_id, source_timestamp_ns)
-            frame_sizes[frame_key] = (frame.width, frame.height)
+            collector.begin_frame(frame_key, (frame.width, frame.height))
             send_started_ns = time.monotonic_ns()
             delivered = False
             try:
@@ -284,6 +301,7 @@ def _deliver_scenarios(
                 delivered = True
             finally:
                 send_completed_ns = time.monotonic_ns()
+                collector.finish_frame(frame_key, delivered=delivered)
                 delivery.record_frame(
                     sequence_id=frame.sequence_id,
                     frame_index=frame.frame_index,
@@ -311,8 +329,9 @@ def _deliver_scenarios(
                 "sequence_id": scenario.frames[0].sequence_id,
             },
         )
-    delivery.benchmark_end_sent_ns = time.monotonic_ns()
+    delivery.benchmark_end_send_started_ns = time.monotonic_ns()
     send_message(connection, {"event": "benchmark_end", "schema_version": "cvbench.frame/v1"})
+    delivery.benchmark_end_sent_ns = time.monotonic_ns()
     return shifted_ground_truth, counters, sequence_timestamps, fault_events, delivery
 
 
@@ -336,6 +355,12 @@ def _wait_for_readiness(collector: OutputCollector, runtime: StartedRuntime, tim
         if runtime.process.poll() is not None:
             return False
     return collector.ready.is_set()
+
+
+def _finish_scoring(monitor: ResourceMonitor, collector: OutputCollector) -> None:
+    collector.close_scoring()
+    monitor.stop()
+    monitor.finalize_accounting()
 
 
 def _load_unique_scenarios(
@@ -447,7 +472,6 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         "feed_interruptions": 0,
         "delayed_frames": 0,
     }
-    frame_sizes: dict[tuple[str, int], tuple[int, int]] = {}
     frame_delivery_ns: dict[tuple[str, int], int] = {}
     sequence_timestamps: dict[str, list[int]] = {}
     fault_events: dict[tuple[str, int], list[str]] = {}
@@ -458,6 +482,8 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     )
     ready_ns: int | None = None
     finished_ns: int | None = None
+    teardown_finished_ns: int | None = None
+    runtime_stopped = False
     run_deadline = time.monotonic() + benchmark.max_run_seconds
     try:
         runtime = start_runtime(system, socket_dir, run_dir)
@@ -468,7 +494,6 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             benchmark.max_output_line_bytes,
             benchmark.max_total_output_bytes,
             benchmark.max_output_records_per_second,
-            frame_sizes,
             benchmark.thresholds.out_of_bounds,
         )
         collector.start()
@@ -511,7 +536,6 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                     scenarios,
                     benchmark,
                     run_deadline,
-                    frame_sizes,
                     monitor,
                     collector,
                     frame_delivery_ns,
@@ -523,20 +547,44 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                 benchmark.max_drain_seconds,
                 max(0.0, run_deadline - time.monotonic()),
             )
-            exit_code, forced = stop_runtime(runtime, drain_budget)
-            finished_ns = time.monotonic_ns()
-            outcome.exit_code = exit_code
-            outcome.timed_out = forced
-            outcome.crashed = exit_code not in {0, None} and not forced
-            outcome.status = "completed" if exit_code == 0 and not forced else "failed"
+            stopped = stop_runtime(
+                runtime,
+                drain_budget,
+                monitor.capture_checkpoint,
+                lambda: _finish_scoring(monitor, collector),
+            )
+            runtime_stopped = True
+            finished_ns = stopped.scoring_finished_ns
+            teardown_finished_ns = stopped.teardown_finished_ns
+            outcome.exit_code = stopped.exit_code
+            outcome.timed_out = stopped.forced
+            outcome.crashed = stopped.exit_code not in {0, None} and not stopped.forced
+            outcome.status = (
+                "completed" if stopped.exit_code == 0 and not stopped.forced else "failed"
+            )
     except (OSError, RuntimeFailure, TimeoutError) as exc:
         outcome.errors.append(str(exc))
         outcome.timed_out = isinstance(exc, TimeoutError) or outcome.timed_out
         if runtime is not None:
-            exit_code, forced = stop_runtime(runtime, 0.1)
-            finished_ns = time.monotonic_ns()
-            outcome.exit_code = exit_code
-            outcome.crashed = exit_code not in {0, None} and not forced and not outcome.timed_out
+            stopped = stop_runtime(
+                runtime,
+                0.1,
+                monitor.capture_checkpoint if monitor is not None else None,
+                (
+                    (lambda: _finish_scoring(monitor, collector))
+                    if monitor is not None and collector is not None
+                    else None
+                ),
+            )
+            runtime_stopped = True
+            finished_ns = stopped.scoring_finished_ns
+            teardown_finished_ns = stopped.teardown_finished_ns
+            outcome.exit_code = stopped.exit_code
+            outcome.crashed = (
+                stopped.exit_code not in {0, None}
+                and not stopped.forced
+                and not outcome.timed_out
+            )
     finally:
         server.close()
         if monitor is not None:
@@ -552,11 +600,23 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                 if message not in outcome.errors:
                     outcome.errors.append(message)
         if runtime is not None:
-            stop_runtime(runtime, 0)
+            if not runtime_stopped:
+                stopped = stop_runtime(
+                    runtime,
+                    0,
+                    monitor.capture_checkpoint if monitor is not None else None,
+                    (
+                        (lambda: _finish_scoring(monitor, collector))
+                        if monitor is not None and collector is not None
+                        else None
+                    ),
+                )
+                finished_ns = finished_ns or stopped.scoring_finished_ns
             if finished_ns is None:
                 finished_ns = time.monotonic_ns()
             outcome.resolved_image = runtime.resolved_image
             cleanup_runtime(runtime)
+            teardown_finished_ns = time.monotonic_ns()
         shutil.rmtree(socket_dir, ignore_errors=True)
 
     if runtime is not None and system.runtime_type == "docker" and runtime.isolation.get("status") != "verified":
@@ -603,6 +663,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         started_ns=started_ns,
         ready_ns=ready_ns,
         finished_ns=finished_ns,
+        teardown_finished_ns=teardown_finished_ns,
         collected=collected,
         frame_delivery_ns=frame_delivery_ns,
     )
@@ -655,7 +716,12 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     if system_error_count:
         outcome.errors.append(f"SUT emitted {system_error_count} system_error record(s)")
     findings = generate_findings(metrics, asdict(outcome), resource_data, collector_errors)
-    comparison_fingerprint, comparison_inputs = _comparison_fingerprint(benchmark, scenarios)
+    comparison_fingerprint, comparison_inputs = _comparison_fingerprint(
+        benchmark,
+        scenarios,
+        system.resources,
+        resource_data.get("accounting_availability"),
+    )
     benchmark_display_path = _portable_path(benchmark.path)
     system_display_path = _portable_path(system.path)
     command = f"cvbench run --benchmark {benchmark_display_path} --system {system_display_path} --output <run-output>"
@@ -717,6 +783,9 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             "leaderboard_class": leaderboard["class_id"],
             "comparison_fingerprint": comparison_fingerprint,
             "comparison_inputs": comparison_inputs,
+            "resource_envelope": comparison_inputs["resource_envelope"],
+            "run_budgets": comparison_inputs["run_budgets"],
+            "accounting_availability": comparison_inputs["accounting_availability"],
             "evaluation_order": {
                 "scenario_ids": [scenario.id for scenario in scenarios],
                 "mode": (
@@ -778,6 +847,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                 "peak_process_count",
                 "cpu_time_by_phase_seconds",
                 "accounting_scope",
+                "accounting_availability",
                 "authoritative",
                 "gpu_accounting",
             )

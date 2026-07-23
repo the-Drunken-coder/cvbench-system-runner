@@ -66,11 +66,42 @@ def parse_cpu_stat(payload: str) -> float | None:
     return None
 
 
+def parse_io_stat(payload: str) -> tuple[int, int]:
+    read_bytes = 0
+    write_bytes = 0
+    for line in payload.splitlines():
+        for field in line.split()[1:]:
+            key, _, value = field.partition("=")
+            if key == "rbytes":
+                read_bytes += int(value)
+            elif key == "wbytes":
+                write_bytes += int(value)
+    return read_bytes, write_bytes
+
+
+def cgroup_v2_path(payload: str, cgroup_root: Path) -> Path | None:
+    for line in payload.splitlines():
+        hierarchy, controllers, path = line.split(":", 2)
+        if hierarchy == "0" and not controllers:
+            return cgroup_root / path.lstrip("/")
+    return None
+
+
 class ResourceMonitor:
-    def __init__(self, process: subprocess.Popen[str], interval_seconds: float = 0.1, cidfile: Path | None = None):
+    def __init__(
+        self,
+        process: subprocess.Popen[str],
+        interval_seconds: float = 0.1,
+        cidfile: Path | None = None,
+        *,
+        proc_root: Path = Path("/proc"),
+        cgroup_root: Path = Path("/sys/fs/cgroup"),
+    ):
         self.process = process
         self.interval_seconds = interval_seconds
         self.cidfile = cidfile
+        self.proc_root = proc_root
+        self.cgroup_root = cgroup_root
         self.samples: list[dict[str, Any]] = []
         self.context: dict[str, Any] = {
             "phase": "startup",
@@ -81,6 +112,13 @@ class ResourceMonitor:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._started_ns = time.monotonic_ns()
+        self._lock = threading.Lock()
+        self._capture_lock = threading.Lock()
+        self._container_id: str | None = None
+        self._cgroup_path: Path | None = None
+        self._last_cpu: tuple[int, float] | None = None
+        self._last_external_sample_ns: int | None = None
+        self._final_sample_complete = False
 
     def start(self) -> None:
         self._thread.start()
@@ -167,39 +205,110 @@ class ResourceMonitor:
             self._stop.wait(0.05)
         if not container_id:
             return
+        self._container_id = container_id
         while not self._stop.wait(self.interval_seconds):
-            result = subprocess.run(
-                ["docker", "stats", "--no-stream", "--format", "{{json .}}", container_id],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            if result.returncode:
-                if self.process.poll() is not None:
-                    break
-                continue
+            if not self.capture_checkpoint() and self.process.poll() is not None:
+                break
+
+    def _resolve_cgroup(self) -> Path | None:
+        if self._cgroup_path is not None:
+            return self._cgroup_path
+        if not self._container_id:
+            return None
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Pid}}", self._container_id],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode:
+            return None
+        try:
+            pid = int(result.stdout.strip())
+            payload = (self.proc_root / str(pid) / "cgroup").read_text()
+        except (OSError, ValueError):
+            return None
+        path = cgroup_v2_path(payload, self.cgroup_root)
+        if path is None or not (path / "cpu.stat").is_file():
+            return None
+        self._cgroup_path = path
+        return path
+
+    @staticmethod
+    def _read_number(path: Path) -> int | None:
+        try:
+            value = path.read_text().strip()
+            return None if value == "max" else int(value)
+        except (OSError, ValueError):
+            return None
+
+    def capture_checkpoint(self) -> bool:
+        """Capture externally from the host cgroup; never execute in the image."""
+        with self._capture_lock:
+            return self._capture_cgroup_checkpoint()
+
+    def _capture_cgroup_checkpoint(self) -> bool:
+        if self.cidfile is None:
+            return False
+        if self._container_id is None and self.cidfile.exists():
             try:
-                sample = parse_docker_stats(result.stdout.strip())
-            except (ValueError, json.JSONDecodeError, KeyError):
-                continue
-            cpu_stat = subprocess.run(
-                ["docker", "exec", container_id, "cat", "/sys/fs/cgroup/cpu.stat"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
-            )
-            sample.update(
-                {
-                    "elapsed_ms": (time.monotonic_ns() - self._started_ns) / 1_000_000,
-                    "cpu_time_seconds": parse_cpu_stat(cpu_stat.stdout) if cpu_stat.returncode == 0 else None,
-                    "gpu_percent": None,
-                    "vram_bytes": None,
-                    **self.context,
-                }
-            )
+                self._container_id = self.cidfile.read_text().strip() or None
+            except OSError:
+                return False
+        path = self._resolve_cgroup()
+        if path is None:
+            return False
+        try:
+            cpu_time = parse_cpu_stat((path / "cpu.stat").read_text())
+            disk_read, disk_write = parse_io_stat((path / "io.stat").read_text())
+        except (OSError, ValueError):
+            return False
+        if cpu_time is None:
+            return False
+        sampled_ns = time.monotonic_ns()
+        cpu_percent = None
+        if self._last_cpu is not None:
+            previous_ns, previous_cpu = self._last_cpu
+            elapsed = (sampled_ns - previous_ns) / 1_000_000_000
+            if elapsed > 0:
+                cpu_percent = max(0.0, (cpu_time - previous_cpu) / elapsed * 100)
+        self._last_cpu = (sampled_ns, cpu_time)
+        self._last_external_sample_ns = sampled_ns
+        sample = {
+            "elapsed_ms": (sampled_ns - self._started_ns) / 1_000_000,
+            "cpu_percent": cpu_percent,
+            "cpu_time_seconds": cpu_time,
+            "memory_bytes": self._read_number(path / "memory.current"),
+            "memory_limit_bytes": self._read_number(path / "memory.max"),
+            "memory_peak_bytes": self._read_number(path / "memory.peak"),
+            "disk_read_bytes": disk_read,
+            "disk_write_bytes": disk_write,
+            "network_rx_bytes": None,
+            "network_tx_bytes": None,
+            "process_count": self._read_number(path / "pids.current"),
+            "thread_count": None,
+            "gpu_percent": None,
+            "vram_bytes": None,
+            "accounting_source": "host_cgroup_v2",
+            **self.context,
+        }
+        with self._lock:
             self.samples.append(sample)
+        return True
+
+    def finalize_accounting(self) -> None:
+        fresh = (
+            self._last_external_sample_ns is not None
+            and time.monotonic_ns() - self._last_external_sample_ns
+            <= max(500_000_000, int(self.interval_seconds * 3 * 1_000_000_000))
+        )
+        with self._lock:
+            for sample in reversed(self.samples):
+                if sample.get("accounting_source") == "host_cgroup_v2":
+                    sample["final_cumulative"] = fresh
+                    self._final_sample_complete = fresh
+                    break
 
     def add_gpu_snapshot(self) -> None:
         if not shutil.which("nvidia-smi"):
@@ -224,13 +333,15 @@ class ResourceMonitor:
             self.samples[-1]["vram_bytes"] = vram
 
     def summary(self, runtime_seconds: float) -> dict[str, Any]:
-        memory = [float(sample["memory_bytes"]) for sample in self.samples if sample.get("memory_bytes") is not None]
-        cpu = [float(sample["cpu_percent"]) for sample in self.samples if sample.get("cpu_percent") is not None]
-        vram = [float(sample["vram_bytes"]) for sample in self.samples if sample.get("vram_bytes") is not None]
+        with self._lock:
+            samples = [dict(sample) for sample in self.samples]
+        memory = [float(sample["memory_bytes"]) for sample in samples if sample.get("memory_bytes") is not None]
+        cpu = [float(sample["cpu_percent"]) for sample in samples if sample.get("cpu_percent") is not None]
+        vram = [float(sample["vram_bytes"]) for sample in samples if sample.get("vram_bytes") is not None]
         grouped_scenario: dict[str, list[dict[str, Any]]] = {}
         grouped_targets: dict[str, list[dict[str, Any]]] = {}
         grouped_phase: dict[str, list[dict[str, Any]]] = {}
-        for sample in self.samples:
+        for sample in samples:
             grouped_scenario.setdefault(str(sample.get("scenario") or "startup"), []).append(sample)
             grouped_targets.setdefault(str(sample.get("target_count") or 0), []).append(sample)
             grouped_phase.setdefault(str(sample.get("phase") or "startup"), []).append(sample)
@@ -254,25 +365,52 @@ class ResourceMonitor:
             return result
 
         phase_summary = grouped_summary(grouped_phase)
+        cpu_time_seconds = max(
+            (sample["cpu_time_seconds"] for sample in samples if sample.get("cpu_time_seconds") is not None),
+            default=None,
+        )
+        disk_read_bytes = max(
+            (sample.get("disk_read_bytes") for sample in samples if sample.get("disk_read_bytes") is not None),
+            default=None,
+        )
+        disk_write_bytes = max(
+            (sample.get("disk_write_bytes") for sample in samples if sample.get("disk_write_bytes") is not None),
+            default=None,
+        )
+        external_cgroup = any(
+            sample.get("accounting_source") == "host_cgroup_v2" for sample in samples
+        )
+        availability = {
+            "external_cgroup_v2": external_cgroup,
+            "final_cumulative_cpu_sample": self._final_sample_complete,
+            "cpu_time": cpu_time_seconds is not None,
+            "cpu_percent": bool(cpu),
+            "peak_ram": bool(memory),
+            "disk_io": disk_read_bytes is not None and disk_write_bytes is not None,
+        }
         return {
-            "sample_count": len(self.samples),
+            "sample_count": len(samples),
             "runtime_seconds": runtime_seconds,
             "average_cpu_percent": sum(cpu) / len(cpu) if cpu else None,
             "peak_cpu_percent": max(cpu) if cpu else None,
-            "cpu_time_seconds": max(
-                (sample["cpu_time_seconds"] for sample in self.samples if sample.get("cpu_time_seconds") is not None),
+            "cpu_time_seconds": cpu_time_seconds,
+            "average_ram_bytes": sum(memory) / len(memory) if memory else None,
+            "peak_ram_bytes": max(
+                [*memory, *[
+                    float(sample["memory_peak_bytes"])
+                    for sample in samples
+                    if sample.get("memory_peak_bytes") is not None
+                ]],
                 default=None,
             ),
-            "average_ram_bytes": sum(memory) / len(memory) if memory else None,
-            "peak_ram_bytes": max(memory) if memory else None,
             "gpu_available": bool(vram),
             "peak_vram_bytes": max(vram) if vram else None,
-            "disk_read_bytes": max((sample.get("disk_read_bytes") or 0 for sample in self.samples), default=None),
-            "disk_write_bytes": max((sample.get("disk_write_bytes") or 0 for sample in self.samples), default=None),
-            "network_rx_bytes": max((sample.get("network_rx_bytes") or 0 for sample in self.samples), default=None),
-            "network_tx_bytes": max((sample.get("network_tx_bytes") or 0 for sample in self.samples), default=None),
-            "peak_process_count": max((sample.get("process_count") or 0 for sample in self.samples), default=None),
-            "peak_thread_count": max((sample.get("thread_count") or 0 for sample in self.samples), default=None),
+            "disk_read_bytes": disk_read_bytes,
+            "disk_write_bytes": disk_write_bytes,
+            "network_rx_bytes": max((sample.get("network_rx_bytes") or 0 for sample in samples), default=None),
+            "network_tx_bytes": max((sample.get("network_tx_bytes") or 0 for sample in samples), default=None),
+            "peak_process_count": max((sample.get("process_count") or 0 for sample in samples), default=None),
+            "peak_thread_count": max((sample.get("thread_count") or 0 for sample in samples), default=None),
             "memory_growth_bytes": memory[-1] - memory[0] if len(memory) >= 2 else None,
             "by_scenario": grouped_summary(grouped_scenario),
             "by_target_count": grouped_summary(grouped_targets),
@@ -281,8 +419,15 @@ class ResourceMonitor:
                 phase: summary["cpu_time_delta_seconds"]
                 for phase, summary in phase_summary.items()
             },
-            "fault_injection_samples": sum(bool(sample.get("fault_injection")) for sample in self.samples),
-            "over_time": self.samples,
+            "fault_injection_samples": sum(bool(sample.get("fault_injection")) for sample in samples),
+            "accounting_scope": (
+                "container_cgroup_v2_external"
+                if self.cidfile is not None
+                else "local_process_tree_best_effort"
+            ),
+            "accounting_availability": availability,
+            "authoritative": all(availability.values()),
+            "over_time": samples,
         }
 
     def write_csv(self, path: Path) -> None:

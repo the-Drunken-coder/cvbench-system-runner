@@ -128,6 +128,15 @@ def _background_cpu_worker(mode: str) -> subprocess.Popen[bytes] | None:
     )
 
 
+def _stop_background_worker(worker: subprocess.Popen[bytes]) -> None:
+    worker.terminate()
+    try:
+        worker.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        worker.kill()
+        worker.wait(timeout=2)
+
+
 def main() -> int:
     path = os.environ.get("CVBENCH_INPUT_SOCKET", "/run/cvbench/input.sock")
     sock = _connect(path)
@@ -218,8 +227,7 @@ def main() -> int:
                         track.ended = True
     finally:
         if background_worker is not None:
-            background_worker.terminate()
-            background_worker.wait(timeout=2)
+            _stop_background_worker(background_worker)
     return 0
 
 

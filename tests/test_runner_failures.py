@@ -89,6 +89,14 @@ def test_sut_shutdown_timeout_is_reported(tmp_path: Path) -> None:
     assert not psutil.pid_exists(pid)
 
 
+def test_outputs_emitted_during_forced_teardown_are_not_scored(tmp_path: Path) -> None:
+    report = _report(tmp_path, "sut_sigterm_output.py", grace=0.05)
+    assert report["outcome"]["timed_out"] is True
+    assert report["metrics"]["sample_counts"]["output_records"] == 0
+    assert report["timing"]["durations"]["drain_seconds"] <= 0.1
+    assert report["timing"]["durations"]["teardown_seconds"] >= 1.9
+
+
 def test_malformed_output_is_rejected_and_reported(tmp_path: Path) -> None:
     report = _report(tmp_path, "sut_malformed.py")
     assert report["outcome"]["status"] == "failed"
@@ -101,7 +109,7 @@ def test_future_timestamp_spoofing_is_rejected_as_noncausal(tmp_path: Path) -> N
     assert report["outcome"]["status"] == "failed"
     assert report["metrics"]["sample_counts"]["output_records"] == 0
     assert any(
-        "does not identify an already released frame" in error
+        "does not identify a successfully delivered frame" in error
         for error in report["diagnostics"]["collector_errors"]
     )
 
@@ -164,7 +172,7 @@ def test_continuous_output_rate_is_bounded_and_process_is_reaped(tmp_path: Path)
     assert any("output rate limit exceeded (20 records/second)" in error for error in report["outcome"]["errors"])
     assert report["metrics"]["sample_counts"]["output_records"] == 0
     assert any(
-        "does not identify an already released frame" in error
+        "does not identify a successfully delivered frame" in error
         for error in report["diagnostics"]["collector_errors"]
     )
     pid = int((tmp_path / "sut.pid").read_text())
@@ -176,6 +184,8 @@ def test_local_descendant_resources_are_sampled_and_process_group_is_reaped(tmp_
     report = _report(tmp_path, "sut_child.py")
     assert report["outcome"]["status"] == "completed"
     assert report["resources"]["peak_process_count"] >= 2
+    assert report["timing"]["durations"]["drain_seconds"] <= 1.1
+    assert report["timing"]["durations"]["teardown_seconds"] >= 0.015
     child_pid = int((tmp_path / "sut-child.pid").read_text())
     deadline = time.monotonic() + 2
     while psutil.pid_exists(child_pid) and time.monotonic() < deadline:

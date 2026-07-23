@@ -24,7 +24,6 @@ thresholds:
 
 scenarios:
   - ../scenarios/synthetic-v1/acquisition/scenario.yaml
-  - ../scenarios/synthetic-v1/acquisition/scenario.yaml
 
 resources:
   cpu_limit: 4

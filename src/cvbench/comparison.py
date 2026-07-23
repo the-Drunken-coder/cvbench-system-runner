@@ -34,16 +34,24 @@ def compare_reports(baseline: dict[str, Any], candidate: dict[str, Any]) -> list
     candidate_fingerprint = _get(candidate, "provenance.comparison_fingerprint")
     baseline_class = _get(baseline, "leaderboard.class_id")
     candidate_class = _get(candidate, "leaderboard.class_id")
+    baseline_eligible = _get(baseline, "leaderboard.eligible") is True
+    candidate_eligible = _get(candidate, "leaderboard.eligible") is True
     if (
         not baseline_fingerprint
         or baseline_fingerprint != candidate_fingerprint
-        or (baseline_class or candidate_class) and baseline_class != candidate_class
+        or not isinstance(baseline_class, str)
+        or not baseline_class
+        or baseline_class != candidate_class
+        or not baseline_eligible
+        or not candidate_eligible
     ):
         names = [
             *METRICS,
             "resources.average_cpu_percent",
             "resources.cpu_seconds_per_native_source_second",
             "resources.peak_ram_bytes",
+            "resources.disk_read_bytes",
+            "resources.disk_write_bytes",
             "timing.durations.real_time_factor",
         ]
         return [
@@ -60,7 +68,8 @@ def compare_reports(baseline: dict[str, Any], candidate: dict[str, Any]) -> list
                 "confidence": "low",
                 "sample_count": candidate_samples,
                 "reason": (
-                    "benchmark scenarios, timing policy, or leaderboard classes are incompatible"
+                    "both reports must be eligible and have identical non-null benchmark "
+                    "fingerprints and leaderboard classes"
                 ),
             }
             for metric in names
@@ -104,6 +113,8 @@ def compare_reports(baseline: dict[str, Any], candidate: dict[str, Any]) -> list
         "resources.average_cpu_percent": "lower",
         "resources.cpu_seconds_per_native_source_second": "lower",
         "resources.peak_ram_bytes": "lower",
+        "resources.disk_read_bytes": "lower",
+        "resources.disk_write_bytes": "lower",
         "timing.durations.real_time_factor": "lower",
     }
     for metric, preferred in resource_pairs.items():

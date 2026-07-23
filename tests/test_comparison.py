@@ -19,11 +19,13 @@ def test_baseline_comparison_labels_direction_and_low_confidence() -> None:
         "metrics": {"acquisition": {"rate": 0.5}, "sample_counts": {"matches": 10}},
         "resources": {"peak_ram_bytes": 200},
         "provenance": {"comparison_fingerprint": "same"},
+        "leaderboard": {"eligible": True, "class_id": "native/cpu-1/realtime"},
     }
     candidate = {
         "metrics": {"acquisition": {"rate": 0.8}, "sample_counts": {"matches": 10}},
         "resources": {"peak_ram_bytes": 150},
         "provenance": {"comparison_fingerprint": "same"},
+        "leaderboard": {"eligible": True, "class_id": "native/cpu-1/realtime"},
     }
     results = {item["metric"]: item for item in compare_reports(baseline, candidate)}
     assert results["acquisition.rate"]["direction"] == "improvement"
@@ -56,6 +58,23 @@ def test_different_compute_or_completion_classes_are_never_equal_budget_comparis
     assert all("leaderboard classes" in result["reason"] for result in results)
 
 
+def test_ineligible_reports_never_receive_equal_budget_comparisons() -> None:
+    baseline = {
+        "metrics": {"acquisition": {"rate": 0.5}},
+        "provenance": {"comparison_fingerprint": "same"},
+        "leaderboard": {"eligible": True, "class_id": "native/cpu-1/realtime"},
+    }
+    candidate = {
+        "metrics": {"acquisition": {"rate": 0.9}},
+        "provenance": {"comparison_fingerprint": "same"},
+        "leaderboard": {"eligible": False, "class_id": "native/cpu-1/realtime"},
+    }
+    assert all(
+        result["direction"] == "inconclusive"
+        for result in compare_reports(baseline, candidate)
+    )
+
+
 def test_comparison_fingerprint_is_independent_of_private_delivery_order() -> None:
     benchmark = load_benchmark(ROOT / "benchmarks/persistent-target-tracking.yaml")
     scenarios = [load_scenario(path) for path in benchmark.scenarios]
@@ -73,8 +92,21 @@ def test_comparison_fingerprint_is_independent_of_private_delivery_order() -> No
 
     changed_corpus = [replace(scenarios[0], id=f"{scenarios[0].id}-changed"), *scenarios[1:]]
     changed_config = replace(benchmark, version="changed")
+    changed_budget = replace(benchmark, max_drain_seconds=benchmark.max_drain_seconds + 1)
     assert _comparison_fingerprint(benchmark, changed_corpus)[0] != first_fingerprint
     assert _comparison_fingerprint(changed_config, shuffled)[0] != first_fingerprint
+    assert _comparison_fingerprint(changed_budget, scenarios)[0] != first_fingerprint
+    assert _comparison_fingerprint(
+        benchmark,
+        scenarios,
+        {"cpu_limit": 4, "memory_limit_mb": 2048},
+        {"external_cgroup_v2": True},
+    )[0] != _comparison_fingerprint(
+        benchmark,
+        scenarios,
+        {"cpu_limit": 2, "memory_limit_mb": 2048},
+        {"external_cgroup_v2": True},
+    )[0]
 
 
 def test_run_scoped_order_still_has_stable_comparison_fingerprint() -> None:

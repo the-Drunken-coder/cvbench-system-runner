@@ -33,7 +33,7 @@ cvbench run --benchmark benchmarks/persistent-target-tracking.yaml \
   --system systems/example-good-docker.yaml --output runs/
 ```
 
-The runner mounts only a temporary socket directory, disables container networking, applies declared CPU and memory limits, resolves and executes the image by immutable digest or ID, verifies the running container reports that exact image identity, and samples `docker stats`. The SUT cannot inspect future scenario frames.
+The runner mounts only a temporary socket directory, disables container networking, applies declared CPU and memory limits, resolves and executes the image by immutable digest or ID, verifies the running container reports that exact image identity, and reads CPU, RAM, process, and disk-I/O accounting externally from the host cgroup v2 hierarchy. It never executes an accounting command inside the submitted image, so distroless and `scratch` systems are supported. The SUT cannot inspect future scenario frames.
 
 ## Commands
 

@@ -58,6 +58,9 @@ test("health and machine-readable metadata are public", async () => {
   assert.deepEqual(openapi["x-cvbench-public-benchmark"], PUBLIC_BENCHMARK);
   assert.match(openapi.components.schemas.CreateSubmission.properties.model_version.description, /submitted system version/);
   assert.ok(openapi.components.schemas.TimingComputeSummary);
+  assert.equal(openapi.components.schemas.TimingComputeSummary.additionalProperties, false);
+  assert.equal(openapi.components.schemas.ReportV1.additionalProperties, false);
+  assert.ok(openapi.paths["/api/v1/internal/submissions/{id}/result"]);
   assert.ok(openapi.components.securitySchemes.operatorReadKey);
   assert.ok(openapi.components.securitySchemes.operatorAdjudicatorKey);
 });
@@ -73,7 +76,7 @@ test("public benchmark descriptor exactly matches its versioned manifest", async
   assert.equal(benchmark.id, PUBLIC_BENCHMARK.id);
   assert.equal(benchmark.version, PUBLIC_BENCHMARK.version);
   assert.equal(benchmark.input.replay_profile, PUBLIC_BENCHMARK.replay_profile);
-  assert.equal(PUBLIC_BENCHMARK.replay_rate, 1);
+  assert.equal({ "quarter-speed": 0.25, "half-speed": 0.5, native: 1 }[benchmark.input.replay_profile], PUBLIC_BENCHMARK.replay_rate);
   assert.deepEqual(scenarioIds, PUBLIC_BENCHMARK.scenario_ids);
   assert.equal(scenarioIds.length, PUBLIC_BENCHMARK.scenario_count);
   assert.equal(new Set(scenarioIds).size, scenarioIds.length);
@@ -176,6 +179,9 @@ test("submission create, public read, idempotent replay, lease, and scored resul
   assert.equal(completed.status, "succeeded");
   assert.deepEqual(completed.benchmark, PUBLIC_BENCHMARK);
   assert.equal(completed.result.scores.sample_counts.matches, 12);
+  assert.equal(completed.result.scores.cpu_time_seconds, 15);
+  assert.equal(completed.result.scores.teardown_seconds, 0.1);
+  assert.equal(completed.result.scores.accounting_complete, true);
   assert.equal((await result(created.id, { status: "failed", lease_token: leased.lease.token, error: "late" })).status, 409);
 });
 
@@ -193,6 +199,26 @@ test("runner callbacks must match the fixed public benchmark assignment", async 
   assert.match((await response.json()).error.message, /assigned public suite/);
 });
 
+test("successful callbacks reject empty, incomplete, and ineligible reports", async () => {
+  const created = await (await submit(validBody(), "strict-report-0001")).json();
+  const leased = await (await lease()).json();
+  for (const [suffix, mutate, pattern] of [
+    ["empty", () => ({}), /schema_version/],
+    ["missing-cpu", (report) => { report.resources.cpu_time_seconds = null; return report; }, /cgroup axes/],
+    ["unfinished", (report) => { report.outcome.status = "failed"; return report; }, /completed report outcome/],
+    ["ineligible", (report) => { report.leaderboard.eligible = false; return report; }, /must be eligible/],
+    ["no-class", (report) => { report.leaderboard.class_id = null; return report; }, /non-null class/],
+  ]) {
+    const response = await result(created.id, {
+      status: "succeeded",
+      lease_token: leased.lease.token,
+      report: mutate(scoredReport()),
+    });
+    assert.equal(response.status, 422, suffix);
+    assert.match((await response.json()).error.message, pattern, suffix);
+  }
+});
+
 test("runner callbacks cannot place another timing class in the native leaderboard", async () => {
   const created = await (await submit(validBody(), "wrong-timing-0001")).json();
   const leased = await (await lease()).json();
@@ -206,7 +232,7 @@ test("runner callbacks cannot place another timing class in the native leaderboa
     report,
   });
   assert.equal(response.status, 422);
-  assert.match((await response.json()).error.message, /native public leaderboard class/);
+  assert.match((await response.json()).error.message, /leaderboard|native public leaderboard class/);
 });
 
 test("failed jobs require a bounded error and valid running lease", async () => {
@@ -230,7 +256,7 @@ test("result callback payloads cannot exceed the advertised budget", async () =>
   assert.equal((await jsonRequest(`/api/v1/submissions/${created.id}`)).status, "running");
 });
 
-test("authenticated evidence preserves unknown Docker verification claims", async () => {
+test("successful callbacks reject unknown Docker verification claims", async () => {
   const created = await (await submit(validBody(), "unknown-isolation-0001")).json();
   const leased = await (await lease()).json();
   const report = scoredReport({
@@ -244,16 +270,9 @@ test("authenticated evidence preserves unknown Docker verification claims", asyn
     image_identity_verified: null,
     container_user_alignment_verified: null,
   });
-  await result(created.id, { status: "succeeded", lease_token: leased.lease.token, report });
-
-  const headers = { authorization: `Bearer ${OPERATOR_READ_TOKEN}` };
-  const evidence = await (await request(`/api/v1/operator/jobs/${created.id}/evidence`, { headers })).json();
-  assert.equal(evidence.audit_evidence.resources_and_isolation.runtime_isolation.status, "verification_failed");
-  assert.equal(evidence.audit_evidence.resources_and_isolation.runtime_isolation.future_frame_isolation, null);
-  assert.equal(evidence.audit_evidence.resources_and_isolation.runtime_isolation.network_mode, null);
-  const publicResult = await (await request(`/api/v1/submissions/${created.id}`)).json();
-  assert.equal(publicResult.result.audit_evidence, undefined);
-  assert.equal(publicResult.result.runtime_isolation, undefined);
+  const callback = await result(created.id, { status: "succeeded", lease_token: leased.lease.token, report });
+  assert.equal(callback.status, 422);
+  assert.match((await callback.json()).error.message, /fully verified Docker isolation/);
 });
 
 test("operator API is separate from public and runner credentials", async () => {
@@ -515,7 +534,9 @@ test("adjudicator credentials map to distinct actors and cannot cross scopes", a
 test("Worker canonical audit hash verifies through API after parsing 1.0 as 1", async () => {
   const created = await (await submit(validBody(), "audit-hash-0001")).json();
   const leased = await (await lease()).json();
-  const rawReport = '{"benchmark":{"id":"public-whole-system-tracking","version":"2.0.0"},"outcome":{"status":"completed"},"leaderboard":{"policy_version":"cvbench.pareto/v1","replay_class":"native"},"provenance":{"timing_compute_contract":"cvbench.timing-compute/v1","delivery_policy":"cvbench.delivery-lossless/v1","replay_profile":"native","replay_rate":1.0},"audit_evidence":{"schema_version":"cvbench.audit/v1","numeric_probe":1.0}}';
+  const report = scoredReport();
+  report.audit_evidence.numeric_probe = 1;
+  const rawReport = JSON.stringify(report).replace('"numeric_probe":1', '"numeric_probe":1.0');
   const callback = await request(`/api/v1/internal/submissions/${created.id}/result`, {
     method: "POST",
     headers: { authorization: `Bearer ${RUNNER_TOKEN}`, "content-type": "application/json" },
@@ -526,7 +547,6 @@ test("Worker canonical audit hash verifies through API after parsing 1.0 as 1", 
   assert.equal(evidence.audit_evidence.numeric_probe, 1);
   assert.equal(evidence.bounded_audit_evidence_sha256, await sha256(canonicalJson(evidence.audit_evidence)));
   assert.equal(evidence.bounded_audit_evidence_hash_algorithm, "sha256(cvbench.canonical-json/v1)");
-  assert.equal(evidence.bounded_audit_evidence_sha256, await sha256(canonicalJson({ numeric_probe: 1, schema_version: "cvbench.audit/v1" })));
 });
 
 test("hourly limits and payload limits are enforced", async () => {
@@ -604,10 +624,26 @@ function validBody() {
   };
 }
 
-function scoredReport(runtimeIsolation = { status: "verified", network_mode: "none" }) {
+function scoredReport(runtimeIsolation = {
+  status: "verified",
+  runtime: "docker",
+  network_mode: "none",
+  future_frame_isolation: true,
+  ground_truth_access: false,
+  repository_access: false,
+  media_access: false,
+  image_identity_verified: true,
+  container_user_alignment_verified: true,
+}) {
   return {
+    schema_version: "cvbench.report/v1",
+    run_id: "run-1",
+    started_at: "2026-07-23T00:00:00Z",
+    mode: "online_replay",
     benchmark: { id: PUBLIC_BENCHMARK.id, version: PUBLIC_BENCHMARK.version },
-    outcome: { status: "completed" },
+    system: { id: "safe", revision: "1", runtime: "docker", command: ["tracker"] },
+    outcome: { status: "completed", exit_code: 0, timed_out: false, crashed: false },
+    feed: { delivered_frames: 12 },
     metrics: {
       sample_counts: { matches: 12, neutral_ignored_predictions: 1 },
       identity: { id_switches: 0 },
@@ -617,21 +653,58 @@ function scoredReport(runtimeIsolation = { status: "verified", network_mode: "no
     },
     runtime_isolation: runtimeIsolation,
     timing: {
-      source: { duration_seconds: 10 },
-      replay: { profile: "native", rate: 1 },
-      durations: { real_time_factor: 0.9 },
+      contract_version: "cvbench.timing-compute/v1",
+      source: { immutable: true, frame_count: 12, duration_seconds: 10, sequences: [] },
+      replay: { profile: "native", rate: 1, native_real_time: true, allowlisted: true },
+      durations: {
+        wall_seconds: 9,
+        runner_total_seconds: 9.1,
+        startup_seconds: 0.1,
+        stream_delivery_seconds: 8,
+        completion_seconds: 9,
+        drain_seconds: 1,
+        real_time_factor: 0.9,
+        teardown_seconds: 0.1,
+      },
+      delivery: {
+        policy_version: "cvbench.delivery-lossless/v1",
+        effective_replay_rate: 1.25,
+        delivered_frames_per_second: 1.5,
+        deadline_missed_frames: 0,
+      },
+      processing_latency_ms: { sample_count: 12, minimum: 1, median: 2, p95: 3, maximum: 4 },
+      output: { records: 12, records_per_native_source_second: 1.2, records_per_completion_second: 1.33, late_after_benchmark_end: 0 },
+      clocks: {},
     },
     resources: {
+      cpu_time_seconds: 15,
       cpu_seconds_per_native_source_second: 1.5,
+      average_cpu_percent: 150,
+      peak_cpu_percent: 200,
       peak_ram_bytes: 1024,
+      disk_read_bytes: 100,
+      disk_write_bytes: 200,
+      accounting_scope: "container_cgroup_v2_external",
+      authoritative: true,
+      accounting_availability: {
+        external_cgroup_v2: true,
+        final_cumulative_cpu_sample: true,
+        cpu_time: true,
+        cpu_percent: true,
+        peak_ram: true,
+        disk_io: true,
+      },
     },
     leaderboard: {
       policy_version: "cvbench.pareto/v1",
       replay_class: "native",
       class_id: "native/cpu-2/realtime",
       eligible: true,
+      disqualifications: [],
+      raw_axes: { accuracy: {}, efficiency: {} },
     },
-    diagnostics: { sut_stderr: ["<script>throw new Error('untrusted')</script>"] },
+    findings: [],
+    comparison: [],
     audit_evidence: {
       schema_version: "cvbench.audit/v1",
       frame_samples: [
@@ -659,7 +732,27 @@ function scoredReport(runtimeIsolation = { status: "verified", network_mode: "no
       replay_profile: "native",
       replay_rate: 1,
       leaderboard_class: "native/cpu-2/realtime",
+      comparison_fingerprint: "a".repeat(64),
+      resource_envelope: {
+        benchmark: { cpu_limit: 4, memory_limit_mb: 2048, network_access: false },
+        system: { cpu_limit: 4, memory_limit_mb: 2048, network_access: false },
+      },
+      run_budgets: {
+        max_run_seconds: 20,
+        max_drain_seconds: 3,
+        max_output_records: 10000,
+      },
+      accounting_availability: {
+        external_cgroup_v2: true,
+        final_cumulative_cpu_sample: true,
+        cpu_time: true,
+        cpu_percent: true,
+        peak_ram: true,
+        disk_io: true,
+      },
     },
+    diagnostics: { sut_stderr: ["<script>throw new Error('untrusted')</script>"] },
+    limitations: [],
   };
 }
 

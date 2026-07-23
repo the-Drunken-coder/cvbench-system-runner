@@ -22,7 +22,6 @@ class OutputCollector:
         max_line_bytes: int,
         max_total_bytes: int,
         max_records_per_second: int,
-        frame_sizes: dict[tuple[str, int], tuple[int, int]],
         out_of_bounds: str,
     ):
         self.process = process
@@ -31,7 +30,6 @@ class OutputCollector:
         self.max_line_bytes = max_line_bytes
         self.max_total_bytes = max_total_bytes
         self.max_records_per_second = max_records_per_second
-        self.frame_sizes = frame_sizes
         self.out_of_bounds = out_of_bounds
         self.records: list[CollectedRecord] = []
         self.errors: list[str] = []
@@ -39,9 +37,13 @@ class OutputCollector:
         self.stderr: list[str] = []
         self.ready = threading.Event()
         self.flooded = threading.Event()
+        self.scoring_closed = threading.Event()
         self.limit_reason: str | None = None
         self.first_output_timestamp_ns: int | None = None
         self._lock = threading.Lock()
+        self._frames: dict[tuple[str, int], tuple[str, tuple[int, int]]] = {}
+        self._pending: dict[tuple[str, int], list[tuple[int, Any, str]]] = {}
+        self._output_record_count = 0
         self._stdout_thread = threading.Thread(target=self._read_stdout, daemon=True)
         self._stderr_thread = threading.Thread(target=self._read_stderr, daemon=True)
 
@@ -94,8 +96,11 @@ class OutputCollector:
         if not self.ready.is_set() and self.readiness_pattern in line:
             self.ready.set()
             return
+        if self.scoring_closed.is_set():
+            return
         with self._lock:
-            record_number = len(self.records) + self.invalid_record_count + 1
+            self._output_record_count += 1
+            record_number = self._output_record_count
         if record_number > self.max_records:
             self._set_limit(f"output record limit exceeded ({self.max_records})")
             return
@@ -108,17 +113,70 @@ class OutputCollector:
             return
         try:
             raw: Any = json.loads(line)
-            size = None
-            if isinstance(raw, dict):
-                frame_key = (raw.get("sequence_id"), raw.get("source_timestamp_ns"))
-                if frame_key not in self.frame_sizes:
-                    raise ProtocolError(
-                        "source_timestamp_ns does not identify an already released frame"
-                    )
-                size = self.frame_sizes[frame_key]
-            record = validate_track_record(raw, frame_size=size, out_of_bounds=self.out_of_bounds)
         except (json.JSONDecodeError, ProtocolError) as exc:
             self._record_invalid(str(exc), line[:300])
+            return
+        if not isinstance(raw, dict):
+            self._record_invalid("output record must be an object", line[:300])
+            return
+        frame_key = (raw.get("sequence_id"), raw.get("source_timestamp_ns"))
+        with self._lock:
+            state = self._frames.get(frame_key)
+            if state is not None and state[0] == "pending":
+                self._pending.setdefault(frame_key, []).append((received, raw, line[:300]))
+                return
+        self._validate_released_record(frame_key, received, raw, line[:300])
+
+    def begin_frame(self, frame_key: tuple[str, int], size: tuple[int, int]) -> None:
+        """Register an in-flight frame without authorizing output for it."""
+        with self._lock:
+            self._frames[frame_key] = ("pending", size)
+
+    def finish_frame(self, frame_key: tuple[str, int], *, delivered: bool) -> None:
+        """Authorize queued outputs only after the complete frame send succeeds."""
+        with self._lock:
+            state = self._frames.get(frame_key)
+            pending = self._pending.pop(frame_key, [])
+            if state is None:
+                return
+            size = state[1]
+            if delivered:
+                self._frames[frame_key] = ("released", size)
+            else:
+                self._frames.pop(frame_key, None)
+        if delivered:
+            for received, raw, sample in pending:
+                self._validate_released_record(frame_key, received, raw, sample)
+        else:
+            for _received, _raw, sample in pending:
+                self._record_invalid(
+                    "source_timestamp_ns identifies a frame whose delivery failed",
+                    sample,
+                )
+
+    def _validate_released_record(
+        self,
+        frame_key: tuple[Any, Any],
+        received: int,
+        raw: Any,
+        sample: str,
+    ) -> None:
+        with self._lock:
+            state = self._frames.get(frame_key)
+        if state is None or state[0] != "released":
+            self._record_invalid(
+                "source_timestamp_ns does not identify a successfully delivered frame",
+                sample,
+            )
+            return
+        try:
+            record = validate_track_record(
+                raw,
+                frame_size=state[1],
+                out_of_bounds=self.out_of_bounds,
+            )
+        except ProtocolError as exc:
+            self._record_invalid(str(exc), sample)
             return
         with self._lock:
             if self.first_output_timestamp_ns is None:
@@ -160,6 +218,9 @@ class OutputCollector:
     def snapshot(self) -> tuple[list[CollectedRecord], list[str], list[str]]:
         with self._lock:
             return list(self.records), list(self.errors), list(self.stderr)
+
+    def close_scoring(self) -> None:
+        self.scoring_closed.set()
 
     def join(self, timeout: float = 2.0) -> None:
         self._stdout_thread.join(timeout)

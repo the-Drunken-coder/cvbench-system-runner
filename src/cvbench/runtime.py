@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +37,14 @@ class StartedRuntime:
 class ResolvedImage:
     reference: str
     image_id: str
+
+
+@dataclass(frozen=True)
+class RuntimeStop:
+    exit_code: int | None
+    forced: bool
+    scoring_finished_ns: int
+    teardown_finished_ns: int
 
 
 def _align_docker_socket_owner(socket_dir: Path) -> tuple[int, int]:
@@ -194,12 +203,27 @@ def _signal_process_group(runtime: StartedRuntime, sig: signal.Signals) -> None:
         os.killpg(runtime.process_group_id, sig)
 
 
-def stop_runtime(runtime: StartedRuntime, grace: float) -> tuple[int | None, bool]:
-    """Stop the runtime and every local descendant owned by its process group."""
+def stop_runtime(
+    runtime: StartedRuntime,
+    grace: float,
+    checkpoint: Callable[[], None] | None = None,
+    on_scoring_finished: Callable[[], None] | None = None,
+) -> RuntimeStop:
+    """Enforce the scoring deadline, then tear down descendants out of band."""
     forced = False
-    try:
-        exit_code = runtime.process.wait(timeout=max(0, grace))
-    except subprocess.TimeoutExpired:
+    deadline = time.monotonic() + max(0, grace)
+    exit_code = runtime.process.poll()
+    while exit_code is None and time.monotonic() < deadline:
+        if checkpoint is not None:
+            checkpoint()
+        time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+        exit_code = runtime.process.poll()
+    if checkpoint is not None:
+        checkpoint()
+    scoring_finished_ns = time.monotonic_ns()
+    if on_scoring_finished is not None:
+        on_scoring_finished()
+    if exit_code is None:
         forced = True
         _signal_process_group(runtime, signal.SIGTERM)
         try:
@@ -213,7 +237,7 @@ def stop_runtime(runtime: StartedRuntime, grace: float) -> tuple[int | None, boo
         _signal_process_group(runtime, signal.SIGTERM)
         time.sleep(0.02)
         _signal_process_group(runtime, signal.SIGKILL)
-    return exit_code, forced
+    return RuntimeStop(exit_code, forced, scoring_finished_ns, time.monotonic_ns())
 
 
 def verify_docker_isolation(runtime: StartedRuntime, socket_dir: Path, timeout: float = 10) -> dict[str, object]:

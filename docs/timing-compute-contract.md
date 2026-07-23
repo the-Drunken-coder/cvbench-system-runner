@@ -19,6 +19,7 @@ The completion clock is external `time.monotonic_ns()` observed by the runner an
 - stream-delivery duration;
 - bounded post-stream drain duration;
 - total wall and completion duration;
+- runner teardown duration, reported separately and excluded from scoring completion/drain;
 - real-time factor = completion seconds / native source seconds;
 - source-time latency and processing latency after frame delivery.
 
@@ -55,11 +56,11 @@ Public `/api/v1` submissions remain compatible and fixed to `native` at 1.0x. Th
 Per-frame delivery records retain native timestamp, scheduled offset, sender-call duration, backlog, delivery status, drop reason, and deadline status.
 The aggregate reports both configured replay rate and measured effective replay rate (native source seconds delivered per wall second), plus delivered frames per wall second.
 
-Output is causal only when its `(sequence_id, source_timestamp_ns)` names a frame already released by the runner. Guessed future, unknown, or rewritten timestamps are malformed output. Exact outputs may arrive after `benchmark_end` during the bounded drain window and remain scored with their external latency. The hard overall run deadline, `max_drain_seconds`, Docker cleanup, record count, line bytes, total stdout bytes, and output-rate limits remain enforced.
+Output is causal only when its `(sequence_id, source_timestamp_ns)` names a frame whose complete socket send succeeded. An immediate output racing an in-flight send is held pending until send success; transport failure rejects it. Guessed future, unknown, failed-delivery, or rewritten timestamps are malformed output. The benchmark-end boundary is recorded only after the potentially blocking marker send succeeds. Exact outputs may arrive after that boundary during the bounded drain window and remain scored with their external latency. The hard overall run deadline, `max_drain_seconds`, record count, line bytes, total stdout bytes, and output-rate limits define scoring; terminate/kill and Docker cleanup time is reported separately as teardown.
 
 ## Container compute accounting
 
-Leaderboard resource evidence is sampled from the Docker container/cgroup, never from SUT self-report. It includes:
+Leaderboard resource evidence is read by the trusted host runner directly from the container's cgroup-v2 files, never from SUT self-report and never by executing a command inside the submitted image. This works for distroless and `scratch` images. The runner retains a final cumulative sample at the scoring boundary. It includes:
 
 - wall, startup, delivery, completion, and drain duration;
 - cgroup CPU time and CPU-seconds per native source-second;
@@ -71,6 +72,8 @@ Leaderboard resource evidence is sampled from the Docker container/cgroup, never
 - per-output processing latency plus delivery backlog/deadline misses.
 
 Local process-tree measurements remain useful for development but are labeled best-effort and are not leaderboard-authoritative. GPU/VRAM values are omitted unless the runner genuinely assigns and isolates a GPU; host-wide `nvidia-smi` snapshots are not treated as a submitted system's cost.
+
+Missing CPU time, CPU-seconds/source-second, real-time factor, average/peak CPU, peak RAM, disk I/O, external-cgroup availability, or the final cumulative sample makes a result leaderboard-ineligible. Sleeping and hidden child processes therefore cannot turn missing accounting into a cheaper eligible result.
 
 Sleeping can reduce CPU-seconds, but it increases real-time factor. Background children stay in the container cgroup. Neither tactic improves every raw efficiency axis.
 
@@ -84,7 +87,7 @@ Sleeping can reduce CPU-seconds, but it increases real-time factor. Background c
 
 CPU tiers use CPU-seconds per native source-second: `cpu-1` (≤1), `cpu-2` (≤2), `cpu-4` (≤4), and `cpu-over-4`. Completion tiers use real-time factor: `realtime` (≤1.05), `completion-2x` (≤2.05), `completion-4x` (≤4.05), and `completion-over-4x`.
 
-Only identical benchmark fingerprints and class IDs are equal-category comparisons. Within a class, one result Pareto-dominates another only when it is no worse on every declared raw axis and strictly better on at least one. Higher accuracy bought with more compute or slower completion therefore remains visible and cannot silently win an equal-budget category.
+The comparison fingerprint binds the scenario corpus, timing/delivery policy, replay profile/rate, CPU and RAM envelope, run/drain/output budgets, and accounting availability. Only two eligible results with identical non-null fingerprints and identical non-null class IDs are equal-category comparisons. Within a class, one result Pareto-dominates another only when it is no worse on every declared raw axis and strictly better on at least one. Higher accuracy bought with more compute or slower completion therefore remains visible and cannot silently win an equal-budget category.
 
 The fixed public Docker envelope is still 4 CPUs, 2048 MiB RAM, no network, one owner-only socket mount, an unprivileged UID/GID, and an immutable image identity.
 

@@ -23,20 +23,32 @@ def test_frame_event_requires_complete_frame_metadata() -> None:
         "sequence_id": "sequence",
         "frame_index": 0,
         "source_timestamp_ns": 0,
+        "native_source_timestamp_ns": 0,
         "width": 160,
         "height": 120,
         "pixel_format": "rgb24",
         "payload_encoding": "jpeg",
     }
     validator.validate(frame)
-    for field in ("frame_index", "source_timestamp_ns", "width", "height", "pixel_format", "payload_encoding"):
+    required_frame_fields = (
+        "frame_index",
+        "source_timestamp_ns",
+        "native_source_timestamp_ns",
+        "width",
+        "height",
+        "pixel_format",
+        "payload_encoding",
+    )
+    for field in required_frame_fields:
         incomplete = dict(frame)
         incomplete.pop(field)
         with pytest.raises(ValidationError):
             validator.validate(incomplete)
-    validator.validate(
-        {"schema_version": "cvbench.frame/v1", "event": "stream_start", "sequence_id": "sequence"}
-    )
+    validator.validate({"schema_version": "cvbench.frame/v1", "event": "benchmark_end"})
+    with pytest.raises(ValidationError):
+        validator.validate({**frame, "unexpected": True})
+    with pytest.raises(ValidationError):
+        validator.validate({"schema_version": "cvbench.frame/v1", "event": "stream_start", "sequence_id": "sequence"})
 
 
 def test_ground_truth_bbox_requirement_matches_runtime_contract() -> None:
@@ -91,6 +103,8 @@ def test_timing_compute_schema_requires_immutable_source_and_allowlisted_replay(
         },
         "durations": {
             "wall_seconds": 2,
+            "runner_total_seconds": 2.1,
+            "teardown_seconds": 0.1,
             "startup_seconds": 0.1,
             "stream_delivery_seconds": 2,
             "completion_seconds": 2,
@@ -105,14 +119,39 @@ def test_timing_compute_schema_requires_immutable_source_and_allowlisted_replay(
             "delivered_frames_per_second": 20,
             "deadline_missed_frames": 0,
             "sender_pressure_frames": 0,
-            "delivery_backlog_ms": {},
+            "frame_count": 0,
+            "delivered_frames": 0,
+            "transport_failed_frames": 0,
+            "policy_dropped_frames": 0,
+            "sender_blocking_time_ms": 0,
+            "benchmark_end_sender_call_ms": 0,
+            "delivery_backlog_ms": {"sample_count": 0, "minimum": None, "median": None, "p95": None, "maximum": None},
+            "sender_call_ms": {"sample_count": 0, "minimum": None, "median": None, "p95": None, "maximum": None},
+            "input_queue_depth": None,
+            "input_queue_depth_available": False,
+            "input_queue_depth_note": "not portable",
+            "semantics": "ordered",
             "per_frame": [],
         },
-        "processing_latency_ms": {},
-        "output": {},
-        "clocks": {},
+        "processing_latency_ms": {"sample_count": 0, "minimum": None, "median": None, "p95": None, "maximum": None},
+        "output": {
+            "records": 0,
+            "records_per_native_source_second": 0,
+            "records_per_completion_second": 0,
+            "late_after_benchmark_end": 0,
+            "late_output_policy": "bounded",
+        },
+        "clocks": {"source": "source", "delivery": "delivery", "completion": "completion"},
     }
     validator.validate(timing)
     timing["replay"]["rate"] = 0.3
     with pytest.raises(ValidationError):
         validator.validate(timing)
+
+
+def test_report_schema_is_top_level_strict() -> None:
+    schema = json.loads((ROOT / "schemas" / "report-v1.schema.json").read_text())
+    Draft202012Validator.check_schema(schema)
+    assert schema["additionalProperties"] is False
+    assert "timing" in schema["required"]
+    assert "resources" in schema["required"]
