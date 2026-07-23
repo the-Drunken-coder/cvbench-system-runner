@@ -216,6 +216,64 @@ async function selectExactFrame(page, index) {
   }, index);
 }
 
+async function installBitmapAccounting(page) {
+  await page.addInitScript(() => {
+    const closedBitmaps = new WeakSet();
+    const originalClose = ImageBitmap.prototype.close;
+    const originalCreateImageBitmap = window.createImageBitmap;
+    const probe = {
+      closed: 0,
+      created: 0,
+      decode: { decodedBytes: 0, liveEntries: 0 },
+      hold: false,
+      pending: 0,
+      releases: [],
+      releaseAll() {
+        for (const release of this.releases.splice(0)) release();
+      },
+    };
+    window.__bitmapProbe = probe;
+    window.__cvbenchReportDecodeState = (decode) => {
+      probe.decode = decode;
+    };
+    ImageBitmap.prototype.close = function close() {
+      if (!closedBitmaps.has(this)) {
+        closedBitmaps.add(this);
+        probe.closed += 1;
+      }
+      return Reflect.apply(originalClose, this, []);
+    };
+    window.createImageBitmap = async (...args) => {
+      const bitmap = await Reflect.apply(originalCreateImageBitmap, window, args);
+      probe.created += 1;
+      if (probe.hold) {
+        probe.pending += 1;
+        await new Promise((resolve) => probe.releases.push(resolve));
+        probe.pending -= 1;
+      }
+      return bitmap;
+    };
+  });
+}
+
+async function bitmapAccounting(page) {
+  return page.evaluate(() => ({
+    closed: window.__bitmapProbe.closed,
+    created: window.__bitmapProbe.created,
+    decodedBytes: window.__bitmapProbe.decode.decodedBytes,
+    liveEntries: window.__bitmapProbe.decode.liveEntries,
+    pending: window.__bitmapProbe.pending,
+  }));
+}
+
+function assertBitmapOwnership(accounting, label) {
+  assert.equal(accounting.pending, 0, `${label}: no decoded bitmap may remain suspended`);
+  assert.equal(accounting.created, accounting.closed + accounting.liveEntries,
+    `${label}: every created bitmap must be closed or owned by the live cache`);
+  assert.ok(accounting.decodedBytes <= 48 * 1024 * 1024,
+    `${label}: decoded cache must remain inside the 48 MiB budget`);
+}
+
 async function measureCadence(page, speed, durationMs = 700, fps = 30) {
   await selectExactFrame(page, 0);
   await page.locator("#playback-speed").selectOption(String(speed));
@@ -422,6 +480,126 @@ test("cache-cold navigation, Save-Data, reduced motion, and mobile rendering sta
     assert.ok(mobile.overflow <= 0, `${width}px viewport must not overflow`);
     assert.ok(mobile.stageHeight > 0, `${width}px frame stage must remain visible`);
   }
+});
+
+test("rapid scrubbing and scenario navigation close every superseded decoded bitmap", async (context) => {
+  const { browser, fixture } = await buildBrowserFixture(context, "bitmap-ownership");
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await installBitmapAccounting(page);
+  await loadScenario(page, fixture.origin, "rvmot-a1c9");
+  await page.waitForTimeout(200);
+  assertBitmapOwnership(await bitmapAccounting(page), "initial scenario");
+
+  await page.evaluate(() => {
+    window.__bitmapProbe.hold = true;
+    const scrubber = document.querySelector("#frame-scrubber");
+    scrubber.value = "60";
+    scrubber.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(() => window.__bitmapProbe.pending >= 1);
+  await page.locator("#frame-scrubber").evaluate((scrubber) => {
+    scrubber.value = "90";
+    scrubber.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(() => window.__bitmapProbe.pending >= 2);
+  await page.evaluate(() => {
+    window.__bitmapProbe.hold = false;
+    window.__bitmapProbe.releaseAll();
+  });
+  await page.waitForFunction(() => document.querySelector("#scenario-frame").dataset.frameIndex === "90");
+  await page.waitForTimeout(200);
+  await page.waitForFunction(() => {
+    const probe = window.__bitmapProbe;
+    return probe.pending === 0 && probe.created === probe.closed + probe.decode.liveEntries;
+  });
+  const rapidScrubAccounting = await bitmapAccounting(page);
+  assertBitmapOwnership(rapidScrubAccounting, "rapid scrub");
+  context.diagnostic(`rapid scrub bitmaps: ${rapidScrubAccounting.created} created = `
+    + `${rapidScrubAccounting.closed} closed + ${rapidScrubAccounting.liveEntries} live; `
+    + `${rapidScrubAccounting.decodedBytes} decoded bytes`);
+
+  await page.route("**/scenario-catalog/v1/scenarios/rvmot-b7e2.json", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await route.continue();
+  });
+  await page.evaluate(() => {
+    window.__bitmapProbe.hold = true;
+    const scrubber = document.querySelector("#frame-scrubber");
+    scrubber.value = "120";
+    scrubber.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(() => window.__bitmapProbe.pending >= 1);
+  await page.evaluate(() => {
+    history.pushState({}, "", "/scenarios/?scenario=rvmot-b7e2");
+    dispatchEvent(new PopStateEvent("popstate"));
+    window.__bitmapProbe.hold = false;
+    window.__bitmapProbe.releaseAll();
+  });
+  await page.waitForFunction(() => document.querySelector("#detail-kicker")?.textContent.includes("rvmot-b7e2"));
+  await page.waitForFunction(() => document.querySelector("#scenario-frame").dataset.frameIndex === "0");
+  await page.waitForTimeout(200);
+  await page.waitForFunction(() => {
+    const probe = window.__bitmapProbe;
+    return probe.pending === 0 && probe.created === probe.closed + probe.decode.liveEntries;
+  });
+  const navigationAccounting = await bitmapAccounting(page);
+  assertBitmapOwnership(navigationAccounting, "scenario navigation");
+  context.diagnostic(`scenario navigation bitmaps: ${navigationAccounting.created} created = `
+    + `${navigationAccounting.closed} closed + ${navigationAccounting.liveEntries} live; `
+    + `${navigationAccounting.decodedBytes} decoded bytes`);
+});
+
+test("a one-time 503 retries the exact frame without blanking or reloading the scenario", async (context) => {
+  const { browser, fixture } = await buildBrowserFixture(context, "transient-frame-error");
+  const detail = await (await fetch(`${fixture.origin}/scenario-catalog/v1/scenarios/rvmot-a1c9.json`)).json();
+  const manifest = await (await fetch(new URL(detail.media.frame_manifest.url, fixture.origin))).json();
+  const targetIndex = 100;
+  const targetPath = new URL(manifest.frames[targetIndex].media.url, fixture.origin).pathname;
+  let failOnce = true;
+  let targetRequests = 0;
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await page.route("**/*.jpg", async (route) => {
+    if (new URL(route.request().url()).pathname !== targetPath) {
+      await route.continue();
+      return;
+    }
+    targetRequests += 1;
+    if (failOnce) {
+      failOnce = false;
+      await route.fulfill({ body: "temporary outage", contentType: "text/plain", status: 503 });
+      return;
+    }
+    await route.continue();
+  });
+  await loadScenario(page, fixture.origin, "rvmot-a1c9");
+  const initialUrl = page.url();
+  const visibleBefore = await page.evaluate(() => ({
+    frameIndex: document.querySelector("#scenario-frame").dataset.frameIndex,
+    overlay: document.querySelector("#scenario-overlay").innerHTML,
+    pixels: document.querySelector("#scenario-frame").toDataURL(),
+  }));
+
+  await page.locator("#frame-scrubber").evaluate((scrubber, index) => {
+    scrubber.value = String(index);
+    scrubber.dispatchEvent(new Event("input", { bubbles: true }));
+  }, targetIndex);
+  await page.locator("#media-state.error").waitFor();
+  assert.equal(await page.locator("#media-state").textContent(),
+    "Exact frame is unavailable because retrieval failed (503).");
+  const visibleAfterFailure = await page.evaluate(() => ({
+    frameIndex: document.querySelector("#scenario-frame").dataset.frameIndex,
+    overlay: document.querySelector("#scenario-overlay").innerHTML,
+    pixels: document.querySelector("#scenario-frame").toDataURL(),
+  }));
+  assert.deepEqual(visibleAfterFailure, visibleBefore,
+    "the honest transient error must preserve the last good frame and synchronized overlay");
+
+  await selectExactFrame(page, targetIndex);
+  assert.equal(page.url(), initialUrl, "retry must not reload or replace the scenario");
+  assert.equal(targetRequests, 2, "the failed exact frame must be fetched again");
+  assert.equal(await page.locator("#media-state").isHidden(), true);
+  context.diagnostic(`transient frame ${targetIndex}: one 503, ${targetRequests} requests, `
+    + `preserved visible frame ${visibleBefore.frameIndex}, retry presented exact frame ${targetIndex}`);
 });
 
 test("missing and corrupt exact media keep an honest non-blank failure state", async (context) => {

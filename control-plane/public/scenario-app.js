@@ -220,12 +220,27 @@ function hideMediaStatus() {
   mediaState.classList.remove("error");
 }
 
+function reportDecodeState() {
+  if (typeof globalThis.__cvbenchReportDecodeState !== "function") return;
+  globalThis.__cvbenchReportDecodeState({
+    decodedBytes: state.decodedBytes,
+    liveEntries: [...state.frameCache.values()].filter((entry) => entry.status === "ready").length,
+  });
+}
+
+function removeOwnedCacheEntry(entry) {
+  if (state.frameCache.get(entry.index) !== entry) return false;
+  state.frameCache.delete(entry.index);
+  return true;
+}
+
 function closeCacheEntry(entry) {
+  if (!removeOwnedCacheEntry(entry)) return;
   if (entry.status === "ready") {
     entry.bitmap.close();
     state.decodedBytes -= entry.decodedBytes;
   }
-  state.frameCache.delete(entry.index);
+  reportDecodeState();
 }
 
 function resetFrameCache() {
@@ -241,6 +256,7 @@ function resetFrameCache() {
   state.decodeQueue.length = 0;
   state.decodedBytes = 0;
   state.generation += 1;
+  reportDecodeState();
   const canvas = byId("scenario-frame");
   canvas.getContext("2d", { alpha: false }).clearRect(0, 0, canvas.width, canvas.height);
   canvas.dataset.frameReady = "false";
@@ -292,7 +308,7 @@ async function decodeFrame(entry) {
     bitmap.close();
     throw new Error("The verified media decoded at an unexpected resolution.");
   }
-  if (entry.generation !== state.generation) {
+  if (entry.generation !== state.generation || state.frameCache.get(entry.index) !== entry) {
     bitmap.close();
     throw new DOMException("Stale frame decode.", "AbortError");
   }
@@ -301,6 +317,7 @@ async function decodeFrame(entry) {
   entry.status = "ready";
   state.decodedBytes += entry.decodedBytes;
   trimFrameCache(Math.min(state.selected, entry.index));
+  reportDecodeState();
   return entry;
 }
 
@@ -313,6 +330,7 @@ function pumpDecodeQueue() {
     decodeFrame(entry).then(entry.resolve, (error) => {
       entry.status = "error";
       entry.error = error;
+      removeOwnedCacheEntry(entry);
       entry.reject(error);
     }).finally(() => {
       state.activeDecodes -= 1;
@@ -323,7 +341,8 @@ function pumpDecodeQueue() {
 
 function requestDecodedFrame(index) {
   const cached = state.frameCache.get(index);
-  if (cached) return cached.promise;
+  if (cached && cached.status !== "error") return cached.promise;
+  if (cached) removeOwnedCacheEntry(cached);
   const entry = {
     controller: new AbortController(),
     decodedBytes: 0,
