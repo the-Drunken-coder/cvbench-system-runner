@@ -87,7 +87,15 @@ def main() -> None:
     assert report["resources"]["sample_count"] > 0
     assert report["resources"]["peak_process_count"] >= 1
     assert report["resources"]["accounting_scope"] == "container_cgroup_v2_external"
-    assert report["resources"]["authoritative"] is True
+    assert report["resources"]["authoritative"] is True, {
+        "accounting_availability": report["resources"]["accounting_availability"],
+        "sample_count": report["resources"]["sample_count"],
+        "cpu_time_seconds": report["resources"]["cpu_time_seconds"],
+        "average_cpu_percent": report["resources"]["average_cpu_percent"],
+        "peak_ram_bytes": report["resources"]["peak_ram_bytes"],
+        "disk_read_bytes": report["resources"]["disk_read_bytes"],
+        "disk_write_bytes": report["resources"]["disk_write_bytes"],
+    }
     assert all(report["resources"]["accounting_availability"].values())
     assert report["resources"]["cpu_time_seconds"] is not None
     assert report["resources"]["cpu_seconds_per_native_source_second"] is not None
