@@ -49,6 +49,16 @@ Current scoring is class-aware. Synthetic annotations are exhaustive, and `synth
 
 Public overlays are inspection aids only. The runner sends a submitted system progressive current-frame JPEG bytes and timestamps; it never sends boxes, track identities, ignore masks, annotations, future frames, or object-selection hints.
 
+## Exact-frame playback
+
+The viewer fetches the unchanged content-addressed JPEGs, verifies every SHA-256, decodes a bounded active-scenario window, and presents verified pixels on a persistent canvas. The canvas is never cleared while another frame is loading, so buffering keeps the last exact frame and its synchronized overlay visible instead of flashing a blank surface.
+
+Playback is driven by `requestAnimationFrame` and monotonic browser time mapped onto the published source timestamps. Rendering or decoding delay does not extend the source clock: when presentation falls behind, the viewer advances to the newest decoded frame due at that source time. Pause, scrub, previous/next, Home/End, and keyboard stepping load any individual benchmark frame exactly.
+
+Normal connections keep at most 48 MiB of decoded active-scenario frames, use no more than four concurrent fetch/decode operations, and look ahead no more than 750 ms or the memory limit. Paused poster loading fetches the current frame and at most two neighbors. Save-Data fetches only the poster while paused and limits active playback lookahead to 150 ms. Scenario changes abort the old media controller, close decoded bitmaps, discard queued work, and retain the existing generation check for manifest navigation races. No viewer transcode or additional catalog media is produced.
+
+The reproducible before/after browser trace is recorded in `docs/scenario-playback-evidence.json`; `npm run measure:playback` repeats the implementation measurement.
+
 ## Cloudflare Static Assets basis
 
 The design uses the existing Worker Static Assets binding and generated `dist` directory. Cloudflare's current limits allow 20,000 files per Worker version on Free and 100,000 on Paid, with a 25 MiB per-file limit. Static assets default to `Cache-Control: public, max-age=0, must-revalidate` plus an ETag; `_headers` may assign immutable caching to fingerprinted assets. Sources checked 2026-07-22:
