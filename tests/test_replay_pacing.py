@@ -1,0 +1,198 @@
+import json
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+from cvbench.runner import run_benchmark
+
+ROOT = Path(__file__).parents[1]
+
+
+def _run(tmp_path: Path, profile: str) -> dict:
+    scenario_root = tmp_path / "scenario"
+    scenario_root.mkdir(exist_ok=True)
+    frames = []
+    for index, timestamp in enumerate((0, 50_000_000, 100_000_000)):
+        frame_path = scenario_root / f"{index}.jpg"
+        frame_path.write_bytes(b"not-decoded-by-reader")
+        frames.append(
+            {
+                "frame_index": index,
+                "source_timestamp_ns": timestamp,
+                "width": 10,
+                "height": 10,
+                "path": frame_path.name,
+            }
+        )
+    (scenario_root / "ground_truth.jsonl").write_text("")
+    manifest = scenario_root / "scenario.yaml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "cvbench.scenario/v1",
+                "id": "pacing",
+                "family": "pacing",
+                "sequence_id": "pacing",
+                "ground_truth": "ground_truth.jsonl",
+                "frames": frames,
+            }
+        )
+    )
+    benchmark = tmp_path / f"{profile}.yaml"
+    benchmark.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "cvbench.benchmark/v1",
+                "id": "pacing",
+                "version": "1",
+                "input": {
+                    "mode": "online_replay",
+                    "protocol": "frame_socket_v1",
+                    "replay_profile": profile,
+                },
+                "scenarios": [str(manifest)],
+                "reporting": {"generate_failure_packets": False},
+                "max_run_seconds": 3,
+                "max_drain_seconds": 1,
+            }
+        )
+    )
+    system_dir = tmp_path / "systems"
+    system_dir.mkdir(exist_ok=True)
+    system = system_dir / "reader.yaml"
+    system.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "cvbench.system/v1",
+                "id": "reader",
+                "revision": "1",
+                "runtime": {
+                    "type": "local",
+                    "command": [
+                        sys.executable,
+                        str(ROOT / "tests/fixtures/sut_reader.py"),
+                    ],
+                },
+                "readiness": {"timeout_seconds": 1},
+                "shutdown": {"grace_period_seconds": 1},
+            }
+        )
+    )
+    artifacts = run_benchmark(benchmark, system, tmp_path / f"runs-{profile}")
+    return json.loads(artifacts.report_json.read_text())
+
+
+def test_native_and_slower_replay_keep_identical_source_truth_but_separate_delivery_class(
+    tmp_path: Path,
+) -> None:
+    native = _run(tmp_path, "native")
+    half = _run(tmp_path, "half-speed")
+
+    assert native["timing"]["source"]["duration_seconds"] == 0.1
+    assert half["timing"]["source"]["duration_seconds"] == 0.1
+    native_frames = native["timing"]["delivery"]["per_frame"]
+    half_frames = half["timing"]["delivery"]["per_frame"]
+    assert [frame["native_source_timestamp_ns"] for frame in native_frames] == [
+        0,
+        50_000_000,
+        100_000_000,
+    ]
+    assert [frame["native_source_timestamp_ns"] for frame in half_frames] == [
+        0,
+        50_000_000,
+        100_000_000,
+    ]
+    assert native_frames[-1]["scheduled_delivery_offset_ms"] == 100
+    assert half_frames[-1]["scheduled_delivery_offset_ms"] == 200
+    assert native["timing"]["delivery"]["effective_replay_rate"] == pytest.approx(1, rel=0.2)
+    assert half["timing"]["delivery"]["effective_replay_rate"] == pytest.approx(0.5, rel=0.2)
+    assert native["provenance"]["comparison_fingerprint"] != half["provenance"][
+        "comparison_fingerprint"
+    ]
+    assert native["leaderboard"]["replay_class"] == "native"
+    assert half["leaderboard"]["replay_class"] == "half-speed"
+
+
+def test_slow_reader_creates_reported_sender_pressure_without_rewriting_source_time(
+    tmp_path: Path,
+) -> None:
+    scenario_root = tmp_path / "slow-scenario"
+    scenario_root.mkdir()
+    frames = []
+    for index in range(12):
+        frame_path = scenario_root / f"{index}.jpg"
+        frame_path.write_bytes(bytes([index]) * 256_000)
+        frames.append(
+            {
+                "frame_index": index,
+                "source_timestamp_ns": index * 10_000_000,
+                "width": 10,
+                "height": 10,
+                "path": frame_path.name,
+            }
+        )
+    (scenario_root / "ground_truth.jsonl").write_text("")
+    manifest = scenario_root / "scenario.yaml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "cvbench.scenario/v1",
+                "id": "slow-reader",
+                "family": "pacing",
+                "sequence_id": "slow-reader",
+                "ground_truth": "ground_truth.jsonl",
+                "frames": frames,
+            }
+        )
+    )
+    benchmark = tmp_path / "slow.yaml"
+    benchmark.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "cvbench.benchmark/v1",
+                "id": "slow-reader",
+                "version": "1",
+                "input": {
+                    "mode": "online_replay",
+                    "protocol": "frame_socket_v1",
+                    "replay_profile": "accelerated-test-100x",
+                },
+                "scenarios": [str(manifest)],
+                "reporting": {"generate_failure_packets": False},
+                "max_run_seconds": 5,
+            }
+        )
+    )
+    system_dir = tmp_path / "systems"
+    system_dir.mkdir()
+    system = system_dir / "slow.yaml"
+    system.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "cvbench.system/v1",
+                "id": "slow-reader",
+                "revision": "1",
+                "runtime": {
+                    "type": "local",
+                    "command": [
+                        sys.executable,
+                        str(ROOT / "tests/fixtures/sut_slow_reader.py"),
+                    ],
+                },
+                "readiness": {"timeout_seconds": 1},
+                "shutdown": {"grace_period_seconds": 1},
+            }
+        )
+    )
+    artifacts = run_benchmark(benchmark, system, tmp_path / "slow-runs")
+    report = json.loads(artifacts.report_json.read_text())
+    delivery = report["timing"]["delivery"]
+    assert report["outcome"]["status"] == "completed"
+    assert report["timing"]["source"]["duration_seconds"] == 0.11
+    assert delivery["sender_pressure_frames"] > 0
+    assert delivery["delivery_backlog_ms"]["maximum"] > 0
+    assert delivery["deadline_missed_frames"] > 0
+    assert delivery["input_queue_depth_available"] is False
+    assert delivery["transport_failed_frames"] == 0

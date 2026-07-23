@@ -27,6 +27,15 @@ def render_html(report: dict[str, Any]) -> str:
         ("Observed coverage", metrics["coverage"].get("overall_observed")),
         ("Continuity", metrics["coverage"].get("overall_continuity")),
         ("Median latency (ms)", metrics["latency"].get("median")),
+        (
+            "CPU-s / native source-s",
+            report.get("resources", {}).get("cpu_seconds_per_native_source_second"),
+        ),
+        (
+            "Real-time factor",
+            report.get("timing", {}).get("durations", {}).get("real_time_factor"),
+        ),
+        ("Leaderboard class", report.get("leaderboard", {}).get("class_id")),
         ("Mean IoU", metrics["localization"].get("mean_iou")),
         ("ID switches", metrics["identity"].get("id_switches")),
         ("False track births", metrics["false_detections"].get("track_births")),

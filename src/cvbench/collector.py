@@ -110,7 +110,12 @@ class OutputCollector:
             raw: Any = json.loads(line)
             size = None
             if isinstance(raw, dict):
-                size = self.frame_sizes.get((raw.get("sequence_id"), raw.get("source_timestamp_ns")))
+                frame_key = (raw.get("sequence_id"), raw.get("source_timestamp_ns"))
+                if frame_key not in self.frame_sizes:
+                    raise ProtocolError(
+                        "source_timestamp_ns does not identify an already released frame"
+                    )
+                size = self.frame_sizes[frame_key]
             record = validate_track_record(raw, frame_size=size, out_of_bounds=self.out_of_bounds)
         except (json.JSONDecodeError, ProtocolError) as exc:
             self._record_invalid(str(exc), line[:300])

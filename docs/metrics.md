@@ -19,14 +19,14 @@ The report keeps categories separate:
 - Real-video-v2 uses the complete image as the scoring region with exhaustive supported-mover labels and no ignore rows. Every prediction participates in class-aware full-scene scoring. The runner never exposes public annotations or identities to the system under test.
 - Robustness: controlled loss intervals, correct and same-ID reacquisition, gap duration, and latency.
 - Latency: externally measured first and per-update values, percentiles, deadline misses, count groups, and time series.
-- Resources: CPU, time, RAM, disk, network where available, process/thread count, GPU/VRAM where NVIDIA tooling exists, and memory growth.
+- Resources: cgroup CPU time, CPU-seconds per native source-second, wall/phase time, RAM, disk, process/thread count, output rate, and memory growth. GPU/VRAM is omitted unless an isolated device is assigned.
 - Long-running stability: track-ID cardinality/exhaustion signals, cross-stream state contamination, first/second-half false-positive rate, interruption recovery, latency drift, memory growth, and declared assertion results. Assertions with unavailable evidence report `evaluated: false` and `passed: null`; they are never coerced to zero or counted as failures.
 
 ## Track-ID lifecycle
 
 Within one sequence, a Version 1 track ID is permanently bound to its first deterministically matched physical target. Repeated observations and reacquisition of that same target remain legitimate, including after a `track_ended` or `lost` event. Assigning the ID to a different physical target is a reuse event: it is reported as `reuse_after_terminal` when the prior lifecycle was closed, or `active_target_alias` when the prior lifecycle was still active. Track-ID exhaustion is derived from these matched lifecycle violations rather than SUT diagnostic wording.
 
-No overall score is computed. Baseline comparison labels improvement, regression, unchanged, or inconclusive and exposes sample count/confidence.
+No overall score is computed. `cvbench.pareto/v1` retains accuracy plus CPU-seconds/native-source-second, real-time factor, RAM, and I/O as raw axes. Comparisons require the same timing fingerprint and leaderboard class; see [Timing and compute contract](timing-compute-contract.md). Baseline comparison labels improvement, regression, unchanged, or inconclusive and exposes sample count/confidence.
 
 ## Time semantics
 
@@ -36,3 +36,6 @@ No overall score is computed. Baseline comparison labels improvement, regression
 - Percentiles use sorted samples with linear interpolation at `(n - 1) * p`.
 - Predicted/coasting matches contribute to continuity and occlusion survival only. They never contribute to observed coverage, acquisition, or reacquisition.
 - Output at a timestamp absent from the scenario is stale/unmatched, even if its box overlaps a target from another frame.
+- Output naming a frame that has not yet been released is malformed and excluded before scoring.
+- Slower replay changes only the delivery schedule. Native source timestamp deltas, FPS, and duration are not scaled.
+- Exact post-stream output is accepted only during bounded drain and retains external latency.

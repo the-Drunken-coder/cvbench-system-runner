@@ -2,6 +2,8 @@
 
 CVBench is a local-first black-box benchmark for complete online computer-vision tracking systems. It progressively sends timestamped JPEG frames over a Unix-domain socket, captures live JSONL track events with an external monotonic timestamp, deterministically matches them to ground truth, and writes separate accuracy, robustness, latency, resource, and diagnostic results.
 
+Native camera timestamps, delivery pace, and system completion are separate clocks. The versioned [timing and compute contract](docs/timing-compute-contract.md) reports cgroup CPU-seconds per native source-second and real-time factor as first-class Pareto axes; slower replay never rewrites source FPS or shares the native leaderboard class.
+
 Version 1 is a Python modular monolith. The execution adapters are replaceable; scoring does not import Docker, subprocess, filesystem, or report-rendering code.
 
 ## Quick start
@@ -19,7 +21,7 @@ cvbench run --benchmark benchmarks/persistent-target-tracking.yaml \
   --system systems/example-good-local.yaml --output runs/
 ```
 
-The committed synthetic pack is already generated, so regeneration is only needed to prove determinism. The run directory contains `report.json`, `report.html`, externally timestamped `system-output.jsonl`, shifted `ground-truth.jsonl`, `resources.csv`, and evidence packets for major findings.
+The committed synthetic pack is already generated, so regeneration is only needed to prove determinism. The run directory contains `report.json`, `report.html`, externally timestamped `system-output.jsonl`, run-epoch `ground-truth.jsonl` with immutable native-relative timestamps retained, `resources.csv`, and evidence packets for major findings.
 
 ## Docker SUT
 

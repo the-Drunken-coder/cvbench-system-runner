@@ -39,6 +39,23 @@ def test_incompatible_scenario_comparison_is_inconclusive() -> None:
     assert all(result["direction"] == "inconclusive" for result in results)
 
 
+def test_different_compute_or_completion_classes_are_never_equal_budget_comparisons() -> None:
+    baseline = {
+        "metrics": {"acquisition": {"rate": 0.5}},
+        "provenance": {"comparison_fingerprint": "same"},
+        "leaderboard": {"class_id": "native/cpu-1/realtime"},
+    }
+    candidate = {
+        "metrics": {"acquisition": {"rate": 0.9}},
+        "provenance": {"comparison_fingerprint": "same"},
+        "leaderboard": {"class_id": "native/cpu-4/completion-2x"},
+    }
+    results = compare_reports(baseline, candidate)
+    assert results
+    assert all(result["direction"] == "inconclusive" for result in results)
+    assert all("leaderboard classes" in result["reason"] for result in results)
+
+
 def test_comparison_fingerprint_is_independent_of_private_delivery_order() -> None:
     benchmark = load_benchmark(ROOT / "benchmarks/persistent-target-tracking.yaml")
     scenarios = [load_scenario(path) for path in benchmark.scenarios]

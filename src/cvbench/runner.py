@@ -32,6 +32,13 @@ from .resources import ResourceMonitor
 from .runtime import StartedRuntime, cleanup_runtime, start_runtime, stop_runtime, verify_docker_isolation
 from .scenario import load_scenario
 from .stability import evaluate_long_run_assertions
+from .timing import (
+    DeliveryRecorder,
+    build_leaderboard_semantics,
+    build_timing_summary,
+    delivery_tolerance_ns,
+    native_source_metadata,
+)
 
 EVALUATION_ORDER_ALGORITHM = "sha256-sort/v1"
 
@@ -81,6 +88,9 @@ def _comparison_fingerprint(benchmark: BenchmarkConfig, scenarios: list[Scenario
         "benchmark_id": benchmark.id,
         "benchmark_version": benchmark.version,
         "input_mode": benchmark.input_mode,
+        "timing_compute_contract": benchmark.timing_compute_contract,
+        "delivery_policy": benchmark.delivery_policy,
+        "replay_profile": benchmark.replay_profile,
         "playback_rate": benchmark.playback_rate,
         "thresholds": asdict(benchmark.thresholds),
         "evaluation_order": {
@@ -120,12 +130,12 @@ def _black_jpeg(width: int, height: int) -> bytes:
     return encoded.tobytes()
 
 
-def _shift_ground_truth(scenario: Scenario, base_ns: int, playback_rate: float) -> list[dict[str, Any]]:
+def _shift_ground_truth(scenario: Scenario, source_base_ns: int) -> list[dict[str, Any]]:
     shifted = []
     for row in scenario.ground_truth:
         record = dict(row)
         record["scenario_source_timestamp_ns"] = row["source_timestamp_ns"]
-        record["source_timestamp_ns"] = base_ns + int(row["source_timestamp_ns"] / playback_rate)
+        record["source_timestamp_ns"] = source_base_ns + row["source_timestamp_ns"]
         record["scenario_family"] = scenario.family
         shifted.append(record)
     return shifted
@@ -139,7 +149,15 @@ def _deliver_scenarios(
     frame_sizes: dict[tuple[str, int], tuple[int, int]],
     monitor: ResourceMonitor,
     collector: OutputCollector,
-) -> tuple[list[dict[str, Any]], dict[str, int], dict[str, list[int]], dict[tuple[str, int], list[str]]]:
+    frame_delivery_ns: dict[tuple[str, int], int],
+    delivery: DeliveryRecorder,
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, int],
+    dict[str, list[int]],
+    dict[tuple[str, int], list[str]],
+    DeliveryRecorder,
+]:
     shifted_ground_truth: list[dict[str, Any]] = []
     counters = {
         "delivered_frames": 0,
@@ -154,24 +172,40 @@ def _deliver_scenarios(
     for scenario in scenarios:
         if collector.flooded.is_set():
             raise RuntimeFailure(f"output limit exceeded: {collector.limit_reason}")
-        base_ns = time.monotonic_ns() + 20_000_000
-        shifted_ground_truth.extend(_shift_ground_truth(scenario, base_ns, config.playback_rate))
+        source_base_ns = time.monotonic_ns() + 20_000_000
+        delivery_base_ns = source_base_ns
+        shifted_ground_truth.extend(_shift_ground_truth(scenario, source_base_ns))
         sequence_timestamps[scenario.frames[0].sequence_id] = []
+        source_metadata = native_source_metadata([scenario])["sequences"][0]
         send_message(
             connection,
             {
                 "event": "stream_start",
                 "schema_version": "cvbench.frame/v1",
                 "sequence_id": scenario.frames[0].sequence_id,
+                "timing_compute_contract": config.timing_compute_contract,
+                "delivery_policy": config.delivery_policy,
+                "replay_profile": config.replay_profile,
+                "replay_rate": config.playback_rate,
+                "native_source": {
+                    "frame_count": source_metadata["frame_count"],
+                    "duration_seconds": source_metadata["duration_seconds"],
+                    "nominal_fps": source_metadata["nominal_fps"],
+                    "timestamp_origin": source_metadata["timestamp_origin"],
+                },
             },
         )
+        tolerance_ns = delivery_tolerance_ns(scenario, config.playback_rate)
         for frame in scenario.frames:
             if collector.flooded.is_set():
                 raise RuntimeFailure(f"output limit exceeded: {collector.limit_reason}")
-            timestamp = base_ns + int(frame.relative_timestamp_ns / config.playback_rate)
-            sequence_timestamps[frame.sequence_id].append(timestamp)
+            source_timestamp_ns = source_base_ns + frame.relative_timestamp_ns
+            scheduled_delivery_ns = delivery_base_ns + int(
+                frame.relative_timestamp_ns / config.playback_rate
+            )
+            sequence_timestamps[frame.sequence_id].append(source_timestamp_ns)
             if config.input_mode == "online_replay":
-                _sleep_until(timestamp, run_deadline)
+                _sleep_until(scheduled_delivery_ns, run_deadline)
             if collector.flooded.is_set():
                 raise RuntimeFailure(f"output limit exceeded: {collector.limit_reason}")
             fault_actions = _faults_for_frame(scenario, frame.frame_index)
@@ -182,7 +216,9 @@ def _deliver_scenarios(
             )
             monitor.set_context(scenario.family, target_count, bool(fault_actions))
             if fault_actions:
-                fault_events[(frame.sequence_id, timestamp)] = [str(action.get("type")) for action in fault_actions]
+                fault_events[(frame.sequence_id, source_timestamp_ns)] = [
+                    str(action.get("type")) for action in fault_actions
+                ]
             for fault in fault_actions:
                 if fault.get("type") == "feed_interruption":
                     counters["feed_interruptions"] += 1
@@ -192,7 +228,7 @@ def _deliver_scenarios(
                             "event": "feed_interruption_start",
                             "schema_version": "cvbench.frame/v1",
                             "sequence_id": frame.sequence_id,
-                            "source_timestamp_ns": timestamp,
+                            "source_timestamp_ns": source_timestamp_ns,
                         },
                     )
                     time.sleep(float(fault.get("duration_ms", 250)) / 1000)
@@ -202,7 +238,7 @@ def _deliver_scenarios(
                             "event": "feed_interruption_end",
                             "schema_version": "cvbench.frame/v1",
                             "sequence_id": frame.sequence_id,
-                            "source_timestamp_ns": time.monotonic_ns(),
+                            "source_timestamp_ns": source_timestamp_ns,
                         },
                     )
                 elif fault.get("type") == "delay":
@@ -210,6 +246,18 @@ def _deliver_scenarios(
                     time.sleep(float(fault.get("duration_ms", 100)) / 1000)
             if any(fault.get("type") == "frame_drop" for fault in fault_actions):
                 counters["dropped_frames"] += 1
+                dropped_ns = time.monotonic_ns()
+                delivery.record_frame(
+                    sequence_id=frame.sequence_id,
+                    frame_index=frame.frame_index,
+                    native_source_timestamp_ns=frame.relative_timestamp_ns,
+                    scheduled_ns=scheduled_delivery_ns,
+                    deadline_ns=scheduled_delivery_ns + tolerance_ns,
+                    send_started_ns=dropped_ns,
+                    send_completed_ns=dropped_ns,
+                    delivered=False,
+                    drop_reason="fault_injection",
+                )
                 continue
             payload = frame.path.read_bytes()
             if any(fault.get("type") == "blackout" for fault in fault_actions):
@@ -220,14 +268,35 @@ def _deliver_scenarios(
                 "schema_version": "cvbench.frame/v1",
                 "sequence_id": frame.sequence_id,
                 "frame_index": frame.frame_index,
-                "source_timestamp_ns": timestamp,
+                "source_timestamp_ns": source_timestamp_ns,
+                "native_source_timestamp_ns": frame.relative_timestamp_ns,
                 "width": frame.width,
                 "height": frame.height,
                 "pixel_format": "rgb24",
                 "payload_encoding": "jpeg",
             }
-            frame_sizes[(frame.sequence_id, timestamp)] = (frame.width, frame.height)
-            send_message(connection, metadata, payload)
+            frame_key = (frame.sequence_id, source_timestamp_ns)
+            frame_sizes[frame_key] = (frame.width, frame.height)
+            send_started_ns = time.monotonic_ns()
+            delivered = False
+            try:
+                send_message(connection, metadata, payload)
+                delivered = True
+            finally:
+                send_completed_ns = time.monotonic_ns()
+                delivery.record_frame(
+                    sequence_id=frame.sequence_id,
+                    frame_index=frame.frame_index,
+                    native_source_timestamp_ns=frame.relative_timestamp_ns,
+                    scheduled_ns=scheduled_delivery_ns,
+                    deadline_ns=scheduled_delivery_ns + tolerance_ns,
+                    send_started_ns=send_started_ns,
+                    send_completed_ns=send_completed_ns,
+                    delivered=delivered,
+                    drop_reason=None if delivered else "transport_failure",
+                )
+                if delivered:
+                    frame_delivery_ns[frame_key] = send_completed_ns
             counters["delivered_frames"] += 1
             if any(fault.get("type") == "duplicate" for fault in fault_actions):
                 duplicate = dict(metadata)
@@ -242,8 +311,9 @@ def _deliver_scenarios(
                 "sequence_id": scenario.frames[0].sequence_id,
             },
         )
+    delivery.benchmark_end_sent_ns = time.monotonic_ns()
     send_message(connection, {"event": "benchmark_end", "schema_version": "cvbench.frame/v1"})
-    return shifted_ground_truth, counters, sequence_timestamps, fault_events
+    return shifted_ground_truth, counters, sequence_timestamps, fault_events, delivery
 
 
 def _run_id() -> str:
@@ -378,8 +448,16 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         "delayed_frames": 0,
     }
     frame_sizes: dict[tuple[str, int], tuple[int, int]] = {}
+    frame_delivery_ns: dict[tuple[str, int], int] = {}
     sequence_timestamps: dict[str, list[int]] = {}
     fault_events: dict[tuple[str, int], list[str]] = {}
+    delivery = DeliveryRecorder(
+        benchmark.delivery_policy,
+        benchmark.replay_profile,
+        benchmark.playback_rate,
+    )
+    ready_ns: int | None = None
+    finished_ns: int | None = None
     run_deadline = time.monotonic() + benchmark.max_run_seconds
     try:
         runtime = start_runtime(system, socket_dir, run_dir)
@@ -398,7 +476,11 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         monitor.start()
         if system.runtime_type == "docker":
             verify_docker_isolation(runtime, socket_dir)
-        if not _wait_for_readiness(collector, runtime, system.readiness_timeout_seconds):
+        readiness_budget = min(
+            system.readiness_timeout_seconds,
+            max(0.0, run_deadline - time.monotonic()),
+        )
+        if not _wait_for_readiness(collector, runtime, readiness_budget):
             exit_code = runtime.process.poll()
             outcome.exit_code = exit_code
             if collector.flooded.is_set():
@@ -410,14 +492,39 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                 outcome.errors.append("SUT exited before readiness")
                 outcome.crashed = exit_code != 0
         else:
-            outcome.startup_time_ms = (time.monotonic_ns() - started_ns) / 1_000_000
+            ready_ns = time.monotonic_ns()
+            outcome.startup_time_ms = (ready_ns - started_ns) / 1_000_000
+            server.settimeout(max(0.001, run_deadline - time.monotonic()))
             connection, _ = server.accept()
             with connection:
-                connection.settimeout(2)
-                ground_truth, feed_counters, sequence_timestamps, fault_events = _deliver_scenarios(
-                    connection, scenarios, benchmark, run_deadline, frame_sizes, monitor, collector
+                connection.settimeout(
+                    max(0.001, min(2.0, run_deadline - time.monotonic()))
                 )
-            exit_code, forced = stop_runtime(runtime, system.grace_period_seconds)
+                (
+                    ground_truth,
+                    feed_counters,
+                    sequence_timestamps,
+                    fault_events,
+                    delivery,
+                ) = _deliver_scenarios(
+                    connection,
+                    scenarios,
+                    benchmark,
+                    run_deadline,
+                    frame_sizes,
+                    monitor,
+                    collector,
+                    frame_delivery_ns,
+                    delivery,
+                )
+            monitor.set_context(None, None, False, phase="drain")
+            drain_budget = min(
+                system.grace_period_seconds,
+                benchmark.max_drain_seconds,
+                max(0.0, run_deadline - time.monotonic()),
+            )
+            exit_code, forced = stop_runtime(runtime, drain_budget)
+            finished_ns = time.monotonic_ns()
             outcome.exit_code = exit_code
             outcome.timed_out = forced
             outcome.crashed = exit_code not in {0, None} and not forced
@@ -427,13 +534,13 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         outcome.timed_out = isinstance(exc, TimeoutError) or outcome.timed_out
         if runtime is not None:
             exit_code, forced = stop_runtime(runtime, 0.1)
+            finished_ns = time.monotonic_ns()
             outcome.exit_code = exit_code
             outcome.crashed = exit_code not in {0, None} and not forced and not outcome.timed_out
     finally:
         server.close()
         if monitor is not None:
             monitor.stop()
-            monitor.add_gpu_snapshot()
         if collector is not None:
             collector.join()
             collected, collector_errors, stderr = collector.snapshot()
@@ -446,6 +553,8 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                     outcome.errors.append(message)
         if runtime is not None:
             stop_runtime(runtime, 0)
+            if finished_ns is None:
+                finished_ns = time.monotonic_ns()
             outcome.resolved_image = runtime.resolved_image
             cleanup_runtime(runtime)
         shutil.rmtree(socket_dir, ignore_errors=True)
@@ -456,13 +565,14 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         if verification_error not in outcome.errors:
             outcome.errors.append(str(verification_error))
 
-    runtime_seconds = (time.monotonic_ns() - started_ns) / 1_000_000_000
+    finished_ns = finished_ns or time.monotonic_ns()
+    runtime_seconds = (finished_ns - started_ns) / 1_000_000_000
     if not ground_truth:
         # Preserve scoreable ground truth even for startup/crash failures.
         cursor = started_ns
         for scenario in scenarios:
-            ground_truth.extend(_shift_ground_truth(scenario, cursor, benchmark.playback_rate))
-            cursor += int((scenario.frames[-1].relative_timestamp_ns + 100_000_000) / benchmark.playback_rate)
+            ground_truth.extend(_shift_ground_truth(scenario, cursor))
+            cursor += scenario.frames[-1].relative_timestamp_ns + 100_000_000
     scenario_families = {scenario.frames[0].sequence_id: scenario.family for scenario in scenarios}
     scored_collected = _filter_outputs_to_scoreable_rois(collected, scenarios)
     metrics, matches = calculate_metrics(
@@ -476,8 +586,6 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
     )
     metrics["latency"]["authoritative"] = benchmark.input_mode == "online_replay"
     metrics["latency"]["mode"] = benchmark.input_mode
-    feed_counters["input_queue_depth"] = None
-    feed_counters["input_queue_depth_available"] = False
     resource_data = (
         monitor.summary(runtime_seconds)
         if monitor
@@ -487,6 +595,28 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             "gpu_available": False,
             "over_time": [],
         }
+    )
+    timing_data = build_timing_summary(
+        benchmark=benchmark,
+        scenarios=scenarios,
+        recorder=delivery,
+        started_ns=started_ns,
+        ready_ns=ready_ns,
+        finished_ns=finished_ns,
+        collected=collected,
+        frame_delivery_ns=frame_delivery_ns,
+    )
+    feed_counters["input_queue_depth"] = timing_data["delivery"]["input_queue_depth"]
+    feed_counters["input_queue_depth_available"] = timing_data["delivery"][
+        "input_queue_depth_available"
+    ]
+    leaderboard = build_leaderboard_semantics(
+        benchmark=benchmark,
+        timing=timing_data,
+        resources=resource_data,
+        metrics=metrics,
+        outcome_status=outcome.status,
+        runtime_type=system.runtime_type,
     )
     metrics["long_running_stability"] = evaluate_long_run_assertions(
         metrics["long_running_stability"], resource_data, benchmark.long_run_assertions
@@ -543,8 +673,10 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         },
         "outcome": asdict(outcome),
         "feed": feed_counters,
+        "timing": timing_data,
         "metrics": metrics,
         "resources": resource_data,
+        "leaderboard": leaderboard,
         "runtime_isolation": runtime.isolation
         if runtime
         else {
@@ -578,6 +710,11 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                 "ignore_match_iou": benchmark.thresholds.ignore_match_iou,
             },
             "external_clock": "time.monotonic_ns",
+            "timing_compute_contract": benchmark.timing_compute_contract,
+            "delivery_policy": benchmark.delivery_policy,
+            "replay_profile": benchmark.replay_profile,
+            "replay_rate": benchmark.playback_rate,
+            "leaderboard_class": leaderboard["class_id"],
             "comparison_fingerprint": comparison_fingerprint,
             "comparison_inputs": comparison_inputs,
             "evaluation_order": {
@@ -604,9 +741,11 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
             "match_count": len(matches),
         },
         "limitations": [
-            "GPU metrics are reported only when nvidia-smi is available.",
+            "GPU/VRAM metrics are omitted unless a future runner assigns an isolated device.",
             "Version 1 evidence overlays use synthetic source frames and MP4V when the local codec is available.",
             "Statistical comparison confidence is sample-count based; confidence intervals are not inferred.",
+            "Portable Unix sockets do not expose queue depth; sender pressure and delivery "
+            "backlog are reported instead.",
         ],
     }
     _, _, audit_unmatched = match_records_by_support(
@@ -614,6 +753,37 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         [item.system_record for item in scored_collected],
         benchmark.thresholds,
     )
+    audit_timing_compute = {
+        "contract_version": timing_data["contract_version"],
+        "source": timing_data["source"],
+        "replay": timing_data["replay"],
+        "durations": timing_data["durations"],
+        "delivery": {
+            key: value
+            for key, value in timing_data["delivery"].items()
+            if key != "per_frame"
+        },
+        "processing_latency_ms": timing_data["processing_latency_ms"],
+        "output": timing_data["output"],
+        "resources": {
+            key: resource_data.get(key)
+            for key in (
+                "cpu_time_seconds",
+                "cpu_seconds_per_native_source_second",
+                "average_cpu_percent",
+                "peak_cpu_percent",
+                "peak_ram_bytes",
+                "disk_read_bytes",
+                "disk_write_bytes",
+                "peak_process_count",
+                "cpu_time_by_phase_seconds",
+                "accounting_scope",
+                "authoritative",
+                "gpu_accounting",
+            )
+        },
+        "leaderboard": leaderboard,
+    }
     report["audit_evidence"] = build_audit_evidence(
         ground_truth,
         scored_collected,
@@ -623,6 +793,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
         resource_data,
         report["runtime_isolation"],
         neutral_outputs=[record for record in audit_unmatched if record.get("neutral_ignored")],
+        timing_compute=audit_timing_compute,
     )
     report["provenance"]["raw_evidence_available"] = False
     report["provenance"]["bounded_audit_evidence_sha256"] = None

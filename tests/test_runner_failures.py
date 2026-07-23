@@ -24,7 +24,11 @@ def _definitions(
         "schema_version": "cvbench.benchmark/v1",
         "id": "failure-test",
         "version": "1",
-        "input": {"mode": "online_replay", "protocol": "frame_socket_v1", "playback_rate": 100},
+        "input": {
+            "mode": "online_replay",
+            "protocol": "frame_socket_v1",
+            "replay_profile": "accelerated-test-100x",
+        },
         "thresholds": {"minimum_match_iou": 0.3, "max_match_center_error_px": 20},
         "scenarios": [str(manifests[0])],
         "reporting": {"generate_failure_packets": False},
@@ -92,6 +96,26 @@ def test_malformed_output_is_rejected_and_reported(tmp_path: Path) -> None:
     assert any(item["finding_id"] == "OUTPUT-INVALID-001" for item in report["findings"])
 
 
+def test_future_timestamp_spoofing_is_rejected_as_noncausal(tmp_path: Path) -> None:
+    report = _report(tmp_path, "sut_timestamp_spoof.py")
+    assert report["outcome"]["status"] == "failed"
+    assert report["metrics"]["sample_counts"]["output_records"] == 0
+    assert any(
+        "does not identify an already released frame" in error
+        for error in report["diagnostics"]["collector_errors"]
+    )
+
+
+def test_exact_timestamp_post_stream_output_is_scored_during_bounded_drain(
+    tmp_path: Path,
+) -> None:
+    report = _report(tmp_path, "sut_post_stream.py")
+    assert report["outcome"]["status"] == "completed"
+    assert report["metrics"]["sample_counts"]["output_records"] == 1
+    assert report["timing"]["output"]["late_after_benchmark_end"] == 1
+    assert "bounded drain window" in report["timing"]["output"]["late_output_policy"]
+
+
 def test_missing_readiness_is_bounded_and_reported(tmp_path: Path) -> None:
     report = _report(tmp_path, "sut_missing_readiness.py")
     assert report["outcome"]["timed_out"] is True
@@ -138,7 +162,11 @@ def test_continuous_output_rate_is_bounded_and_process_is_reaped(tmp_path: Path)
         output_limits={"max_output_records_per_second": 20},
     )
     assert any("output rate limit exceeded (20 records/second)" in error for error in report["outcome"]["errors"])
-    assert report["metrics"]["sample_counts"]["output_records"] == 20
+    assert report["metrics"]["sample_counts"]["output_records"] == 0
+    assert any(
+        "does not identify an already released frame" in error
+        for error in report["diagnostics"]["collector_errors"]
+    )
     pid = int((tmp_path / "sut.pid").read_text())
     time.sleep(0.05)
     assert not psutil.pid_exists(pid)

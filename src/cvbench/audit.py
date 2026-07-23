@@ -174,6 +174,7 @@ def build_audit_evidence(
     resources: dict[str, Any],
     runtime_isolation: dict[str, Any],
     neutral_outputs: list[dict[str, Any]] | None = None,
+    timing_compute: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a small bounded evidence packet; raw JSONL is not retained by the control plane."""
 
@@ -577,6 +578,7 @@ def build_audit_evidence(
             "resources": {**resources, "over_time": _head_tail(resources.get("over_time", []))},
             "runtime_isolation": runtime_isolation,
         },
+        "timing_compute": timing_compute,
         "reproducibility": {"feed_counters": feed, "raw_evidence_available": False},
         "flags": flags,
     })

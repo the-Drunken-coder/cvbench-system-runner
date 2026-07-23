@@ -10,6 +10,11 @@ export const PUBLIC_BENCHMARK = Object.freeze({
   id: "public-whole-system-tracking",
   version: "2.0.0",
   manifest: "benchmarks/public-whole-system-v2.yaml",
+  timing_compute_contract: "cvbench.timing-compute/v1",
+  delivery_policy: "cvbench.delivery-lossless/v1",
+  replay_profile: "native",
+  replay_rate: 1,
+  leaderboard_policy: "cvbench.pareto/v1",
   scenario_count: 16,
   scenario_ids: Object.freeze([
     "synthetic-acquisition",
@@ -157,6 +162,13 @@ async function route(request, config) {
     if (validation.error) return problem(422, "invalid_result", validation.error);
     if (validation.value.report && !matchesPublicBenchmark(validation.value.report.benchmark)) {
       return problem(422, "invalid_result", "The report benchmark does not match the assigned public suite.");
+    }
+    if (validation.value.report && !matchesPublicTimingContract(validation.value.report)) {
+      return problem(
+        422,
+        "invalid_result",
+        "The report timing/compute contract does not match the native public leaderboard class.",
+      );
     }
     const report = validation.value.report ? await authoritativeReport(validation.value.report) : null;
     const completed = await config.store.completeJob({
@@ -441,6 +453,7 @@ function operatorEvidence(value) {
     schema_version: "cvbench.audit/v1",
     job_id: value.id,
     audit_evidence: report.audit_evidence || null,
+    timing_compute: report.audit_evidence?.timing_compute || null,
     artifacts: [],
     raw_evidence_available: report.provenance?.raw_evidence_available === true,
     bounded_audit_evidence_sha256: report.provenance?.bounded_audit_evidence_sha256 || null,
@@ -463,6 +476,24 @@ function scoreSummary(report) {
     reacquisition_same_id_rate: metrics.reacquisition?.same_id_rate ?? null,
     latency_p50_ms: metrics.latency?.median ?? null,
     latency_p99_ms: metrics.latency?.p99 ?? null,
+    native_source_duration_seconds: report?.timing?.source?.duration_seconds ?? null,
+    replay_profile: report?.timing?.replay?.profile ?? null,
+    replay_rate: report?.timing?.replay?.rate ?? null,
+    effective_replay_rate: report?.timing?.delivery?.effective_replay_rate ?? null,
+    delivered_frames_per_second: report?.timing?.delivery?.delivered_frames_per_second ?? null,
+    cpu_seconds_per_native_source_second: report?.resources?.cpu_seconds_per_native_source_second ?? null,
+    real_time_factor: report?.timing?.durations?.real_time_factor ?? null,
+    average_cpu_percent: report?.resources?.average_cpu_percent ?? null,
+    peak_cpu_percent: report?.resources?.peak_cpu_percent ?? null,
+    peak_ram_bytes: report?.resources?.peak_ram_bytes ?? null,
+    disk_read_bytes: report?.resources?.disk_read_bytes ?? null,
+    disk_write_bytes: report?.resources?.disk_write_bytes ?? null,
+    output_records_per_native_source_second: report?.timing?.output?.records_per_native_source_second ?? null,
+    processing_latency_p95_ms: report?.timing?.processing_latency_ms?.p95 ?? null,
+    delivery_backlog_max_ms: report?.timing?.delivery?.delivery_backlog_ms?.maximum ?? null,
+    delivery_deadline_missed_frames: report?.timing?.delivery?.deadline_missed_frames ?? null,
+    leaderboard_class: report?.leaderboard?.class_id ?? null,
+    leaderboard_eligible: report?.leaderboard?.eligible ?? false,
     perfect: metrics.coverage?.overall_observed === 1 && metrics.localization?.mean_iou === 1 && metrics.identity?.id_switches === 0 && metrics.false_detections?.track_births === 0,
   };
 }
@@ -479,6 +510,11 @@ function publicResultSummary(report) {
     provenance: {
       comparison_fingerprint: report.provenance?.comparison_fingerprint || null,
       resolved_container_image: report.provenance?.resolved_container_image || null,
+      timing_compute_contract: report.provenance?.timing_compute_contract || null,
+      delivery_policy: report.provenance?.delivery_policy || null,
+      replay_profile: report.provenance?.replay_profile || null,
+      replay_rate: report.provenance?.replay_rate ?? null,
+      leaderboard_class: report.provenance?.leaderboard_class || null,
     },
   };
 }
@@ -554,6 +590,17 @@ function runnerSubmission(value) {
 
 function matchesPublicBenchmark(value) {
   return isObject(value) && value.id === PUBLIC_BENCHMARK.id && value.version === PUBLIC_BENCHMARK.version;
+}
+
+function matchesPublicTimingContract(report) {
+  return (
+    report?.provenance?.timing_compute_contract === PUBLIC_BENCHMARK.timing_compute_contract
+    && report?.provenance?.delivery_policy === PUBLIC_BENCHMARK.delivery_policy
+    && report?.provenance?.replay_profile === PUBLIC_BENCHMARK.replay_profile
+    && report?.provenance?.replay_rate === PUBLIC_BENCHMARK.replay_rate
+    && report?.leaderboard?.policy_version === PUBLIC_BENCHMARK.leaderboard_policy
+    && report?.leaderboard?.replay_class === PUBLIC_BENCHMARK.replay_profile
+  );
 }
 
 async function readJson(request, maxBytes) {
@@ -702,6 +749,14 @@ export const CONTRACT = {
     measures: ["class-aware detection and association", "HOTA", "IDF1", "misses", "false tracks", "ID switches", "fragmentation", "track completeness", "latency", "resource use", "diagnostics"],
     input: "Progressive timestamped JPEG frames over a Unix-domain socket; the system under test never receives future frames.",
     temporal_support: "The socket stays open across ordered frames. Detector, tracker, temporal-memory, association, filtering, and post-processing pipelines may retain multi-frame state and may use multiple processes.",
+    timing_compute: {
+      source_time: "Native source timestamps, FPS, and duration are immutable. Replay pace never rewrites camera truth.",
+      replay: "Public /api/v1 submissions are fixed to the allowlisted native profile at exactly 1.0x. The v1 request has no replay override; slower allowlisted profiles are separate benchmark classes, never native results.",
+      delivery: "An independent monotonic source schedule preserves ordering and never reveals future frames. The lossless-v1 policy reports sender pressure, delivery backlog, deadline misses, and explicit fault drops.",
+      completion: "Startup, stream delivery, bounded post-stream drain, wall duration, per-output processing latency, and late-output counts are reported separately.",
+      compute: "Container/cgroup CPU time, CPU-seconds per native source-second, average/peak CPU, peak RAM, disk I/O, process count, and output rate are raw axes. GPU/VRAM are omitted unless an isolated device is assigned.",
+      fairness: "cvbench.pareto/v1 has no hidden composite. Accuracy remains intact; replay profile, compute tier, completion tier, and raw efficiency axes define the leaderboard class.",
+    },
   },
   container: {
     image: "Prebuilt OCI image pinned as registry/repository@sha256:<64 lowercase hex characters>.",
@@ -716,7 +771,7 @@ export const CONTRACT = {
   },
   submission: {
     accepted: ["image", "argv", "name", "model_version", "contact", "notes"],
-    rejected: ["source repositories", "build instructions", "shell command strings", "Docker socket access", "custom environment variables"],
+    rejected: ["source repositories", "build instructions", "shell command strings", "Docker socket access", "custom environment variables", "replay or pacing overrides"],
     authentication: "Bearer submission API key plus a unique Idempotency-Key header.",
     terminology: "The submitted object is a complete system image. One linux/amd64 OCI image is a packaging, reproducibility, and security boundary, not a one-learned-model or one-process assumption.",
     compatibility_names: {
@@ -750,7 +805,27 @@ export const OPENAPI = {
       get: {
         operationId: "getSubmission",
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "string", format: "uuid" } }],
-        responses: { 200: { description: "Public submission status/result" }, 404: { description: "Not found" } },
+        responses: {
+          200: {
+            description: "Public submission status/result with raw accuracy and timing/compute axes",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    result: {
+                      type: ["object", "null"],
+                      properties: {
+                        scores: { $ref: "#/components/schemas/TimingComputeSummary" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          404: { description: "Not found" },
+        },
       },
     },
     "/api/v1/operator/jobs": {
@@ -803,6 +878,30 @@ export const OPENAPI = {
           model_version: { type: "string", maxLength: 100, description: "Version 1 compatibility field containing the submitted system version." },
           contact: { type: "string", maxLength: 200 },
           notes: { type: "string", maxLength: 1000 },
+        },
+      },
+      TimingComputeSummary: {
+        type: "object",
+        additionalProperties: true,
+        properties: {
+          native_source_duration_seconds: { type: ["number", "null"], minimum: 0 },
+          replay_profile: { type: ["string", "null"], enum: ["native", null] },
+          replay_rate: { type: ["number", "null"], enum: [1, null] },
+          effective_replay_rate: { type: ["number", "null"], minimum: 0 },
+          delivered_frames_per_second: { type: ["number", "null"], minimum: 0 },
+          cpu_seconds_per_native_source_second: { type: ["number", "null"], minimum: 0 },
+          real_time_factor: { type: ["number", "null"], minimum: 0 },
+          average_cpu_percent: { type: ["number", "null"], minimum: 0 },
+          peak_cpu_percent: { type: ["number", "null"], minimum: 0 },
+          peak_ram_bytes: { type: ["number", "null"], minimum: 0 },
+          disk_read_bytes: { type: ["number", "null"], minimum: 0 },
+          disk_write_bytes: { type: ["number", "null"], minimum: 0 },
+          output_records_per_native_source_second: { type: ["number", "null"], minimum: 0 },
+          processing_latency_p95_ms: { type: ["number", "null"], minimum: 0 },
+          delivery_backlog_max_ms: { type: ["number", "null"], minimum: 0 },
+          delivery_deadline_missed_frames: { type: ["integer", "null"], minimum: 0 },
+          leaderboard_class: { type: ["string", "null"] },
+          leaderboard_eligible: { type: "boolean" },
         },
       },
     },

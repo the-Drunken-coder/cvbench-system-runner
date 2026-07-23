@@ -5,7 +5,7 @@ version: 1.0.0
 input:
   mode: online_replay
   protocol: frame_socket_v1
-  playback_rate: 1.0
+  replay_profile: native
 
 thresholds:
   visible_dropout_tolerance_ms: 100
@@ -49,6 +49,7 @@ long_run_assertions:
   max_memory_growth_bytes: 268435456
 
 max_run_seconds: 60
+max_drain_seconds: 10
 max_output_records: 200000
 max_output_line_bytes: 1000000
 max_total_output_bytes: 100000000

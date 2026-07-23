@@ -18,14 +18,24 @@ try:
         PUBLIC_BENCHMARK_ID,
         PUBLIC_BENCHMARK_MANIFEST,
         PUBLIC_BENCHMARK_VERSION,
+        PUBLIC_DELIVERY_POLICY,
+        PUBLIC_LEADERBOARD_POLICY,
+        PUBLIC_REPLAY_PROFILE,
+        PUBLIC_REPLAY_RATE,
         PUBLIC_SCENARIO_IDS,
+        PUBLIC_TIMING_COMPUTE_CONTRACT,
     )
 except ModuleNotFoundError:  # Direct `python scripts/fresh_checkout_runner_e2e.py` execution.
     from run_control_plane_job import (  # type: ignore[no-redef]
         PUBLIC_BENCHMARK_ID,
         PUBLIC_BENCHMARK_MANIFEST,
         PUBLIC_BENCHMARK_VERSION,
+        PUBLIC_DELIVERY_POLICY,
+        PUBLIC_LEADERBOARD_POLICY,
+        PUBLIC_REPLAY_PROFILE,
+        PUBLIC_REPLAY_RATE,
         PUBLIC_SCENARIO_IDS,
+        PUBLIC_TIMING_COMPUTE_CONTRACT,
     )
 
 SUBMISSION_ID = "12345678-1234-4123-8123-123456789abc"
@@ -65,6 +75,11 @@ class ControlPlaneHandler(BaseHTTPRequestHandler):
                             "id": PUBLIC_BENCHMARK_ID,
                             "version": PUBLIC_BENCHMARK_VERSION,
                             "manifest": PUBLIC_BENCHMARK_MANIFEST,
+                            "timing_compute_contract": PUBLIC_TIMING_COMPUTE_CONTRACT,
+                            "delivery_policy": PUBLIC_DELIVERY_POLICY,
+                            "replay_profile": PUBLIC_REPLAY_PROFILE,
+                            "replay_rate": PUBLIC_REPLAY_RATE,
+                            "leaderboard_policy": PUBLIC_LEADERBOARD_POLICY,
                         },
                     },
                     "lease": {"token": LEASE_TOKEN, "max_result_bytes": 1024 * 1024},

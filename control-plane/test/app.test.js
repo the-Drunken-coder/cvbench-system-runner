@@ -46,6 +46,10 @@ test("health and machine-readable metadata are public", async () => {
   assert.equal(contract.benchmark.scenario_count, 16);
   assert.deepEqual(contract.benchmark.scenario_ids, PUBLIC_BENCHMARK.scenario_ids);
   assert.match(contract.benchmark.selection, /Every public v1 submission/);
+  assert.equal(contract.benchmark.replay_profile, "native");
+  assert.equal(contract.benchmark.replay_rate, 1);
+  assert.match(contract.benchmark.timing_compute.source_time, /immutable/);
+  assert.match(contract.benchmark.timing_compute.fairness, /no hidden composite/);
   assert.match(contract.submission.terminology, /packaging, reproducibility, and security boundary/);
   assert.match(contract.submission.compatibility_names.model_version, /system version/);
   const openapi = await jsonRequest("/api/v1/openapi.json");
@@ -53,6 +57,7 @@ test("health and machine-readable metadata are public", async () => {
   assert.match(openapi.info.description, /complete vision system/);
   assert.deepEqual(openapi["x-cvbench-public-benchmark"], PUBLIC_BENCHMARK);
   assert.match(openapi.components.schemas.CreateSubmission.properties.model_version.description, /submitted system version/);
+  assert.ok(openapi.components.schemas.TimingComputeSummary);
   assert.ok(openapi.components.securitySchemes.operatorReadKey);
   assert.ok(openapi.components.securitySchemes.operatorAdjudicatorKey);
 });
@@ -67,6 +72,8 @@ test("public benchmark descriptor exactly matches its versioned manifest", async
   }
   assert.equal(benchmark.id, PUBLIC_BENCHMARK.id);
   assert.equal(benchmark.version, PUBLIC_BENCHMARK.version);
+  assert.equal(benchmark.input.replay_profile, PUBLIC_BENCHMARK.replay_profile);
+  assert.equal(PUBLIC_BENCHMARK.replay_rate, 1);
   assert.deepEqual(scenarioIds, PUBLIC_BENCHMARK.scenario_ids);
   assert.equal(scenarioIds.length, PUBLIC_BENCHMARK.scenario_count);
   assert.equal(new Set(scenarioIds).size, scenarioIds.length);
@@ -184,6 +191,22 @@ test("runner callbacks must match the fixed public benchmark assignment", async 
   });
   assert.equal(response.status, 422);
   assert.match((await response.json()).error.message, /assigned public suite/);
+});
+
+test("runner callbacks cannot place another timing class in the native leaderboard", async () => {
+  const created = await (await submit(validBody(), "wrong-timing-0001")).json();
+  const leased = await (await lease()).json();
+  const report = scoredReport();
+  report.provenance.replay_profile = "half-speed";
+  report.provenance.replay_rate = 0.5;
+  report.leaderboard.replay_class = "half-speed";
+  const response = await result(created.id, {
+    status: "succeeded",
+    lease_token: leased.lease.token,
+    report,
+  });
+  assert.equal(response.status, 422);
+  assert.match((await response.json()).error.message, /native public leaderboard class/);
 });
 
 test("failed jobs require a bounded error and valid running lease", async () => {
@@ -492,7 +515,7 @@ test("adjudicator credentials map to distinct actors and cannot cross scopes", a
 test("Worker canonical audit hash verifies through API after parsing 1.0 as 1", async () => {
   const created = await (await submit(validBody(), "audit-hash-0001")).json();
   const leased = await (await lease()).json();
-  const rawReport = '{"benchmark":{"id":"public-whole-system-tracking","version":"2.0.0"},"outcome":{"status":"completed"},"audit_evidence":{"schema_version":"cvbench.audit/v1","numeric_probe":1.0}}';
+  const rawReport = '{"benchmark":{"id":"public-whole-system-tracking","version":"2.0.0"},"outcome":{"status":"completed"},"leaderboard":{"policy_version":"cvbench.pareto/v1","replay_class":"native"},"provenance":{"timing_compute_contract":"cvbench.timing-compute/v1","delivery_policy":"cvbench.delivery-lossless/v1","replay_profile":"native","replay_rate":1.0},"audit_evidence":{"schema_version":"cvbench.audit/v1","numeric_probe":1.0}}';
   const callback = await request(`/api/v1/internal/submissions/${created.id}/result`, {
     method: "POST",
     headers: { authorization: `Bearer ${RUNNER_TOKEN}`, "content-type": "application/json" },
@@ -593,6 +616,21 @@ function scoredReport(runtimeIsolation = { status: "verified", network_mode: "no
       false_detections: { track_births: 1 },
     },
     runtime_isolation: runtimeIsolation,
+    timing: {
+      source: { duration_seconds: 10 },
+      replay: { profile: "native", rate: 1 },
+      durations: { real_time_factor: 0.9 },
+    },
+    resources: {
+      cpu_seconds_per_native_source_second: 1.5,
+      peak_ram_bytes: 1024,
+    },
+    leaderboard: {
+      policy_version: "cvbench.pareto/v1",
+      replay_class: "native",
+      class_id: "native/cpu-2/realtime",
+      eligible: true,
+    },
     diagnostics: { sut_stderr: ["<script>throw new Error('untrusted')</script>"] },
     audit_evidence: {
       schema_version: "cvbench.audit/v1",
@@ -614,7 +652,14 @@ function scoredReport(runtimeIsolation = { status: "verified", network_mode: "no
       false_track_segments: [{ track_id: "false-track", duration_ms: 100 }],
       resources_and_isolation: { runtime_isolation: runtimeIsolation },
     },
-    provenance: { raw_evidence_available: false },
+    provenance: {
+      raw_evidence_available: false,
+      timing_compute_contract: "cvbench.timing-compute/v1",
+      delivery_policy: "cvbench.delivery-lossless/v1",
+      replay_profile: "native",
+      replay_rate: 1,
+      leaderboard_class: "native/cpu-2/realtime",
+    },
   };
 }
 

@@ -45,13 +45,13 @@
         <div class="section-intro">
           <span class="section-number">01</span>
           <div><p class="kicker">What CVBench measures</p><h2>A leaderboard with receipts.</h2></div>
-          <p>Every public submission runs the declared 16-scenario Version 2 suite: 13 deterministic synthetic tests plus three exhaustive, full-frame, native-30-FPS real-video sequences. Every score is backed by deterministic matching, external timestamps, resource samples, and evidence artifacts.</p>
+          <p>Every public submission runs the declared 16-scenario Version 2 suite at native pace: 13 deterministic synthetic tests plus three exhaustive, full-frame, native-30-FPS real-video sequences. Native source time never changes. Accuracy, cgroup CPU-seconds per source-second, real-time factor, RAM, I/O, backlog, and deadline misses remain separate Pareto axes—there is no hidden blended score.</p>
         </div>
         <div class="metric-grid">
           <article><span class="metric-index">A</span><h3>Accuracy</h3><p>Class-aware detection, HOTA, IDF1, localization, identity association, misses, and false tracks against frame-level ground truth.</p></article>
           <article><span class="metric-index">R</span><h3>Robustness</h3><p>Acquisition, visible retention, identity continuity, occlusion recovery, and fault response.</p></article>
           <article><span class="metric-index">L</span><h3>Latency</h3><p>Receive time minus source-frame time, recorded by the harness—not self-reported by the submitted system.</p></article>
-          <article><span class="metric-index">Ω</span><h3>Resources</h3><p>CPU, memory, process count, and optional GPU telemetry sampled outside the submitted container.</p></article>
+          <article><span class="metric-index">Ω</span><h3>Resources</h3><p>Container/cgroup CPU time, CPU-seconds per native source-second, memory, I/O, process count, and real-time factor sampled outside the submitted system. GPU data appears only for an isolated device.</p></article>
           <article><span class="metric-index">!</span><h3>Diagnostics</h3><p>Structured findings and portable evidence packets for the largest observed failures.</p></article>
         </div>
       </section>

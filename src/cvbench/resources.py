@@ -72,7 +72,12 @@ class ResourceMonitor:
         self.interval_seconds = interval_seconds
         self.cidfile = cidfile
         self.samples: list[dict[str, Any]] = []
-        self.context: dict[str, Any] = {"scenario": None, "target_count": None, "fault_injection": False}
+        self.context: dict[str, Any] = {
+            "phase": "startup",
+            "scenario": None,
+            "target_count": None,
+            "fault_injection": False,
+        }
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._started_ns = time.monotonic_ns()
@@ -84,8 +89,16 @@ class ResourceMonitor:
         self._stop.set()
         self._thread.join(3)
 
-    def set_context(self, scenario: str, target_count: int, fault_injection: bool) -> None:
+    def set_context(
+        self,
+        scenario: str | None,
+        target_count: int | None,
+        fault_injection: bool,
+        *,
+        phase: str = "delivery",
+    ) -> None:
         self.context = {
+            "phase": phase,
             "scenario": scenario,
             "target_count": target_count,
             "fault_injection": fault_injection,
@@ -216,20 +229,31 @@ class ResourceMonitor:
         vram = [float(sample["vram_bytes"]) for sample in self.samples if sample.get("vram_bytes") is not None]
         grouped_scenario: dict[str, list[dict[str, Any]]] = {}
         grouped_targets: dict[str, list[dict[str, Any]]] = {}
+        grouped_phase: dict[str, list[dict[str, Any]]] = {}
         for sample in self.samples:
             grouped_scenario.setdefault(str(sample.get("scenario") or "startup"), []).append(sample)
             grouped_targets.setdefault(str(sample.get("target_count") or 0), []).append(sample)
+            grouped_phase.setdefault(str(sample.get("phase") or "startup"), []).append(sample)
 
         def grouped_summary(groups: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, float | int | None]]:
-            return {
-                key: {
+            result = {}
+            for key, rows in sorted(groups.items()):
+                cpu_times = [
+                    float(row["cpu_time_seconds"])
+                    for row in rows
+                    if row.get("cpu_time_seconds") is not None
+                ]
+                result[key] = {
                     "sample_count": len(rows),
                     "average_cpu_percent": sum(float(row.get("cpu_percent") or 0) for row in rows) / len(rows),
                     "peak_ram_bytes": max((float(row.get("memory_bytes") or 0) for row in rows), default=None),
+                    "cpu_time_delta_seconds": (
+                        max(cpu_times) - min(cpu_times) if len(cpu_times) >= 2 else None
+                    ),
                 }
-                for key, rows in sorted(groups.items())
-            }
+            return result
 
+        phase_summary = grouped_summary(grouped_phase)
         return {
             "sample_count": len(self.samples),
             "runtime_seconds": runtime_seconds,
@@ -252,6 +276,11 @@ class ResourceMonitor:
             "memory_growth_bytes": memory[-1] - memory[0] if len(memory) >= 2 else None,
             "by_scenario": grouped_summary(grouped_scenario),
             "by_target_count": grouped_summary(grouped_targets),
+            "by_phase": phase_summary,
+            "cpu_time_by_phase_seconds": {
+                phase: summary["cpu_time_delta_seconds"]
+                for phase, summary in phase_summary.items()
+            },
             "fault_injection_samples": sum(bool(sample.get("fault_injection")) for sample in self.samples),
             "over_time": self.samples,
         }
@@ -270,6 +299,7 @@ class ResourceMonitor:
             "thread_count",
             "gpu_percent",
             "vram_bytes",
+            "phase",
             "scenario",
             "target_count",
             "fault_injection",

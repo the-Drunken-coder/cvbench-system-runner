@@ -9,6 +9,17 @@ import yaml
 
 from .errors import ConfigurationError
 
+TIMING_COMPUTE_CONTRACT_VERSION = "cvbench.timing-compute/v1"
+DELIVERY_POLICY_VERSION = "cvbench.delivery-lossless/v1"
+REPLAY_PROFILES = {
+    "quarter-speed": 0.25,
+    "half-speed": 0.5,
+    "native": 1.0,
+    "accelerated-test-20x": 20.0,
+    "accelerated-test-100x": 100.0,
+}
+PUBLIC_REPLAY_PROFILES = frozenset({"quarter-speed", "half-speed", "native"})
+
 
 @dataclass(frozen=True)
 class Thresholds:
@@ -30,12 +41,16 @@ class BenchmarkConfig:
     id: str
     version: str
     input_mode: str
+    replay_profile: str
     playback_rate: float
+    timing_compute_contract: str
+    delivery_policy: str
     thresholds: Thresholds
     scenarios: tuple[Path, ...]
     reporting: dict[str, bool]
     resources: dict[str, Any]
     max_run_seconds: float
+    max_drain_seconds: float
     max_output_records: int
     max_output_line_bytes: int
     max_total_output_bytes: int
@@ -130,7 +145,38 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
         raise ConfigurationError("input.mode must be online_replay or offline_debug")
     if input_config.get("protocol") != "frame_socket_v1":
         raise ConfigurationError("Version 1 input.protocol must be frame_socket_v1")
-    playback_rate = _number(input_config.get("playback_rate", 1.0), "input.playback_rate", positive=True)
+    replay_profile = input_config.get("replay_profile")
+    legacy_playback_rate = input_config.get("playback_rate")
+    if replay_profile is None:
+        playback_rate = _number(
+            1.0 if legacy_playback_rate is None else legacy_playback_rate,
+            "input.playback_rate",
+            positive=True,
+        )
+        replay_profile = next(
+            (name for name, rate in REPLAY_PROFILES.items() if playback_rate == rate),
+            None,
+        )
+        if replay_profile is None:
+            allowed = ", ".join(str(rate) for rate in REPLAY_PROFILES.values())
+            raise ConfigurationError(
+                f"input.playback_rate must match the versioned allowlist ({allowed}); "
+                "prefer input.replay_profile"
+            )
+    else:
+        if not isinstance(replay_profile, str) or replay_profile not in REPLAY_PROFILES:
+            raise ConfigurationError(
+                f"input.replay_profile must be one of {', '.join(REPLAY_PROFILES)}"
+            )
+        playback_rate = REPLAY_PROFILES[replay_profile]
+        if legacy_playback_rate is not None:
+            configured_rate = _number(
+                legacy_playback_rate, "input.playback_rate", positive=True
+            )
+            if configured_rate != playback_rate:
+                raise ConfigurationError(
+                    "input.playback_rate does not match input.replay_profile"
+                )
     raw_thresholds = _mapping(data, "thresholds")
     out_of_bounds = raw_thresholds.get("out_of_bounds", "reject")
     if out_of_bounds not in {"reject", "clip"}:
@@ -218,7 +264,10 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
         id=_require(data, "id", str),
         version=_require(data, "version", str),
         input_mode=input_config["mode"],
+        replay_profile=replay_profile,
         playback_rate=playback_rate,
+        timing_compute_contract=TIMING_COMPUTE_CONTRACT_VERSION,
+        delivery_policy=DELIVERY_POLICY_VERSION,
         thresholds=thresholds,
         scenarios=tuple(scenarios),
         reporting={
@@ -230,6 +279,9 @@ def load_benchmark(path: str | Path) -> BenchmarkConfig:
         },
         resources=resources,
         max_run_seconds=_number(data.get("max_run_seconds", 120), "max_run_seconds", positive=True),
+        max_drain_seconds=_number(
+            data.get("max_drain_seconds", 10), "max_drain_seconds", minimum=0
+        ),
         max_output_records=max_output_records,
         max_output_line_bytes=max_output_line_bytes,
         max_total_output_bytes=max_total_output_bytes,

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cvbench.dev/schemas/timing-compute-v1.schema.json",
+  "title": "CVBench timing and compute accounting v1",
+  "type": "object",
+  "required": ["contract_version", "source", "replay", "durations", "delivery", "processing_latency_ms", "output", "clocks"],
+  "properties": {
+    "contract_version": {"const": "cvbench.timing-compute/v1"},
+    "source": {
+      "type": "object",
+      "required": ["immutable", "frame_count", "duration_seconds", "sequences"],
+      "properties": {
+        "immutable": {"const": true},
+        "frame_count": {"type": "integer", "minimum": 0},
+        "duration_seconds": {"type": ["number", "null"], "minimum": 0},
+        "sequences": {"type": "array"}
+      }
+    },
+    "replay": {
+      "type": "object",
+      "required": ["profile", "rate", "native_real_time", "allowlisted"],
+      "properties": {
+        "profile": {
+          "enum": ["quarter-speed", "half-speed", "native", "accelerated-test-20x", "accelerated-test-100x"]
+        },
+        "rate": {"enum": [0.25, 0.5, 1, 20, 100]},
+        "native_real_time": {"type": "boolean"},
+        "allowlisted": {"const": true}
+      }
+    },
+    "durations": {
+      "type": "object",
+      "required": ["wall_seconds", "startup_seconds", "stream_delivery_seconds", "completion_seconds", "drain_seconds", "real_time_factor"],
+      "properties": {
+        "wall_seconds": {"type": "number", "minimum": 0},
+        "startup_seconds": {"type": ["number", "null"], "minimum": 0},
+        "stream_delivery_seconds": {"type": ["number", "null"], "minimum": 0},
+        "completion_seconds": {"type": ["number", "null"], "minimum": 0},
+        "drain_seconds": {"type": ["number", "null"], "minimum": 0},
+        "real_time_factor": {"type": ["number", "null"], "minimum": 0}
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "required": ["policy_version", "replay_profile", "replay_rate", "effective_replay_rate", "delivered_frames_per_second", "deadline_missed_frames", "sender_pressure_frames", "delivery_backlog_ms", "per_frame"],
+      "properties": {
+        "policy_version": {"const": "cvbench.delivery-lossless/v1"},
+        "replay_profile": {"type": "string"},
+        "replay_rate": {"type": "number"},
+        "effective_replay_rate": {"type": ["number", "null"], "minimum": 0},
+        "delivered_frames_per_second": {"type": ["number", "null"], "minimum": 0},
+        "deadline_missed_frames": {"type": "integer", "minimum": 0},
+        "sender_pressure_frames": {"type": "integer", "minimum": 0},
+        "delivery_backlog_ms": {"type": "object"},
+        "per_frame": {"type": "array"}
+      }
+    },
+    "processing_latency_ms": {"type": "object"},
+    "output": {"type": "object"},
+    "clocks": {"type": "object"}
+  },
+  "additionalProperties": false
+}

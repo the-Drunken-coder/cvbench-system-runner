@@ -71,3 +71,48 @@ def test_track_schema_rejects_empty_identifiers(field: str) -> None:
     record[field] = ""
     with pytest.raises(ValidationError):
         validator.validate(record)
+
+
+def test_timing_compute_schema_requires_immutable_source_and_allowlisted_replay() -> None:
+    validator = _validator("timing-compute-v1.schema.json")
+    timing = {
+        "contract_version": "cvbench.timing-compute/v1",
+        "source": {
+            "immutable": True,
+            "frame_count": 2,
+            "duration_seconds": 1,
+            "sequences": [],
+        },
+        "replay": {
+            "profile": "half-speed",
+            "rate": 0.5,
+            "native_real_time": False,
+            "allowlisted": True,
+        },
+        "durations": {
+            "wall_seconds": 2,
+            "startup_seconds": 0.1,
+            "stream_delivery_seconds": 2,
+            "completion_seconds": 2,
+            "drain_seconds": 0,
+            "real_time_factor": 2,
+        },
+        "delivery": {
+            "policy_version": "cvbench.delivery-lossless/v1",
+            "replay_profile": "half-speed",
+            "replay_rate": 0.5,
+            "effective_replay_rate": 0.5,
+            "delivered_frames_per_second": 20,
+            "deadline_missed_frames": 0,
+            "sender_pressure_frames": 0,
+            "delivery_backlog_ms": {},
+            "per_frame": [],
+        },
+        "processing_latency_ms": {},
+        "output": {},
+        "clocks": {},
+    }
+    validator.validate(timing)
+    timing["replay"]["rate"] = 0.3
+    with pytest.raises(ValidationError):
+        validator.validate(timing)
