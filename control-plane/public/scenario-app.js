@@ -473,14 +473,17 @@ function setBuffering(buffering) {
   }
 }
 
-function handlePlaybackDecodeError(error, generation) {
-  if (!state.playing || generation !== state.generation || error?.name === "AbortError") return;
+function handlePlaybackDecodeError(error, scenarioGeneration, playbackGeneration) {
+  if (!state.playing
+    || scenarioGeneration !== state.generation
+    || playbackGeneration !== state.playbackGeneration
+    || error?.name === "AbortError") return;
   stopPlayback();
   renderExactFrameFailure(byId("media-state"), error);
   byId("viewer-announcement").textContent = `Playback stopped. ${error.message}`;
 }
 
-function prefetchPlayback(expectedIndex) {
+function prefetchPlayback(expectedIndex, playbackGeneration) {
   const duration = navigator.connection?.saveData ? SAVE_DATA_AHEAD_NS : PLAYBACK_AHEAD_NS;
   const frame = state.frames.frames[expectedIndex];
   const decodedFrameBytes = frame.width * frame.height * 4;
@@ -490,18 +493,19 @@ function prefetchPlayback(expectedIndex) {
     expectedIndex + memoryFrameLimit,
     state.frames.frames.length - 1,
   );
-  const generation = state.generation;
+  const scenarioGeneration = state.generation;
   for (let index = expectedIndex; index <= end; index += 1) {
-    void requestDecodedFrame(index).catch((error) => handlePlaybackDecodeError(error, generation));
+    void requestDecodedFrame(index)
+      .catch((error) => handlePlaybackDecodeError(error, scenarioGeneration, playbackGeneration));
   }
 }
 
-function playbackTick(now) {
-  if (!state.playing) return;
+function playbackTick(now, playbackGeneration) {
+  if (!state.playing || playbackGeneration !== state.playbackGeneration) return;
   const elapsedMs = now - state.playbackAnchorMs;
   const sourceTimestampNs = state.playbackAnchorSourceNs + elapsedMs * 1_000_000 * state.playbackSpeed;
   const expectedIndex = frameIndexAtOrBefore(sourceTimestampNs);
-  prefetchPlayback(expectedIndex);
+  prefetchPlayback(expectedIndex, playbackGeneration);
 
   let presentable = null;
   for (let index = expectedIndex; index > state.selected; index -= 1) {
@@ -520,7 +524,9 @@ function playbackTick(now) {
     byId("viewer-announcement").textContent = `Playback ended on frame ${lastIndex + 1}.`;
     return;
   }
-  state.animationFrame = window.requestAnimationFrame(playbackTick);
+  state.animationFrame = window.requestAnimationFrame(
+    (nextNow) => playbackTick(nextNow, playbackGeneration),
+  );
 }
 
 async function startPlayback() {
@@ -528,6 +534,7 @@ async function startPlayback() {
     await showFrame(0, false);
   }
   const requestGeneration = ++state.playbackGeneration;
+  const scenarioGeneration = state.generation;
   state.playing = true;
   byId("play-pause").textContent = "Pause";
   byId("play-pause").setAttribute("aria-label", "Pause sequence");
@@ -537,7 +544,7 @@ async function startPlayback() {
   try {
     await prefetchRange(state.selected, bufferEnd);
   } catch (error) {
-    handlePlaybackDecodeError(error, state.generation);
+    handlePlaybackDecodeError(error, scenarioGeneration, requestGeneration);
     return;
   }
   if (!state.playing || requestGeneration !== state.playbackGeneration) return;
@@ -545,8 +552,10 @@ async function startPlayback() {
   state.playbackAnchorSourceNs = state.frames.frames[state.selected].source_timestamp_ns;
   setBuffering(false);
   byId("viewer-announcement").textContent = `Playing from frame ${state.selected + 1} at ${state.playbackSpeed} times speed.`;
-  prefetchPlayback(state.selected);
-  state.animationFrame = window.requestAnimationFrame(playbackTick);
+  prefetchPlayback(state.selected, requestGeneration);
+  state.animationFrame = window.requestAnimationFrame(
+    (now) => playbackTick(now, requestGeneration),
+  );
 }
 
 function togglePlayback() {

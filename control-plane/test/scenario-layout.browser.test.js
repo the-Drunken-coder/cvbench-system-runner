@@ -424,6 +424,78 @@ test("playback controls retain exact-frame inspection, synchronized overlays, an
   assert.equal(await page.locator("#play-pause").getAttribute("aria-label"), "Play sequence");
 });
 
+test("a delayed stale playback failure cannot stop a scrubbed and resumed session", async (context) => {
+  const { browser, fixture } = await buildBrowserFixture(context, "stale-playback-error");
+  const detail = await (await fetch(`${fixture.origin}/scenario-catalog/v1/scenarios/rvmot-a1c9.json`)).json();
+  const manifest = await (await fetch(new URL(detail.media.frame_manifest.url, fixture.origin))).json();
+  const staleIndex = 20;
+  const stalePath = new URL(manifest.frames[staleIndex].media.url, fixture.origin).pathname;
+  const staleBody = "stale playback session A";
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  await page.addInitScript((marker) => {
+    const originalDigest = SubtleCrypto.prototype.digest;
+    const probe = {
+      pending: 0,
+      releases: [],
+      releaseAll() {
+        for (const release of this.releases.splice(0)) release();
+      },
+    };
+    window.__staleDigestProbe = probe;
+    SubtleCrypto.prototype.digest = async function digest(algorithm, data) {
+      if (new TextDecoder().decode(new Uint8Array(data)) === marker) {
+        probe.pending += 1;
+        await new Promise((resolve) => probe.releases.push(resolve));
+        probe.pending -= 1;
+      }
+      return Reflect.apply(originalDigest, this, [algorithm, data]);
+    };
+  }, staleBody);
+  await page.route("**/*.jpg", async (route) => {
+    if (new URL(route.request().url()).pathname === stalePath) {
+      await route.fulfill({ body: staleBody, contentType: "image/jpeg", status: 200 });
+      return;
+    }
+    await route.continue();
+  });
+
+  await loadScenario(page, fixture.origin, "rvmot-a1c9");
+  await page.locator("#play-pause").click();
+  await page.waitForFunction(() => document.querySelector("#viewer-announcement")?.textContent.startsWith("Playing from frame"));
+  await page.waitForFunction(() => window.__staleDigestProbe.pending === 1);
+
+  await selectExactFrame(page, 100);
+  await page.locator("#play-pause").click();
+  await page.waitForFunction(() => document.querySelector("#viewer-announcement")?.textContent.startsWith("Playing from frame 101"));
+  await page.waitForFunction(() => Number(document.querySelector("#frame-scrubber").value) > 102);
+  const beforeRelease = await page.evaluate(() => ({
+    announcement: document.querySelector("#viewer-announcement").textContent,
+    frame: Number(document.querySelector("#frame-scrubber").value),
+    mediaError: document.querySelector("#media-state").classList.contains("error"),
+    mediaHidden: document.querySelector("#media-state").hidden,
+  }));
+
+  await page.evaluate(() => window.__staleDigestProbe.releaseAll());
+  await page.waitForFunction(() => window.__staleDigestProbe.pending === 0);
+  await page.waitForTimeout(150);
+  const afterRelease = await page.evaluate(() => ({
+    announcement: document.querySelector("#viewer-announcement").textContent,
+    frame: Number(document.querySelector("#frame-scrubber").value),
+    mediaError: document.querySelector("#media-state").classList.contains("error"),
+    mediaHidden: document.querySelector("#media-state").hidden,
+    playButton: document.querySelector("#play-pause").textContent,
+  }));
+
+  assert.equal(afterRelease.playButton, "Pause", "stale session A must not stop playback session B");
+  assert.equal(afterRelease.mediaError, false, "stale session A must not surface a media error");
+  assert.equal(afterRelease.mediaHidden, true, "session B must retain its normal hidden media status");
+  assert.equal(afterRelease.announcement, beforeRelease.announcement,
+    "stale session A must not replace session B's accessibility announcement");
+  assert.ok(afterRelease.frame > beforeRelease.frame, "session B must keep advancing after the stale failure");
+  context.diagnostic(`stale session A digest failed after session B advanced `
+    + `from frame ${beforeRelease.frame} to ${afterRelease.frame}; playback and announcement remained active`);
+});
+
 test("cache-cold navigation, Save-Data, reduced motion, and mobile rendering stay bounded", async (context) => {
   const mediaRequests = [];
   const { browser, fixture } = await buildBrowserFixture(context, "policies", { mediaDelay: 15, mediaRequests });
