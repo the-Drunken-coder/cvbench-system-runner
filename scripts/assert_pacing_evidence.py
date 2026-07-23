@@ -92,6 +92,10 @@ def main() -> int:
     assert cpu_heavy["timing"]["durations"]["real_time_factor"] > fast["timing"]["durations"]["real_time_factor"]
     assert idle["timing"]["durations"]["real_time_factor"] > fast["timing"]["durations"]["real_time_factor"]
     assert (
+        idle["resources"]["cpu_seconds_per_native_source_second"]
+        >= fast["resources"]["cpu_seconds_per_native_source_second"] * 0.8
+    )
+    assert (
         cpu_heavy["resources"]["cpu_seconds_per_native_source_second"]
         > idle["resources"]["cpu_seconds_per_native_source_second"]
     )
@@ -118,9 +122,10 @@ def main() -> int:
         "leaderboard_policy": "cvbench.pareto/v1",
         "runs": {name: _summary(report) for name, report in reports.items()},
         "conclusion": (
-            "Sleeping reduces CPU time but increases completion time; CPU-heavy work consumes "
-            "CPU-seconds per native source-second; background child work remains in cgroup CPU "
-            "and process accounting. Accuracy is retained as a separate raw axis."
+            "Sleeping does not erase the system's required CPU work and increases completion "
+            "time; CPU-heavy work consumes CPU-seconds per native source-second; background "
+            "child work remains in cgroup CPU and process accounting. No tactic improves every "
+            "raw efficiency axis, and accuracy is retained separately."
         ),
     }
     payload = json.dumps(evidence, indent=2, sort_keys=True) + "\n"
