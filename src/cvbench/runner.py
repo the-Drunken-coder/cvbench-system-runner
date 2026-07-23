@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import json
 import os
+import select
 import shutil
 import socket
 import tempfile
@@ -378,6 +379,16 @@ def _release_input(connection: socket.socket) -> None:
         connection.shutdown(socket.SHUT_WR)
 
 
+def _scoring_complete(connection: socket.socket, collector: OutputCollector) -> bool:
+    if collector.stdout_closed.is_set():
+        return True
+    try:
+        readable, _, _ = select.select([connection], [], [], 0)
+        return bool(readable and connection.recv(1, socket.MSG_PEEK) == b"")
+    except OSError:
+        return True
+
+
 def _load_unique_scenarios(
     paths: tuple[Path, ...], run_id: str, evaluation_order_seed: str | int | None = None
 ) -> list[Scenario]:
@@ -568,6 +579,7 @@ def run_benchmark(benchmark_path: str | Path, system_path: str | Path, output_ro
                     monitor.capture_checkpoint,
                     lambda: _finish_scoring(monitor, collector),
                     lambda: _release_input(connection),
+                    lambda: _scoring_complete(connection, collector),
                 )
             runtime_stopped = True
             finished_ns = stopped.scoring_finished_ns

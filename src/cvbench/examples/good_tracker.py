@@ -173,6 +173,7 @@ def main() -> int:
                 event = metadata.get("event")
                 if event == "benchmark_end":
                     _final_accounting_burst(pacing_mode)
+                    sock.shutdown(socket.SHUT_WR)
                     benchmark_ended = True
                     continue
                 if benchmark_ended:

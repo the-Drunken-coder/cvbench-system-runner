@@ -128,6 +128,7 @@ def main() -> int:
                 break
             event = metadata.get("event")
             if event == "benchmark_end":
+                sock.shutdown(socket.SHUT_WR)
                 benchmark_ended = True
                 continue
             if benchmark_ended:

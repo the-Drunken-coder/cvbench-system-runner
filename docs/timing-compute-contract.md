@@ -60,7 +60,7 @@ Output is causal only when its `(sequence_id, source_timestamp_ns)` names a fram
 
 ## Container compute accounting
 
-Leaderboard resource evidence is read by the trusted host runner directly from the container's cgroup-v2 files, never from SUT self-report and never by executing a command inside the submitted image. This works for distroless and `scratch` images. During bounded drain, a system may keep reading until the runner releases input EOF. The runner stops its sampler, captures a new cumulative cgroup sample at the scoring boundary, then releases EOF and performs teardown. If the system exits and Docker removes the cgroup before that new read succeeds, the run is ineligible; a recent ordinary sample is never relabeled as final. Evidence includes:
+Leaderboard resource evidence is read by the trusted host runner directly from the container's cgroup-v2 files, never from SUT self-report and never by executing a command inside the submitted image. This works for distroless and `scratch` images. During bounded drain, a system may half-close its output side of the input socket after its last output while continuing to read until the runner releases EOF. That half-close, stdout EOF, or the hard drain limit closes scoring; later stdout cannot become scoreable. The runner then stops its sampler, captures a new cumulative cgroup sample, releases input EOF, and performs teardown. If the system exits and Docker removes the cgroup before that new read succeeds, the run is ineligible; a recent ordinary sample is never relabeled as final. Evidence includes:
 
 - wall, startup, delivery, completion, and drain duration;
 - cgroup CPU time and CPU-seconds per native source-second;

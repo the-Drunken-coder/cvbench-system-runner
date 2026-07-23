@@ -38,6 +38,7 @@ class OutputCollector:
         self.ready = threading.Event()
         self.flooded = threading.Event()
         self.scoring_closed = threading.Event()
+        self.stdout_closed = threading.Event()
         self.limit_reason: str | None = None
         self.first_output_timestamp_ns: int | None = None
         self._lock = threading.Lock()
@@ -57,32 +58,35 @@ class OutputCollector:
         buffer = bytearray()
         total_bytes = 0
         recent_records: deque[int] = deque()
-        while not self.flooded.is_set():
-            chunk = os.read(file_descriptor, 65536)
-            if not chunk:
-                if buffer:
-                    self._consume_line(bytes(buffer), recent_records)
-                return
-            total_bytes += len(chunk)
-            if total_bytes > self.max_total_bytes:
-                self._set_limit(f"total stdout byte limit exceeded ({self.max_total_bytes})")
-                return
-            buffer.extend(chunk)
-            while True:
-                newline = buffer.find(b"\n")
-                if newline < 0:
-                    break
-                raw_line = bytes(buffer[:newline])
-                del buffer[: newline + 1]
-                if len(raw_line) > self.max_line_bytes:
+        try:
+            while not self.flooded.is_set():
+                chunk = os.read(file_descriptor, 65536)
+                if not chunk:
+                    if buffer:
+                        self._consume_line(bytes(buffer), recent_records)
+                    return
+                total_bytes += len(chunk)
+                if total_bytes > self.max_total_bytes:
+                    self._set_limit(f"total stdout byte limit exceeded ({self.max_total_bytes})")
+                    return
+                buffer.extend(chunk)
+                while True:
+                    newline = buffer.find(b"\n")
+                    if newline < 0:
+                        break
+                    raw_line = bytes(buffer[:newline])
+                    del buffer[: newline + 1]
+                    if len(raw_line) > self.max_line_bytes:
+                        self._set_limit(f"stdout line byte limit exceeded ({self.max_line_bytes})")
+                        return
+                    self._consume_line(raw_line, recent_records)
+                    if self.flooded.is_set():
+                        return
+                if len(buffer) > self.max_line_bytes:
                     self._set_limit(f"stdout line byte limit exceeded ({self.max_line_bytes})")
                     return
-                self._consume_line(raw_line, recent_records)
-                if self.flooded.is_set():
-                    return
-            if len(buffer) > self.max_line_bytes:
-                self._set_limit(f"stdout line byte limit exceeded ({self.max_line_bytes})")
-                return
+        finally:
+            self.stdout_closed.set()
 
     def _consume_line(self, raw_line: bytes, recent_records: deque[int]) -> None:
         received = time.monotonic_ns()

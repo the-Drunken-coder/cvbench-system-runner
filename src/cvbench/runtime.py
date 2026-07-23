@@ -209,12 +209,17 @@ def stop_runtime(
     checkpoint: Callable[[], None] | None = None,
     on_scoring_finished: Callable[[], None] | None = None,
     release_after_scoring: Callable[[], None] | None = None,
+    scoring_complete: Callable[[], bool] | None = None,
 ) -> RuntimeStop:
     """Enforce the scoring deadline, then tear down descendants out of band."""
     forced = False
     deadline = time.monotonic() + max(0, grace)
     exit_code = runtime.process.poll()
-    while exit_code is None and time.monotonic() < deadline:
+    while (
+        exit_code is None
+        and not (scoring_complete is not None and scoring_complete())
+        and time.monotonic() < deadline
+    ):
         if checkpoint is not None:
             checkpoint()
         time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
