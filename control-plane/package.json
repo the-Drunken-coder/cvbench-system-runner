@@ -14,6 +14,7 @@
     "test:d1": "node scripts/d1-lifecycle.mjs",
     "test:preview": "node scripts/test-preview-routes.mjs",
     "test:production-install": "node scripts/test-production-install.mjs",
+    "measure:playback": "npm run build && node scripts/measure-scenario-playback.mjs",
     "screenshots": "npm run build && node scripts/capture-scenario-screenshots.mjs"
   },
   "dependencies": {
