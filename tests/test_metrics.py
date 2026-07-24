@@ -427,3 +427,49 @@ def test_feed_interruption_recovery_reports_observed_same_id() -> None:
     assert result["observed_recovery_rate"] == 1
     assert result["same_id_recovery_rate"] == 1
     assert metrics["reacquisition"]["after_feed_interruption_rate"] == 1
+
+
+def test_mot_metrics_macro_average_scenarios_instead_of_weighting_long_sequences() -> None:
+    truth = [gt(0, sequence="short", target="short-target")] + [
+        gt(index * 100_000_000, sequence="long", target="long-target") for index in range(8)
+    ]
+    records = [output(0, sequence="short", track="short-track")]
+    metrics, _ = calculate_metrics(
+        truth,
+        records,
+        Thresholds(),
+        scenario_families={"short": "source-a", "long": "source-b"},
+    )
+    mot = metrics["multi_object_tracking"]
+    assert set(mot["by_scenario"]) == {"source-a", "source-b"}
+    assert mot["macro_average_by_scenario"]["scenario_count"] == 2
+    assert mot["macro_average_by_scenario"]["hota"] == pytest.approx(
+        (mot["by_scenario"]["source-a"]["hota"] + mot["by_scenario"]["source-b"]["hota"]) / 2
+    )
+    assert mot["macro_average_by_scenario"]["hota"] != pytest.approx(mot["hota"])
+
+
+def test_empty_output_mot_floor_is_exact_and_scenario_grouped() -> None:
+    truth = [
+        gt(0, sequence="sequence-a", target="a"),
+        gt(100_000_000, sequence="sequence-a", target="a"),
+        gt(0, sequence="sequence-b", target="b"),
+    ]
+    metrics, _ = calculate_metrics(
+        truth,
+        [],
+        Thresholds(),
+        scenario_families={"sequence-a": "scenario-a", "sequence-b": "scenario-b"},
+    )
+    mot = metrics["multi_object_tracking"]
+    assert mot["hota"] == 0
+    assert mot["idf1"] == 0
+    assert mot["identity_false_negatives"] == 3
+    assert mot["tracker_detections"] == 0
+    assert mot["macro_average_by_scenario"] == {
+        "association_accuracy": 0.0,
+        "hota": 0.0,
+        "idf1": 0.0,
+        "scenario_count": 2,
+    }
+    assert mot["by_scenario"]["scenario-a"]["ground_truth_tracks"] == 1

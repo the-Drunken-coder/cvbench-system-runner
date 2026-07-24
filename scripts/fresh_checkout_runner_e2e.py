@@ -119,7 +119,7 @@ def assert_callback(callback: dict[str, Any] | None) -> None:
     scenarios = report.get("provenance", {}).get("comparison_inputs", {}).get("scenarios", [])
     ids = [scenario.get("id") for scenario in scenarios if isinstance(scenario, dict)]
     if len(ids) != len(PUBLIC_SCENARIO_IDS) or len(set(ids)) != len(ids) or set(ids) != PUBLIC_SCENARIO_IDS:
-        raise RuntimeError("callback report does not contain exactly the 16 public scenarios")
+        raise RuntimeError("callback report does not contain exactly the 26 public scenarios")
     isolation = report.get("runtime_isolation", {})
     if isolation.get("status") != "verified" or isolation.get("ground_truth_access") is not False:
         raise RuntimeError("callback report did not verify runner isolation")
@@ -166,7 +166,7 @@ def main() -> int:
     assert_callback(ControlPlaneHandler.callback)
     if not (hydrated / "artifacts.sha256").is_file():
         raise RuntimeError("trusted runner did not deterministically hydrate the public corpus")
-    print("fresh checkout lease -> 16-scenario Docker score -> callback verified")
+    print("fresh checkout lease -> 26-scenario Docker score -> callback verified")
     return 0
 
 

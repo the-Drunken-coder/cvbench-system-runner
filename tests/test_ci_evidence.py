@@ -25,6 +25,7 @@ def _generated_run(tmp_path: Path) -> tuple[Path, Path]:
     [
         (["assert_docker_report.py", "runs"], "synthetic"),
         (["assert_docker_report.py", "runs", "--real-video"], "real-video"),
+        (["assert_docker_report.py", "runs", "--motchallenge"], "motchallenge"),
         (["assert_docker_report.py", "runs", "--combined"], "combined"),
     ],
 )
@@ -52,12 +53,22 @@ def test_combined_report_rejects_duplicate_scenario_even_when_set_is_complete(
         "rvmot-a1c9",
         "rvmot-b7e2",
         "rvmot-c4f6",
+        "mot17-02",
+        "mot17-04",
+        "mot17-09",
+        "mot17-10",
+        "mot17-11",
+        "mot17-13",
+        "mot20-01",
+        "mot20-02",
+        "mot20-03",
+        "mot20-05",
     ]
     run = tmp_path / "runs" / "one"
     run.mkdir(parents=True)
     report = {
         "outcome": {"status": "completed"},
-        "benchmark": {"id": "public-whole-system-tracking", "version": "2.0.0"},
+        "benchmark": {"id": "public-whole-system-tracking", "version": "3.0.0"},
         "metrics": {
             "sample_counts": {"matches": 1},
             "multi_object_tracking": {"hota": 0},

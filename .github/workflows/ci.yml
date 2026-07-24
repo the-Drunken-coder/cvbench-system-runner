@@ -104,16 +104,26 @@ jobs:
           python scripts/assert_docker_report.py real-video-docker-runs --real-video
           python scripts/sanitize_ci_report.py real-video-docker-runs real-video-docker-safe-runs
           python scripts/verify_ci_evidence.py real-video-docker-safe-runs data/real-video-v2/artifacts.sha256
-          cvbench run --benchmark benchmarks/public-whole-system-v2.yaml --system systems/example-good-docker.yaml --output combined-docker-runs
+          python -m pip install -r requirements-motchallenge.lock
+          python scripts/prepare_motchallenge.py --allow-official-download
+          python scripts/prepare_motchallenge.py --verify
+          cvbench run --benchmark benchmarks/motchallenge-v1.yaml --system systems/empty-floor-docker.yaml --output motchallenge-docker-runs
+          python scripts/assert_docker_report.py motchallenge-docker-runs --motchallenge
+          python scripts/sanitize_ci_report.py motchallenge-docker-runs motchallenge-docker-safe-runs
+          python scripts/verify_ci_evidence.py motchallenge-docker-safe-runs data/motchallenge-v1/artifacts.sha256
+          cvbench run --benchmark benchmarks/public-whole-system-v3.yaml --system systems/empty-floor-docker.yaml --output combined-docker-runs
           python scripts/assert_docker_report.py combined-docker-runs --combined
           python scripts/sanitize_ci_report.py combined-docker-runs combined-docker-safe-runs
           python scripts/verify_ci_evidence.py combined-docker-safe-runs data/real-video-v2/artifacts.sha256
           python scripts/evidence_hashes.py docker-evidence.sha256 \
             real-video-docker-safe-runs/*/report.json \
             real-video-docker-safe-runs/*/resources.csv \
+            motchallenge-docker-safe-runs/*/report.json \
+            motchallenge-docker-safe-runs/*/resources.csv \
             combined-docker-safe-runs/*/report.json \
             combined-docker-safe-runs/*/resources.csv \
-            data/real-video-v2/artifacts.sha256
+            data/real-video-v2/artifacts.sha256 \
+            data/motchallenge-v1/artifacts.sha256
           python scripts/evidence_hashes.py docker-evidence.sha256 --verify
       - name: Upload exact safe real-video and combined Docker evidence
         uses: actions/upload-artifact@v4
@@ -123,9 +133,12 @@ jobs:
           path: |
             real-video-docker-safe-runs/*/report.json
             real-video-docker-safe-runs/*/resources.csv
+            motchallenge-docker-safe-runs/*/report.json
+            motchallenge-docker-safe-runs/*/resources.csv
             combined-docker-safe-runs/*/report.json
             combined-docker-safe-runs/*/resources.csv
             data/real-video-v2/artifacts.sha256
+            data/motchallenge-v1/artifacts.sha256
             docker-evidence.sha256
       - name: Assert no real-video container remains
         if: ${{ always() && !cancelled() }}

@@ -2,7 +2,7 @@
 
 CVBench's public control plane is one Cloudflare Worker with Static Assets and D1. It validates and queues immutable submitted system images; it never runs submitted code. A scheduled or manually dispatched GitHub-hosted Actions runner leases one job at a time and invokes the existing Docker-isolated CVBench engine.
 
-Every public v1 submission runs the fixed `public-whole-system-tracking` Version 2 suite declared by `benchmarks/public-whole-system-v2.yaml`: 13 synthetic scenarios and 3 dense, full-frame real-video scenarios. The request schema remains compatible and has no benchmark selector. Queued/public records and runner leases state the exact assignment, and the Worker rejects a successful callback whose report identifies a different benchmark or version.
+Every public v1 submission runs the fixed `public-whole-system-tracking` Version 3 suite declared by `benchmarks/public-whole-system-v3.yaml`: 13 synthetic scenarios, 3 dense full-frame MEVA scenarios, and exactly 10 dense MOTChallenge pedestrian scenarios. The request schema remains compatible and has no benchmark selector. Queued/public records and runner leases state the exact assignment, and the Worker rejects a successful callback whose report identifies a different benchmark or version.
 
 The same assignment is fixed to `cvbench.timing-compute/v1`, `cvbench.delivery-lossless/v1`, replay profile `native` at exactly 1.0x, and `cvbench.pareto/v1`. `/api/v1` accepts no replay-rate override, so another delivery pace cannot share the native leaderboard. Successful callbacks with a different timing, delivery, replay, or Pareto policy are rejected. Public and operator result summaries expose native duration, replay identity, CPU-seconds/native-source-second, real-time factor, peak RAM, and class while retaining the raw accuracy metrics.
 
@@ -66,7 +66,7 @@ curl -sS http://localhost:8787/api/v1/contract
 curl -sS http://localhost:8787/api/v1/openapi.json
 ```
 
-`npm run build` deterministically creates the allowlisted Static Assets tree in `control-plane/dist`, including the complete public scenario catalog. `npm test` exercises the catalog build plus a complete in-memory HTTP lifecycle: authenticated creation with the fixed 16-scenario assignment, idempotent replay, public read, lease, benchmark-bound scored result callback, terminal-state rejection, failure callback, rate limit, payload limit, and lease expiry. It uses a safe baseline system-image reference and a representative scored CVBench report; it does not execute Docker.
+`npm run build` deterministically creates the allowlisted Static Assets tree in `control-plane/dist`, including the complete public scenario catalog. `npm test` exercises the catalog build plus a complete in-memory HTTP lifecycle: authenticated creation with the fixed 26-scenario assignment, idempotent replay, public read, lease, benchmark-bound scored result callback, terminal-state rejection, failure callback, rate limit, payload limit, and lease expiry. It uses a safe baseline system-image reference and a representative scored CVBench report; it does not execute Docker.
 
 `npm ci` also invokes this build through the package's `postinstall` hook, and the build-time YAML parser is a production dependency so `npm ci --omit=dev` follows the same contract. An explicit `npm run build` remains useful only for local regeneration after source edits.
 
@@ -88,7 +88,7 @@ CVBENCH_REPORT_PATH=/absolute/path/to/report.json \
 npm run test:d1
 ```
 
-The Linux CI `docker-scored-e2e` builds the synthetic and real-video baseline images, prepares and hash-verifies the dense corpus, runs the complete public 16-scenario manifest through the Docker-isolated engine, asserts HOTA/IDF1 and the exact benchmark identity, and checks the tested containers are gone. Together with the Worker lifecycle tests, this covers public queue assignment through isolated execution and a benchmark-bound callback.
+The Linux CI `docker-scored-e2e` builds the synthetic and real-video baseline images, prepares and hash-verifies both dense corpora, runs the isolated ten-sequence MOT benchmark and the complete public 26-scenario manifest through the Docker-isolated engine, asserts HOTA/IDF1 and exact benchmark identity, and checks the tested containers are gone. Together with the Worker lifecycle tests, this covers public queue assignment through isolated execution and a benchmark-bound callback.
 
 ## Production with Cloudflare Workers Builds
 
