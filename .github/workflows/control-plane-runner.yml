@@ -15,7 +15,7 @@ concurrency:
 jobs:
   lease-and-run:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     environment: cvbench-production
     env:
       CVBENCH_API_BASE_URL: ${{ vars.CVBENCH_API_BASE_URL }}

@@ -188,6 +188,7 @@ def test_execution_timeout_still_runs_unique_label_cleanup(tmp_path: Path) -> No
     }
     with (
         patch("scripts.run_control_plane_job.hydrate"),
+        patch("scripts.run_control_plane_job.hydrate_motchallenge"),
         patch(
             "scripts.run_control_plane_job.subprocess.run",
             side_effect=subprocess.TimeoutExpired(["docker", "pull"], 600),

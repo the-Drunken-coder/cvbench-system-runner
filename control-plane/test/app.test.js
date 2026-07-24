@@ -42,8 +42,8 @@ test("health and machine-readable metadata are public", async () => {
   assert.match(contract.container.filesystem, /no extra mounts and no Docker socket/);
   assert.match(contract.benchmark.temporal_support, /multiple processes/);
   assert.equal(contract.benchmark.id, "public-whole-system-tracking");
-  assert.equal(contract.benchmark.version, "2.0.0");
-  assert.equal(contract.benchmark.scenario_count, 16);
+  assert.equal(contract.benchmark.version, "3.0.0");
+  assert.equal(contract.benchmark.scenario_count, 26);
   assert.deepEqual(contract.benchmark.scenario_ids, PUBLIC_BENCHMARK.scenario_ids);
   assert.match(contract.benchmark.selection, /Every public v1 submission/);
   assert.equal(contract.benchmark.replay_profile, "native");
@@ -103,7 +103,7 @@ test("catalog assets keep honest status, MIME, and cache semantics", async () =>
         const pathname = new URL(assetRequest.url).pathname;
         if (pathname === "/scenario-catalog/v1/catalog.json") {
           if (assetRequest.headers.has("if-none-match")) return new Response(null, { status: 304, headers: { etag: '"catalog"' } });
-          return new Response('{"scenario_count":16}', { headers: { "cache-control": "public, max-age=0, must-revalidate", "content-type": "application/json; charset=utf-8", etag: '"catalog"' } });
+          return new Response('{"scenario_count":26}', { headers: { "cache-control": "public, max-age=0, must-revalidate", "content-type": "application/json; charset=utf-8", etag: '"catalog"' } });
         }
         if (pathname === `/scenario-catalog/v1/assets/sha256/${knownFrame}`) {
           return new Response("jpeg", { headers: { "cache-control": "public, max-age=31556952, immutable", "content-type": "image/jpeg" } });
@@ -1020,7 +1020,7 @@ function scoredReport(runtimeIsolation = {}) {
       replay_rate: 1,
       leaderboard_class: "native/cpu-2/realtime",
       comparison_fingerprint: "a".repeat(64),
-      benchmark_path: "benchmarks/public-whole-system-v2.yaml",
+      benchmark_path: "benchmarks/public-whole-system-v3.yaml",
       benchmark_sha256: "b".repeat(64),
       system_path: "systems/submitted.yaml",
       system_sha256: "c".repeat(64),
