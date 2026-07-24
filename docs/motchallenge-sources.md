@@ -43,6 +43,10 @@ Marked class 1 maps to `person` with stable track IDs and exhaustive full-frame 
 
 Submitted containers receive progressive current-frame JPEG bytes and derived timestamps only. They never receive ground truth, boxes, identities, classes, ignore regions, ROI, detections, annotations, labels, future frames, or scoring hints. Results are known-public-corpus CVBench evaluation, not unseen generalization and not official MOTChallenge leaderboard scoring.
 
+## Aggregation and correlation boundary
+
+CVBench publishes both detection-weighted MOT metrics and an unweighted macro-average across the ten selected sequences, so MOT20-05 cannot dominate the summary merely because it is longest. The six MOT17-label/MOT16-pixel sequences and four MOT20 sequences are two correlated public-corpus source families, not ten statistically independent datasets. The pinned archives do not declare stable location-group identifiers, so CVBench does not invent location labels or claim location-level independence.
+
 ## Reproduction
 
 Place the three untouched archives in `.local-ingest/motchallenge/`, then run:

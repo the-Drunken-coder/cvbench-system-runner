@@ -20,4 +20,6 @@ Primary publisher endpoints:
 
 The publisher provides no visible archive checksums or release tags. CVBench pins the independently hashed bytes and fails closed on drift. Original video-container PTS is unavailable. All CVBench timestamps and public derivative cadence are derived from ordered JPEG ordinals and publisher-declared fixed FPS; neither this report nor the implementation claims original timestamps.
 
+Scores retain detection-weighted MOT metrics and add an unweighted ten-sequence macro-average. MOT17-label/MOT16-pixel and MOT20 are documented as two correlated public-corpus source families; the archives do not supply stable location-group identifiers, so no location independence is inferred.
+
 No rejected corpus, vehicle claim, keyframe/sparse work, scenario split, or broader dataset expansion is part of this result.
